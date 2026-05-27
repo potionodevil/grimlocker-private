@@ -1,0 +1,129 @@
+.no-select {
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  user-select: none !important;
+}
+
+.no-copy {
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+  user-select: none !important;
+  -webkit-touch-callout: none !important;
+}
+
+.no-copy::selection {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+.no-copy::-moz-selection {
+  background: transparent !important;
+  color: inherit !important;
+}
+
+@keyframes matrixRain {
+  0% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(100vh);
+    opacity: 0;
+  }
+}
+
+@keyframes orbPulse {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(0, 240, 255, 0.3), 0 0 16px rgba(0, 240, 255, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(0, 240, 255, 0.5), 0 0 40px rgba(0, 240, 255, 0.2);
+  }
+}
+
+@keyframes scanProgress {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+.matrix-rain {
+  animation: matrixRain linear infinite;
+}
+
+.orb-pulse {
+  animation: orbPulse 2s ease-in-out infinite;
+}
+
+.scan-progress {
+  background: linear-gradient(90deg, #00f0ff, #00ff88, #00f0ff);
+  background-size: 200% 100%;
+  animation: scanProgress 2s linear infinite;
+}
+
+.glitch-text {
+  position: relative;
+}
+
+.glitch-text::before,
+.glitch-text::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.glitch-text::before {
+  animation: glitch-1 2s infinite linear alternate-reverse;
+  clip-path: polygon(0 0, 100% 0, 100% 35%, 0 35%);
+  color: #ff3344;
+}
+
+.glitch-text::after {
+  animation: glitch-2 3s infinite linear alternate-reverse;
+  clip-path: polygon(0 65%, 100% 65%, 100% 100%, 0 100%);
+  color: #00f0ff;
+}
+
+@keyframes glitch-1 {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-2px); }
+  40% { transform: translateX(2px); }
+  60% { transform: translateX(-1px); }
+  80% { transform: translateX(1px); }
+}
+
+@keyframes glitch-2 {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(2px); }
+  40% { transform: translateX(-2px); }
+  60% { transform: translateX(1px); }
+  80% { transform: translateX(-1px); }
+}
+
+.onboarding-transition {
+  will-change: transform, opacity;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .matrix-rain,
+  .orb-pulse,
+  .scan-progress {
+    animation: none !important;
+  }
+}
