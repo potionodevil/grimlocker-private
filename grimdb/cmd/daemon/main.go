@@ -15,7 +15,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -25,11 +24,12 @@ import (
 	apiipc "github.com/grimlocker/grimdb/api/ipc"
 	apiwsbridge "github.com/grimlocker/grimdb/api/websocket"
 	rustbridge "github.com/grimlocker/grimdb/cgo"
-	"github.com/grimlocker/grimdb/crypto"
+	"github.com/grimlocker/grimdb/config"
 	"github.com/grimlocker/grimdb/kernel"
 	"github.com/grimlocker/grimdb/security"
 	"github.com/grimlocker/grimdb/storage"
 	"github.com/grimlocker/grimdb/storage/grimdb"
+	"github.com/grimlocker/grimdb/tools"
 
 	gorillaws "github.com/gorilla/websocket"
 )
@@ -55,13 +55,16 @@ func main() {
 	log.Printf("[Omega] App directory: %s", appDir)
 	log.Printf("[Omega] Database path: %s", dbPath)
 
-	// ── 1. Storage ───────────────────────────────────────────────────────────
+	// ── 1. Storage (GrimDB file + tier config) ───────────────────────────────
 	db, err := grimdb.NewGrimDB(dbPath)
 	if err != nil {
 		log.Fatalf("[Omega] Failed to open database: %v", err)
 	}
 
-	blockStore := grimdb.NewBlockStoreImpl(appDir)
+	// ── 1b. Tier Provider (Single-User default; Enterprise via -tags enterprise) ─
+	cfg := config.ConfigFromEnv(appDir)
+	log.Printf("[Omega] Tier: %s", cfg.Mode)
+	vault := config.NewSingleUserProvider(cfg, db)
 
 	// ── 2. Kernel (with STORAGE gate until vault is unlocked) ─────────────────
 	bus := kernel.NewBus(kernel.WithGatedChannels("STORAGE"))
@@ -70,45 +73,37 @@ func main() {
 	// ── 2b. Session Context (global vault-unlock state) ─────────────────────
 	sessionCtx := security.NewSessionContext()
 
-	// ── 3. Security module ───────────────────────────────────────────────────
-	entropyPath := filepath.Join(appDir, "entropy.bin")
-	secMod := security.NewModule(security.LockdownConfig{
-		Threshold:       3,
-		MaxOverrides:    4,
-		LockdownMinutes: 200,
-	}, entropyPath)
-	secMod.SetSession(sessionCtx)
+	// Wire session context into the vault provider (security module + storage adapter).
+	vault.SetSession(sessionCtx)
 
-	if err := reg.Add(secMod); err != nil {
-		log.Fatalf("[Omega] Register security: %v", err)
+	// ── 3–5. Register all kernel modules from the vault provider ─────────────
+	// Order: security → crypto → storage adapter (as returned by KernelModules).
+	for _, mod := range vault.KernelModules() {
+		if err := reg.Add(mod); err != nil {
+			log.Fatalf("[Omega] Register module %s: %v", mod.ID(), err)
+		}
 	}
 
-	// ── 4. Crypto module ─────────────────────────────────────────────────────
-	cryptoProv := crypto.New()
-	cryptoMod := crypto.NewModule(cryptoProv, secMod.RetrieveMVK)
-	if err := reg.Add(cryptoMod); err != nil {
-		log.Fatalf("[Omega] Register crypto: %v", err)
-	}
-
-	// ── 5. Storage adapter ───────────────────────────────────────────────────
-	storageAdapter := grimdb.NewAdapter(db, blockStore)
-	storageAdapter.SetSession(sessionCtx)
-	if err := reg.Add(storageAdapter); err != nil {
-		log.Fatalf("[Omega] Register storage: %v", err)
-	}
+	// Convenience aliases for components that still need direct access.
+	secMod := vault.SecurityModule()
+	cryptoProv := vault.CryptoProvider()
+	blockStore := vault.RawStorage().BlockStore()
 
 	// ── 5b. Entry handler (CRUD operations) ───────────────────────────────────
 	entryStoreHandler := storage.NewEntryHandler(blockStore)
 	// Set dispatcher after bus is available (will be set after reg.StartAll)
 
-	// Auth handler (in-bus, wired to security+storage+session)
-	// AUTH.UNLOCK events are handled inline by the auth goroutine subscribed here.
-	// The session key + handle callback will be wired after the translator is created.
-	// ── 6. Auth handler (in-bus, wired to security+storage+session) ──────────
-	// AUTH.UNLOCK events are handled inline by the auth goroutine subscribed here.
-	// The session key + handle callback will be wired after the translator is created.
+	// ── 5c. Tools module (TOOL channel — SSH-key-gen, etc.) ──────────────────
+	toolsMod := tools.NewModule(blockStore)
+	if err := reg.Add(toolsMod); err != nil {
+		log.Printf("[Omega] Register tools module: %v (non-fatal)", err)
+	}
+
+	// ── 6. Auth handler (in-bus, via provider interface) ─────────────────────
+	// vault.Auth().HandleUnlockEvent replaces makeAuthUnlockHandler from main.go.
+	// The provider encapsulates all 7 unlock steps; main.go only wires the subscription.
 	var translatorPtr *api.Translator
-	unlockHandler := makeAuthUnlockHandler(bus, secMod, blockStore, appDir, sessionCtx, reg, func(sk []byte, skh string) {
+	unlockHandler := vault.Auth().HandleUnlockEvent(bus, sessionCtx, func(sk []byte, skh string) {
 		if t := translatorPtr; t != nil {
 			t.SetSessionKey(sk)
 			if skh != "" {
@@ -151,6 +146,7 @@ func main() {
 	bus.Subscribe(kernel.EvEntryRead, entryStoreHandler.Handle)
 	bus.Subscribe(kernel.EvEntryUpdate, entryStoreHandler.Handle)
 	bus.Subscribe(kernel.EvEntryDelete, entryStoreHandler.Handle)
+	bus.Subscribe(kernel.EvEntryQuery, entryStoreHandler.Handle)
 
 	// ── 7b. Binary integrity monitor ─────────────────────────────────────────
 	integrityMon, err := security.NewIntegrityMonitor(bus)
@@ -229,7 +225,7 @@ func main() {
 	watchdog.Start(ctx)
 
 	// ── 9d. Startup diagnostics — print all wired event handlers ─────────────
-	log.Printf("[Omega] Handler-Registry: [AUTH.UNLOCK=Registered, AUTH.KEY_READY=Registered, AUTH.LOGOUT=Registered, STORAGE.WRITE=Registered, STORAGE.READ=Registered, STORAGE.LIST=Registered, ENTRY.CREATE=Registered, ENTRY.READ=Registered, ENTRY.UPDATE=Registered, ENTRY.DELETE=Registered]")
+	log.Printf("[Omega] Handler-Registry: [AUTH.UNLOCK=Registered, AUTH.KEY_READY=Registered, AUTH.LOGOUT=Registered, STORAGE.WRITE=Registered, STORAGE.READ=Registered, STORAGE.LIST=Registered, ENTRY.CREATE=Registered, ENTRY.READ=Registered, ENTRY.UPDATE=Registered, ENTRY.DELETE=Registered, ENTRY.QUERY=Registered, TOOL.SSH_GEN=Registered]")
 	log.Printf("[Omega] Session-Clearer: DISABLED (session persists full daemon lifetime)")
 	log.Printf("[Omega] STORAGE-Gate: CLOSED (opens after AUTH.KEY_READY)")
 
@@ -330,158 +326,9 @@ func main() {
 	log.Printf("[Omega] Shutdown complete.")
 }
 
-// makeAuthUnlockHandler returns a kernel.Handler for AUTH.UNLOCK events.
-// It runs the full unlock flow: derive MVK, verify sentinel, load index,
-// populate the SessionContext, open the bus gate, then emits AUTH.RESULT.
-func makeAuthUnlockHandler(
-	bus kernel.Dispatcher,
-	secMod *security.Module,
-	blockStore *grimdb.BlockStoreImpl,
-	appDir string,
-	sessionCtx *security.SessionContext,
-	reg *kernel.Registry,
-	onSessionKey func([]byte, string),
-) kernel.Handler {
-	return func(e kernel.Event) (err error) {
-		// Catch ANY panic in this handler — prevents silent goroutine death.
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[auth] PANIC in unlock handler: %v\n%s", r, debug.Stack())
-				panic(r) // re-panic — the bus wrapper also recovers
-			}
-		}()
-		var req struct {
-			Password string `json:"password"`
-			AppDir   string `json:"app_dir"`
-		}
-		if err := json.Unmarshal(e.Payload, &req); err != nil {
-			log.Printf("[unlock:FAIL] payload unmarshal: %v", err)
-			return err
-		}
-
-		dir := req.AppDir
-		if dir == "" {
-			dir = appDir
-		}
-
-		// Step 0/7 — Lockdown check.
-		if state := secMod.Lockdown().State(); state == security.LockdownHard {
-			log.Printf("[unlock:FAIL] hard lockdown active")
-			return replyAuthFail(bus, e, "hard lockdown active")
-		}
-
-		// Step 1/7 — Derive & verify MVK.
-		log.Printf("[auth] AUTH.UNLOCK received — attempting vault unlock")
-		log.Printf("[unlock:1/7] UnlockVault starting")
-		mvk, err := grimdb.UnlockVault(req.Password, dir)
-		if err != nil {
-			log.Printf("[unlock:FAIL:1/7] UnlockVault: %v", err)
-			state, _ := secMod.Lockdown().RecordFailure()
-			if state == security.LockdownHard {
-				return replyAuthFail(bus, e, "too many failures: hard lockdown")
-			}
-			return replyAuthFail(bus, e, "invalid password")
-		}
-		log.Printf("[unlock:1/7] UnlockVault OK (key len=%d)", len(mvk))
-
-		// Step 2/7 — Store key in locked memory.
-		log.Printf("[unlock:2/7] StoreMVK starting")
-		handle, err := secMod.StoreMVK(mvk)
-		for i := range mvk {
-			mvk[i] = 0
-		}
-		if err != nil {
-			log.Printf("[unlock:FAIL:2/7] StoreMVK: %v", err)
-			return replyAuthFail(bus, e, "failed to store key material")
-		}
-		log.Printf("[unlock:2/7] StoreMVK OK (handle=%s)", handle)
-
-		// Step 3/7 — Wire into blockstore.
-		log.Printf("[unlock:3/7] SetMVKFunc starting")
-		blockStore.SetMVKFunc(func() []byte {
-			k, _ := secMod.RetrieveMVK(handle)
-			return k
-		})
-		log.Printf("[unlock:3/7] SetMVKFunc OK")
-
-		// Step 4/7 — Load block index.
-		log.Printf("[unlock:4/7] LoadIndex starting")
-		if err := blockStore.LoadIndex(); err != nil {
-			log.Printf("[unlock:4/7] LoadIndex error (treating as empty index): %v", err)
-		}
-		log.Printf("[unlock:4/7] LoadIndex OK")
-
-		// Step 5/7 — Open STORAGE gate.
-		log.Printf("[unlock:5/7] KEY_READY dispatch")
-		keyReadyPayload, _ := json.Marshal(map[string]bool{"ready": true})
-		_ = bus.Dispatch(kernel.NewEvent("daemon", kernel.EvAuthKeyReady, keyReadyPayload))
-		log.Printf("[unlock:5/7] KEY_READY dispatched")
-
-		// Step 6/7 — Mark session as unlocked.
-		log.Printf("[unlock:6/7] sessionCtx.Unlock starting")
-		sessionCtx.Unlock(handle)
-		log.Printf("[unlock:6/7] sessionCtx.Unlock OK")
-
-		// Step 7/7 — Record success & reply.
-		secMod.Lockdown().RecordSuccess()
-		log.Printf("[unlock:7/7] RecordSuccess + AUTH.RESULT (success=true)")
-
-		// Generate a per-session ChaCha20-Poly1305 key for SKE encryption.
-		// Try the Rust enclave first; fall back to Go CSPRNG if unavailable.
-		var sessionKey []byte
-		var sessionKeyHandle string
-		skh, ska, err := rustbridge.SessionCreate()
-		if err != nil {
-			// Fallback: generate in Go
-			log.Printf("[unlock:7/7] Rust session create failed, using Go fallback: %v", err)
-			sessionKey = make([]byte, 32)
-			if _, randErr := rand.Read(sessionKey); randErr != nil {
-				log.Printf("[unlock:7/7] WARN: session key generation failed: %v", randErr)
-				sessionKey = nil
-			}
-		} else {
-			sessionKey = ska[:]
-			sessionKeyHandle = skh
-			log.Printf("[unlock:7/7] Session key created via Rust enclave (handle=%s)", skh)
-		}
-
-		// Encode session key for the response BEFORE zeroing the local copy.
-		sessionKeyB64 := ""
-		if sessionKey != nil {
-			sessionKeyB64 = base64.StdEncoding.EncodeToString(sessionKey)
-		}
-
-		// Inject session key + handle into the translator.
-		if onSessionKey != nil && sessionKey != nil {
-			onSessionKey(sessionKey, sessionKeyHandle)
-		}
-
-		// Zero the local session key copy.
-		// The Rust enclave holds its own copy in locked memory;
-		// the Go heap copy is no longer needed.
-		for i := range sessionKey {
-			sessionKey[i] = 0
-		}
-
-		payload, _ := json.Marshal(map[string]interface{}{
-			"success":     true,
-			"mvk_handle":  handle,
-			"session_key": sessionKeyB64,
-		})
-		reply := kernel.ReplyEvent("daemon", kernel.EvAuthResult, e, payload)
-		return bus.Dispatch(reply)
-	}
-}
-
-func replyAuthFail(bus kernel.Dispatcher, req kernel.Event, reason string) error {
-	log.Printf("[auth:FAIL] replyAuthFail reason=%q (req.ID=%s)", reason, req.ID)
-	payload, _ := json.Marshal(map[string]interface{}{
-		"success": false,
-		"reason":  reason,
-	})
-	reply := kernel.ReplyEvent("daemon", kernel.EvAuthResult, req, payload)
-	return bus.Dispatch(reply)
-}
+// makeAuthUnlockHandler and replyAuthFail have been extracted to
+// config/single/auth.go as LocalAuth.HandleUnlockEvent().
+// The daemon now calls vault.Auth().HandleUnlockEvent(...) instead.
 
 // ipcConnDispatch routes UDS IPC messages using the same translator logic.
 // Responses are written directly to the raw conn using ipc.WriteMessage.

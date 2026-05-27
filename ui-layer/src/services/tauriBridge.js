@@ -64,6 +64,14 @@ const MSG_WORKSPACES_RESULT     = 0x2B
 const MSG_DECRYPT_ENTRY   = 0x33
 const MSG_DECRYPTED_DATA  = 0x34
 
+// Category-filtered entry queries (Omega+)
+const MSG_ENTRY_QUERY        = 0x35
+const MSG_ENTRY_QUERY_RESULT = 0x36
+
+// SSH key generation — TOOL channel (Omega+)
+const MSG_SSH_KEY_GEN    = 0x37
+const MSG_SSH_KEY_RESULT = 0x38
+
 // Handshake protocol
 const MSG_INIT_READY            = 0x2C
 const MSG_AUTH_TOKEN_SUBMIT     = 0x2D
@@ -127,6 +135,10 @@ const OP_NAMES = {
   0x32: 'SYSTEM_HEALTH_CHECK',
   0x33: 'DECRYPT_ENTRY',
   0x34: 'DECRYPTED_DATA',
+  0x35: 'ENTRY_QUERY',
+  0x36: 'ENTRY_QUERY_RESULT',
+  0x37: 'SSH_KEY_GEN',
+  0x38: 'SSH_KEY_RESULT',
 }
 
 class TauriBridge {
@@ -1358,6 +1370,172 @@ class TauriBridge {
     })
   }
 
+  // ─── Omega+ Operations ───────────────────────────────────────────────────
+
+  /**
+   * Query vault entries by category.
+   * @param {string} category — "PASSWORD"|"SSH_KEY"|"CERTIFICATE"|"FILE_VAULT"|"" (all)
+   * @returns {Promise<{category: string, entries: Array, count: number}>}
+   */
+  queryEntries(category = '') {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) {
+        reject(new Error('Not connected to daemon'))
+        return
+      }
+
+      const handler = this.on(MSG_ENTRY_QUERY_RESULT, (payload) => {
+        handler()
+        errHandler()
+        try {
+          const text = new TextDecoder().decode(payload)
+          const result = JSON.parse(text)
+          if (result.error) {
+            reject(new Error(result.error))
+          } else {
+            resolve(result)
+          }
+        } catch (err) {
+          reject(new Error('Failed to parse entry query result: ' + err.message))
+        }
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler()
+        errHandler()
+        const error = new TextDecoder().decode(payload)
+        reject(new Error(error))
+      })
+
+      const payload = new TextEncoder().encode(JSON.stringify({ category }))
+      this._send(MSG_ENTRY_QUERY, payload)
+    })
+  }
+
+  /**
+   * Generate an Ed25519 SSH key pair and optionally save it to the vault.
+   * @param {string} [comment] — Key comment (e.g. "user@host" or a label).
+   * @param {boolean} [saveToVault=true] — Whether to persist the key pair in the vault.
+   * @returns {Promise<{public_key: string, fingerprint: string, entry_id: string}>}
+   */
+  generateSSHKey(comment = 'grimlocker-generated', saveToVault = true) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) {
+        reject(new Error('Not connected to daemon'))
+        return
+      }
+
+      const handler = this.on(MSG_SSH_KEY_RESULT, (payload) => {
+        handler()
+        errHandler()
+        try {
+          const text = new TextDecoder().decode(payload)
+          const result = JSON.parse(text)
+          if (result.error) {
+            reject(new Error(result.error))
+          } else {
+            resolve(result)
+          }
+        } catch (err) {
+          reject(new Error('Failed to parse SSH key result: ' + err.message))
+        }
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler()
+        errHandler()
+        const error = new TextDecoder().decode(payload)
+        reject(new Error(error))
+      })
+
+      const payload = new TextEncoder().encode(JSON.stringify({ comment, save_to_vault: saveToVault }))
+      this._send(MSG_SSH_KEY_GEN, payload)
+    })
+  }
+
+  /**
+   * Ingest a File object into the FileVault.
+   * Uses the 3-message streaming protocol: BEGIN → CHUNK(s) → END.
+   * @param {File} file — The File object to ingest.
+   * @param {Function} [onProgress] — Called with 0..1 progress fraction.
+   * @returns {Promise<Object>} The BlobManifest returned by the daemon.
+   */
+  ingestFile(file, onProgress = null) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) {
+        reject(new Error('Not connected to daemon'))
+        return
+      }
+
+      const CHUNK_SIZE = 64 * 1024 // 64KB WebSocket chunks
+
+      // Step 1: Send BEGIN
+      const beginPayload = JSON.stringify({
+        file_name: file.name,
+        mime_type: file.type || 'application/octet-stream',
+        total_size: file.size,
+      })
+
+      const ackHandler = this.on(MSG_ACK, () => {
+        ackHandler()
+        // Step 2: Stream chunks
+        const reader = new FileReader()
+        let offset = 0
+
+        const sendNextChunk = () => {
+          if (offset >= file.size) {
+            // Step 3: Send END
+            const endHandler = this.on(MSG_ENTRY_RESULT, (payload) => {
+              endHandler()
+              errHandler()
+              try {
+                const text = new TextDecoder().decode(payload)
+                const manifest = JSON.parse(text)
+                resolve(manifest)
+              } catch (err) {
+                reject(new Error('Failed to parse ingest manifest: ' + err.message))
+              }
+            })
+            this._send(MSG_FILE_INGEST_END)
+            return
+          }
+
+          const slice = file.slice(offset, Math.min(offset + CHUNK_SIZE, file.size))
+          reader.readAsArrayBuffer(slice)
+          reader.onload = (e) => {
+            const chunkData = new Uint8Array(e.target.result)
+            this._send(MSG_FILE_CHUNK, chunkData)
+            offset += chunkData.length
+            if (onProgress) onProgress(offset / file.size)
+            sendNextChunk()
+          }
+          reader.onerror = () => reject(new Error('Failed to read file chunk'))
+        }
+
+        sendNextChunk()
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        ackHandler()
+        errHandler()
+        const error = new TextDecoder().decode(payload)
+        reject(new Error(error))
+      })
+
+      const onProgressHandler = onProgress
+        ? this.on(MSG_INGEST_PROGRESS, (payload) => {
+            try {
+              const text = new TextDecoder().decode(payload)
+              const prog = JSON.parse(text)
+              if (onProgressHandler) onProgress(prog.progress || 0)
+            } catch (_) {}
+          })
+        : null
+
+      this._send(MSG_FILE_INGEST_BEGIN, new TextEncoder().encode(beginPayload))
+    })
+  }
+
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
   /**
@@ -1412,4 +1590,8 @@ export {
   MSG_SYSTEM_HEALTH_CHECK,
   MSG_DECRYPT_ENTRY,
   MSG_DECRYPTED_DATA,
+  MSG_ENTRY_QUERY,
+  MSG_ENTRY_QUERY_RESULT,
+  MSG_SSH_KEY_GEN,
+  MSG_SSH_KEY_RESULT,
 }

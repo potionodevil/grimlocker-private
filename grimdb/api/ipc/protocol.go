@@ -64,6 +64,14 @@ const (
 	MsgDecryptEntry  byte = 0x33 // client → server: JSON {id: "..."}
 	MsgDecryptedData byte = 0x34 // server → client: SKE-encrypted entry JSON (base64)
 
+	// Category-filtered entry queries
+	MsgEntryQuery       byte = 0x35 // client → server: JSON {category: "PASSWORD"|"SSH_KEY"|…}
+	MsgEntryQueryResult byte = 0x36 // server → client: JSON {category, entries: [], count}
+
+	// SSH key generation (TOOL channel)
+	MsgSSHKeyGen    byte = 0x37 // client → server: JSON {comment: string, save_to_vault: bool}
+	MsgSSHKeyResult byte = 0x38 // server → client: JSON {public_key, fingerprint, entry_id}
+
 	CookieSize   = 32
 	UnixSockPath = "/tmp/grimlocker.sock"
 	WinPipePath  = `\\.\\pipe\\grimlocker`

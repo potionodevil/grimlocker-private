@@ -7,6 +7,10 @@ type BlockStore interface {
 	ReadBlock(id string) (Block, error)
 	DeleteBlock(id string) error
 	ListBlocks() ([]BlockMeta, error)
+	// QueryBlocks returns all BlockMeta whose Category matches the given value.
+	// Operates on the in-memory index; vault must be unlocked.
+	// Passing an empty string returns all blocks (same as ListBlocks).
+	QueryBlocks(category Category) ([]BlockMeta, error)
 	// Flush atomically persists the in-memory index.
 	Flush() error
 	Close() error

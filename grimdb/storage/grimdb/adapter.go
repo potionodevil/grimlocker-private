@@ -14,6 +14,9 @@ import (
 
 const adapterModuleID = "storage"
 
+// adapterHandlerFn is the internal handler function type for the storage adapter registry.
+type adapterHandlerFn func(kernel.Event) error
+
 // storagePayload is the JSON schema for STORAGE.WRITE events.
 type storagePayload struct {
 	Block storage.Block `json:"block"`
@@ -34,6 +37,7 @@ type Adapter struct {
 	blockStore *BlockStoreImpl
 	dispatcher kernel.Dispatcher
 	session    *security.SessionContext
+	handlers   map[kernel.EventType]adapterHandlerFn
 }
 
 // NewAdapter creates the storage adapter module.
@@ -51,30 +55,37 @@ func (a *Adapter) SetSession(s *security.SessionContext) {
 
 func (a *Adapter) Start(ctx context.Context, d kernel.Dispatcher) error {
 	a.dispatcher = d
+	a.handlers = a.buildHandlers()
 	return nil
 }
 
 func (a *Adapter) Stop() error { return nil }
 
-func (a *Adapter) Handle(e kernel.Event) error {
-	switch e.Type {
-	case kernel.EvStorageWrite:
-		return a.handleWrite(e)
-	case kernel.EvStorageRead:
-		return a.handleRead(e)
-	case kernel.EvStorageDelete:
-		return a.handleDelete(e)
-	case kernel.EvStorageList:
-		return a.handleList(e)
-	case kernel.EvStorageVFSMount, kernel.EvStorageReady:
-		// Emitted by watchdog — no-op for the adapter.
-		return nil
-	case kernel.EvStorageResult:
+// buildHandlers returns the static handler registry for all STORAGE.* events.
+// No-op cases are registered explicitly to silence cross-channel debug noise.
+func (a *Adapter) buildHandlers() map[kernel.EventType]adapterHandlerFn {
+	noop := func(kernel.Event) error { return nil }
+	return map[kernel.EventType]adapterHandlerFn{
+		kernel.EvStorageWrite:  a.handleWrite,
+		kernel.EvStorageRead:   a.handleRead,
+		kernel.EvStorageDelete: a.handleDelete,
+		kernel.EvStorageList:   a.handleList,
+		// Emitted by watchdog or other modules — no-ops for the adapter.
+		kernel.EvStorageVFSMount: noop,
+		kernel.EvStorageReady:    noop,
 		// Reply events reach all channel subscribers — no-op here.
-		return nil
-	default:
-		return fmt.Errorf("storage adapter: unhandled event %s", e.Type)
+		kernel.EvStorageResult: noop,
 	}
+}
+
+// Handle dispatches the event to the registered handler, or logs a structured
+// debug message for unknown events instead of returning an error.
+func (a *Adapter) Handle(e kernel.Event) error {
+	if h, ok := a.handlers[e.Type]; ok {
+		return h(e)
+	}
+	log.Printf("[bus][DEBUG] module=%s no_handler event=%s origin=%s", adapterModuleID, e.Type, e.Origin)
+	return nil
 }
 
 func (a *Adapter) handleWrite(e kernel.Event) error {

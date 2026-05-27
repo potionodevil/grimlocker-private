@@ -20,12 +20,13 @@ import (
 )
 
 type blockRecord struct {
-	Offset    int64  `json:"offset"`
-	Length    int64  `json:"length"`
-	Nonce     []byte `json:"nonce"`
-	HMAC      []byte `json:"hmac"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	Offset    int64            `json:"offset"`
+	Length    int64            `json:"length"`
+	Nonce     []byte           `json:"nonce"`
+	HMAC      []byte           `json:"hmac"`
+	Category  storage.Category `json:"category,omitempty"` // entry category for in-memory filtering
+	CreatedAt int64            `json:"created_at"`
+	UpdatedAt int64            `json:"updated_at"`
 }
 
 // BlockStoreImpl is the concrete BlockStore backed by vault_entries.enc.
@@ -206,6 +207,7 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 		Length:    int64(len(b.Data)),
 		Nonce:     b.Nonce,
 		HMAC:      b.HMAC,
+		Category:  b.Category,
 		CreatedAt: b.CreatedAt,
 		UpdatedAt: b.UpdatedAt,
 	}
@@ -290,9 +292,32 @@ func (bs *BlockStoreImpl) ListBlocks() ([]storage.BlockMeta, error) {
 		result = append(result, storage.BlockMeta{
 			ID:        id,
 			Size:      rec.Length,
+			Category:  rec.Category,
 			CreatedAt: rec.CreatedAt,
 			UpdatedAt: rec.UpdatedAt,
 		})
+	}
+	return result, nil
+}
+
+// QueryBlocks returns BlockMeta for all blocks whose Category matches the given value.
+// If category is empty, all blocks are returned (equivalent to ListBlocks).
+// Operates on the decrypted in-memory index; vault must be unlocked.
+func (bs *BlockStoreImpl) QueryBlocks(category storage.Category) ([]storage.BlockMeta, error) {
+	bs.mu.RLock()
+	defer bs.mu.RUnlock()
+
+	result := make([]storage.BlockMeta, 0)
+	for id, rec := range bs.index {
+		if category == "" || rec.Category == category {
+			result = append(result, storage.BlockMeta{
+				ID:        id,
+				Size:      rec.Length,
+				Category:  rec.Category,
+				CreatedAt: rec.CreatedAt,
+				UpdatedAt: rec.UpdatedAt,
+			})
+		}
 	}
 	return result, nil
 }

@@ -10,9 +10,10 @@ const NAV_SECTIONS = [
   {
     label: 'Vault',
     items: [
-      { id: 'passwords', label: 'Passwords',   icon: '🔑' },
-      { id: 'ssh',       label: 'SSH Keys',    icon: '🔐' },
-      { id: 'certs',     label: 'Certificates',icon: '📄' },
+      { id: 'passwords',  label: 'Passwords',   icon: '🔑' },
+      { id: 'ssh',        label: 'SSH Keys',    icon: '🔐' },
+      { id: 'certs',      label: 'Certificates',icon: '📄' },
+      { id: 'FILE_VAULT', label: 'File Vault',  icon: '📁' },
     ],
   },
   {

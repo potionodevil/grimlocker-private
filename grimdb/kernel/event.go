@@ -41,6 +41,11 @@ const (
 	EvEntryDelete EventType = "ENTRY.DELETE"
 	EvEntryIngest EventType = "ENTRY.INGEST"
 	EvEntryResult EventType = "ENTRY.RESULT"
+	EvEntryQuery  EventType = "ENTRY.QUERY"  // client → daemon: {category: "PASSWORD"|"SSH_KEY"|…}
+
+	// TOOL channel — owned by tools module
+	EvToolSSHGen EventType = "TOOL.SSH_GEN" // client → daemon: {comment: string}
+	EvToolResult EventType = "TOOL.RESULT"  // daemon → client: {public_key, entry_id}
 
 	// SECURITY channel — owned by security.Module
 	EvSecMemLock  EventType = "SECURITY.MEM_LOCK"

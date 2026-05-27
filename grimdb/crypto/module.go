@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 
 	"github.com/grimlocker/grimdb/kernel"
 )
@@ -42,12 +43,16 @@ type cryptoResult struct {
 // handle. It is provided by the security.Module to keep key material isolated.
 type KeyResolver func(handle string) ([]byte, bool)
 
+// eventHandlerFn is the internal handler function type used by the registry.
+type eventHandlerFn func(kernel.Event) error
+
 // Module is the kernel.Module that handles all CRYPTO.* events.
 // It holds no key material itself — keys are fetched via KeyResolver per event.
 type Module struct {
 	provider    Provider
 	keyResolver KeyResolver
 	dispatcher  kernel.Dispatcher
+	handlers    map[kernel.EventType]eventHandlerFn
 }
 
 // NewModule creates the crypto module.
@@ -60,23 +65,35 @@ func (m *Module) Channels() []string { return []string{"CRYPTO"} }
 
 func (m *Module) Start(ctx context.Context, d kernel.Dispatcher) error {
 	m.dispatcher = d
+	m.handlers = m.buildHandlers()
 	return nil
 }
 
 func (m *Module) Stop() error { return nil }
 
-func (m *Module) Handle(e kernel.Event) error {
-	switch e.Type {
-	case kernel.EvCryptoEncrypt:
-		return m.handleEncrypt(e)
-	case kernel.EvCryptoDecrypt:
-		return m.handleDecrypt(e)
-	case kernel.EvCryptoDerive:
-		return m.handleDerive(e)
-	default:
-		return fmt.Errorf("crypto module: unhandled event %s", e.Type)
+// buildHandlers returns the static handler registry for all CRYPTO.* events.
+// Adding a new event handler requires only a new entry here — no switch editing.
+func (m *Module) buildHandlers() map[kernel.EventType]eventHandlerFn {
+	return map[kernel.EventType]eventHandlerFn{
+		kernel.EvCryptoEncrypt: m.handleEncrypt,
+		kernel.EvCryptoDecrypt: m.handleDecrypt,
+		kernel.EvCryptoDerive:  m.handleDerive,
 	}
 }
+
+// Handle dispatches the event to the registered handler, or logs a structured
+// debug message for unknown events instead of returning an error.
+// This prevents noisy error logs when cross-channel events pass through.
+func (m *Module) Handle(e kernel.Event) error {
+	if h, ok := m.handlers[e.Type]; ok {
+		return h(e)
+	}
+	log.Printf("[bus][DEBUG] module=%s no_handler event=%s origin=%s", moduleID, e.Type, e.Origin)
+	return nil
+}
+
+// Ensure fmt is used (replyError still needs it).
+var _ = fmt.Errorf
 
 func (m *Module) handleEncrypt(e kernel.Event) error {
 	var p encryptPayload

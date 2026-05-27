@@ -304,6 +304,12 @@ func (t *Translator) HandleWS(msgType byte, payload []byte, conn *gorillaws.Conn
 	case ipc.MsgAuthTokenSubmit:
 		return t.wsAuthTokenSubmit(conn, payload)
 
+	case ipc.MsgEntryQuery:
+		return t.wsEntryQuery(conn, payload)
+
+	case ipc.MsgSSHKeyGen:
+		return t.wsSSHKeyGen(conn, payload)
+
 	case ipc.MsgSystemHeartbeat:
 		// Client acknowledged heartbeat — no action needed.
 		return nil
@@ -990,6 +996,58 @@ func (t *Translator) wsDeleteWorkspace(conn *gorillaws.Conn, payload []byte) err
 	}
 
 	return ws.WriteMessage(conn, ipc.MsgAck, nil)
+}
+
+// wsEntryQuery dispatches an ENTRY.QUERY event and streams the filtered entry
+// list back to the client as MsgEntryQueryResult.
+// Payload: JSON {"category": "PASSWORD"|"SSH_KEY"|"CERTIFICATE"|"FILE_VAULT"|""}
+func (t *Translator) wsEntryQuery(conn *gorillaws.Conn, payload []byte) error {
+	var req struct {
+		Category string `json:"category"`
+	}
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte("invalid entry query payload"))
+		}
+	}
+
+	evPayload, _ := json.Marshal(map[string]string{"category": req.Category})
+	ev := kernel.NewEvent("api", kernel.EvEntryQuery, evPayload)
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	result, err := t.bus.Request(ctx, ev)
+	if err != nil {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("entry query timeout"))
+	}
+
+	log.Printf("[translator:ENTRY_QUERY] category=%q", req.Category)
+	return ws.WriteMessage(conn, ipc.MsgEntryQueryResult, result.Payload)
+}
+
+// wsSSHKeyGen dispatches a TOOL.SSH_GEN event and returns the generated public
+// key + entry ID to the client as MsgSSHKeyResult.
+// Payload: JSON {"comment": "user@host", "save_to_vault": true}
+func (t *Translator) wsSSHKeyGen(conn *gorillaws.Conn, payload []byte) error {
+	ev := kernel.NewEvent("api", kernel.EvToolSSHGen, payload)
+	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+	defer cancel()
+
+	result, err := t.bus.Request(ctx, ev)
+	if err != nil {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("SSH key generation timeout"))
+	}
+
+	var res struct {
+		Error string `json:"error,omitempty"`
+	}
+	_ = json.Unmarshal(result.Payload, &res)
+	if res.Error != "" {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte(res.Error))
+	}
+
+	log.Printf("[translator:SSH_GEN] key generated and saved to vault")
+	return ws.WriteMessage(conn, ipc.MsgSSHKeyResult, result.Payload)
 }
 
 // wsAuthTokenSubmit validates the token delivered by the UI and, if valid,

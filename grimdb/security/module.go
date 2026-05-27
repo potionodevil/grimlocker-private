@@ -16,6 +16,9 @@ import (
 
 const moduleID = "security"
 
+// secHandlerFn is the internal handler function type for the security module registry.
+type secHandlerFn func(kernel.Event) error
+
 // Module implements kernel.Module for the SECURITY and AUTH channels.
 // It owns the LockdownManager, AuditLog, MemoryGuard, and the in-memory
 // MVK handle table. No other module holds actual key material.
@@ -31,6 +34,7 @@ type Module struct {
 	entropyPath string
 	dispatcher  kernel.Dispatcher
 	session     *SessionContext
+	handlers    map[kernel.EventType]secHandlerFn
 
 	// exitFunc is called at the end of a hard lockdown. Defaults to os.Exit.
 	// Override in tests to prevent the process from terminating.
@@ -72,6 +76,7 @@ func (m *Module) Start(ctx context.Context, d kernel.Dispatcher) error {
 	if m.session != nil {
 		m.session.SetDispatcher(d)
 	}
+	m.handlers = m.buildHandlers()
 	m.audit.Append(SecurityEvent{Level: LevelInfo, Module: moduleID, Message: "security module started"})
 	return nil
 }
@@ -87,66 +92,58 @@ func (m *Module) Stop() error {
 	return nil
 }
 
-func (m *Module) Handle(e kernel.Event) error {
-	switch e.Type {
-	case kernel.EvSecAudit:
-		var ev SecurityEvent
-		if err := json.Unmarshal(e.Payload, &ev); err != nil {
-			// Fallback: treat plain-string payloads as simple info messages.
-			m.audit.Append(SecurityEvent{Level: LevelInfo, Module: moduleID, Message: string(e.Payload)})
-			return nil
-		}
-		m.audit.Append(ev)
-		return nil
+// buildHandlers returns the static handler registry for all SECURITY.* and AUTH.* events.
+// No-op cases are registered explicitly so cross-channel events never produce
+// spurious error logs — they silently return nil.
+func (m *Module) buildHandlers() map[kernel.EventType]secHandlerFn {
+	noop := func(kernel.Event) error { return nil }
+	return map[kernel.EventType]secHandlerFn{
+		// SECURITY channel
+		kernel.EvSecAudit: m.handleSecAudit,
+		kernel.EvSecPanic: func(e kernel.Event) error {
+			m.audit.Append(SecurityEvent{Level: LevelCritical, Module: moduleID, Message: "PANIC event received — triggering hard lockdown"})
+			return m.lockdown.TriggerHard()
+		},
+		kernel.EvSecLockdown: func(e kernel.Event) error { return m.lockdown.TriggerHard() },
+		kernel.EvSecMemLock:  noop,
+		kernel.EvSecZeroize:  noop,
 
-	case kernel.EvSecPanic:
-		m.audit.Append(SecurityEvent{Level: LevelCritical, Module: moduleID, Message: "PANIC event received — triggering hard lockdown"})
-		return m.lockdown.TriggerHard()
+		// AUTH channel — active handlers
+		kernel.EvAuthStatus:    m.handleAuthStatus,
+		kernel.EvAuthSetup:     m.handleAuthSetup,
+		kernel.EvAuthGetHandle: m.handleAuthGetHandle,
+		kernel.EvAuthLockdown:  func(e kernel.Event) error { return m.lockdown.TriggerHard() },
 
-	case kernel.EvSecLockdown:
-		return m.lockdown.TriggerHard()
-
-	case kernel.EvAuthStatus:
-		return m.handleAuthStatus(e)
-
-	case kernel.EvAuthSetup:
-		return m.handleAuthSetup(e)
-
-	case kernel.EvAuthResult:
-		// Consumed by other modules (e.g., entry handler, translator).
-		// No-op here to prevent "unhandled event" error.
-		return nil
-
-	case kernel.EvAuthInitReady:
-		// Watchdog startup check — no-op.
-		return nil
-
-	case kernel.EvAuthUnlock:
-		// Handled by makeAuthUnlockHandler subscription in daemon/main.go — no-op here.
-		return nil
-
-	case kernel.EvAuthReady:
-		// Emitted by SessionContext.Unlock — no-op here.
-		return nil
-
-	case kernel.EvAuthLogout:
-		// Emitted by SessionContext.Lock — no-op here.
-		return nil
-
-	case kernel.EvAuthKeyReady:
-		// Emitted after successful unlock+index load — no-op here.
-		return nil
-
-	case kernel.EvAuthLockdown:
-		// Forward to lockdown manager — can reach hard/soft state.
-		return m.lockdown.TriggerHard()
-
-	case kernel.EvAuthGetHandle:
-		return m.handleAuthGetHandle(e)
-
-	default:
-		return fmt.Errorf("security module: unhandled event %s", e.Type)
+		// AUTH channel — no-ops (consumed by other modules or bus subscriptions)
+		kernel.EvAuthResult:    noop, // consumed by entry handler, translator
+		kernel.EvAuthInitReady: noop, // watchdog startup check
+		kernel.EvAuthUnlock:    noop, // handled by daemon/main.go bus.Subscribe
+		kernel.EvAuthReady:     noop, // emitted by SessionContext.Unlock
+		kernel.EvAuthLogout:    noop, // emitted by SessionContext.Lock
+		kernel.EvAuthKeyReady:  noop, // emitted after unlock+index load
 	}
+}
+
+// handleSecAudit appends a SecurityEvent to the audit log.
+func (m *Module) handleSecAudit(e kernel.Event) error {
+	var ev SecurityEvent
+	if err := json.Unmarshal(e.Payload, &ev); err != nil {
+		// Fallback: treat plain-string payloads as simple info messages.
+		m.audit.Append(SecurityEvent{Level: LevelInfo, Module: moduleID, Message: string(e.Payload)})
+		return nil
+	}
+	m.audit.Append(ev)
+	return nil
+}
+
+// Handle dispatches the event to the registered handler, or logs a structured
+// debug message for unknown events instead of returning an error.
+func (m *Module) Handle(e kernel.Event) error {
+	if h, ok := m.handlers[e.Type]; ok {
+		return h(e)
+	}
+	log.Printf("[bus][DEBUG] module=%s no_handler event=%s origin=%s", moduleID, e.Type, e.Origin)
+	return nil
 }
 
 // StoreMVK stores key material in locked memory and returns an opaque handle.
