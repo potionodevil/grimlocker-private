@@ -15,7 +15,7 @@
       "targets": "all",
       "identifier": "com.grimlocker.desktop",
       "externalBin": [
-        "binaries/grimlocker-go"
+        "binaries/grimdb-daemon"
       ]
     },
     "allowlist": {

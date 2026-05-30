@@ -1,0 +1,8 @@
+# TLS certificates are generated locally with: ./scripts/gen-certs.sh
+# These files are NOT committed to the repository.
+# Required files:
+#   ca.crt      — Root CA certificate
+#   server.crt  — Daemon server certificate
+#   server.key  — Daemon server private key
+#   client.crt  — CLI client certificate
+#   client.key  — CLI client private key

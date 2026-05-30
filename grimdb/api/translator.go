@@ -24,6 +24,7 @@ import (
 	rustbridge "github.com/grimlocker/grimdb/cgo"
 	"github.com/grimlocker/grimdb/crypto"
 	"github.com/grimlocker/grimdb/kernel"
+	"github.com/grimlocker/grimdb/security"
 	"github.com/grimlocker/grimdb/storage"
 	"github.com/grimlocker/grimdb/storage/grimdb"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -60,6 +61,10 @@ type Translator struct {
 	// When the Rust enclave is available, SKE encrypt/decrypt goes through the enclave
 	// using this handle instead of keeping the raw key in Go's heap.
 	sessionKeyHandle string
+
+	// sessionCtx is used by HandshakeStatus to push the current vault unlock
+	// state to reconnecting clients (so the UI can re-attach without re-auth).
+	sessionCtx *security.SessionContext
 }
 
 // NewTranslator creates a Translator.
@@ -73,14 +78,30 @@ func NewTranslator(bus kernel.Dispatcher, db *grimdb.GrimDB, appDir string, cryp
 	}
 }
 
-// HandshakeStatus emits the kernel state report on initial WebSocket connection.
-// Reports whether the vault is initialized so the UI can decide the next action.
+// SetSessionContext injects the session context so HandshakeStatus can push
+// the vault unlock state to reconnecting clients.
+func (t *Translator) SetSessionContext(s *security.SessionContext) {
+	t.sessionCtx = s
+}
+
+// SessionKeyHandle returns the Rust enclave handle for the current session key.
+// Used by main.go during graceful shutdown to destroy the handle in the enclave.
+func (t *Translator) SessionKeyHandle() string {
+	return t.sessionKeyHandle
+}
+
+// HandshakeStatus emits the kernel state on initial WebSocket connection.
+// Includes vault initialization AND unlock state so reconnecting clients
+// can re-attach to an already-unlocked vault without asking the user to
+// re-enter their password.
 func (t *Translator) HandshakeStatus(conn *gorillaws.Conn) error {
 	initialized, _, _ := grimdb.CheckVaultStatus(t.appDir)
+	unlocked := t.sessionCtx != nil && t.sessionCtx.IsUnlocked()
 
 	payload, _ := json.Marshal(map[string]interface{}{
 		"status":      "Online",
 		"initialized": initialized,
+		"unlocked":    unlocked,
 	})
 	return ws.WriteMessage(conn, ipc.MsgAck, payload)
 }
@@ -560,6 +581,7 @@ func (t *Translator) wsListEntries(conn *gorillaws.Conn) error {
 	type entrySummary struct {
 		ID        string `json:"id"`
 		Type      string `json:"type"`
+		Category  string `json:"category,omitempty"`
 		Title     string `json:"title,omitempty"`
 		CreatedAt int64  `json:"created_at"`
 		UpdatedAt int64  `json:"updated_at"`
@@ -570,10 +592,11 @@ func (t *Translator) wsListEntries(conn *gorillaws.Conn) error {
 	for _, meta := range stored.Metas {
 		sum := entrySummary{
 			ID:        meta.ID,
+			Category:  string(meta.Category), // always available from the block index
 			CreatedAt: meta.CreatedAt,
 			UpdatedAt: meta.UpdatedAt,
 		}
-		if mk != nil && meta.ID != "" {
+		if meta.ID != "" {
 			reqPayload, _ := json.Marshal(map[string]string{"id": meta.ID})
 			readEv := kernel.NewEvent("api", kernel.EvStorageRead, reqPayload)
 			readCtx, cancelRead := context.WithTimeout(context.Background(), requestTimeout)
@@ -584,21 +607,41 @@ func (t *Translator) wsListEntries(conn *gorillaws.Conn) error {
 					Block *storage.Block `json:"block,omitempty"`
 				}
 				json.Unmarshal(readResult.Payload, &rd)
-				if rd.Block != nil && len(rd.Block.Data) >= 12 {
-					pt, decErr := t.crypto.Decrypt(mk, rd.Block.Data[:12], rd.Block.Data[12:], nil)
-					if decErr == nil {
-						var entry struct {
-							Type string          `json:"type"`
-							Data json.RawMessage `json:"data"`
+				if rd.Block != nil {
+					data := rd.Block.Data
+					decoded := false
+
+					// ── Path 1: legacy encrypted format (nonce[12] + MVK ciphertext) ──
+					if mk != nil && len(data) >= 12 {
+						pt, decErr := t.crypto.Decrypt(mk, data[:12], data[12:], nil)
+						if decErr == nil {
+							var entry struct {
+								Type string          `json:"type"`
+								Data json.RawMessage `json:"data"`
+							}
+							if json.Unmarshal(pt, &entry) == nil {
+								sum.Type = entry.Type
+								var entryData struct {
+									Title string `json:"title"`
+								}
+								if json.Unmarshal(entry.Data, &entryData) == nil {
+									sum.Title = entryData.Title
+								}
+								decoded = true
+							}
 						}
-						if json.Unmarshal(pt, &entry) == nil {
-							sum.Type = entry.Type
-							var entryData struct {
-								Title string `json:"title"`
+					}
+
+					// ── Path 2: plain VaultEntry JSON (new-path: SSH gen, entry module) ──
+					if !decoded {
+						var ve storage.VaultEntry
+						if json.Unmarshal(data, &ve) == nil && ve.ID != "" {
+							sum.Type = ve.Type
+							if sum.Type == "" {
+								sum.Type = string(ve.Category)
 							}
-							if json.Unmarshal(entry.Data, &entryData) == nil {
-								sum.Title = entryData.Title
-							}
+							sum.Category = string(ve.Category)
+							sum.Title = ve.Title
 						}
 					}
 				}
@@ -655,33 +698,62 @@ func (t *Translator) wsGetEntry(conn *gorillaws.Conn, payload []byte) error {
 		return ws.WriteMessage(conn, ipc.MsgError, []byte("corrupt entry: blob too short"))
 	}
 
-	pt, err := t.crypto.Decrypt(mk, blob[:12], blob[12:], nil)
-	if err != nil {
-		log.Printf("[translator:GET] decrypt FAIL entryID=%s: %v", string(payload), err)
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("decryption failed"))
+	var metadata map[string]interface{}
+
+	// ── Path 1: legacy encrypted format (nonce[12] + MVK ciphertext) ──
+	if len(blob) >= 12 {
+		pt, decErr := t.crypto.Decrypt(mk, blob[:12], blob[12:], nil)
+		if decErr == nil {
+			var fullEntry struct {
+				ID   string          `json:"id"`
+				Type string          `json:"type"`
+				Data json.RawMessage `json:"data"`
+			}
+			if json.Unmarshal(pt, &fullEntry) == nil {
+				metadata = map[string]interface{}{
+					"id":         stored.Block.ID,
+					"type":       fullEntry.Type,
+					"created_at": stored.Block.CreatedAt,
+					"updated_at": stored.Block.UpdatedAt,
+				}
+				var entryData struct {
+					Title string `json:"title"`
+				}
+				if json.Unmarshal(fullEntry.Data, &entryData) == nil {
+					metadata["title"] = entryData.Title
+				}
+			}
+		}
 	}
 
-	var fullEntry struct {
-		ID   string          `json:"id"`
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
-	}
-	if json.Unmarshal(pt, &fullEntry) != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("invalid entry format"))
-	}
-
-	metadata := map[string]interface{}{
-		"id":         stored.Block.ID,
-		"type":       fullEntry.Type,
-		"created_at": stored.Block.CreatedAt,
-		"updated_at": stored.Block.UpdatedAt,
-	}
-
-	var entryData struct {
-		Title string `json:"title"`
-	}
-	if json.Unmarshal(fullEntry.Data, &entryData) == nil {
-		metadata["title"] = entryData.Title
+	// ── Path 2: plain VaultEntry JSON (SSH gen, entry module) ──
+	if metadata == nil {
+		// storedEntry embeds VaultEntry + optional PrivateKeyPEM for SSH keys.
+		var se struct {
+			storage.VaultEntry
+			PrivateKeyPEM string `json:"privateKeyPEM"`
+		}
+		if jsonErr := json.Unmarshal(blob, &se); jsonErr != nil || se.ID == "" {
+			log.Printf("[translator:GET] decode FAIL entryID=%s", string(payload))
+			return ws.WriteMessage(conn, ipc.MsgError, []byte("decryption failed"))
+		}
+		metadata = map[string]interface{}{
+			"id":         se.ID,
+			"type":       se.Type,
+			"category":   string(se.Category),
+			"title":      se.Title,
+			"created_at": stored.Block.CreatedAt,
+			"updated_at": stored.Block.UpdatedAt,
+		}
+		// Expose non-sensitive fields directly in metadata so the frontend can
+		// display them without requiring an explicit "Reveal" (decrypt) action.
+		// Public key and fingerprint are not sensitive — they are meant to be shared.
+		if pk, ok := se.Fields["publicKey"]; ok && pk != "" {
+			metadata["publicKey"] = pk
+		}
+		if fp, ok := se.Fields["fingerprint"]; ok && fp != "" {
+			metadata["fingerprint"] = fp
+		}
 	}
 
 	metaJSON, _ := json.Marshal(metadata)
@@ -743,26 +815,63 @@ func (t *Translator) wsDecryptEntry(conn *gorillaws.Conn, payload []byte) error 
 		return ws.WriteMessage(conn, ipc.MsgError, []byte("corrupt entry: blob too short"))
 	}
 
-	pt, err := t.crypto.Decrypt(mk, blob[:12], blob[12:], nil)
-	if err != nil {
+	var decryptedResult map[string]interface{}
+
+	// ── Path 1: legacy encrypted format (nonce[12] + MVK ciphertext) ──
+	if len(blob) >= 12 {
+		pt, decErr := t.crypto.Decrypt(mk, blob[:12], blob[12:], nil)
+		if decErr == nil {
+			var fullEntry struct {
+				ID   string          `json:"id"`
+				Type string          `json:"type"`
+				Data json.RawMessage `json:"data"`
+			}
+			if json.Unmarshal(pt, &fullEntry) == nil {
+				decryptedResult = map[string]interface{}{
+					"id":         stored.Block.ID,
+					"type":       fullEntry.Type,
+					"data":       fullEntry.Data,
+					"created_at": stored.Block.CreatedAt,
+					"updated_at": stored.Block.UpdatedAt,
+				}
+			}
+		}
+	}
+
+	// ── Path 2: plain VaultEntry JSON (SSH gen, entry module) ──
+	// storedEntry embeds VaultEntry + optional PrivateKeyPEM for SSH keys.
+	if decryptedResult == nil {
+		var se struct {
+			storage.VaultEntry
+			PrivateKeyPEM string `json:"private_key_pem"`
+		}
+		if jsonErr := json.Unmarshal(blob, &se); jsonErr != nil || se.ID == "" {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte("decryption failed"))
+		}
+		// Merge fields + PrivateKeyPEM into a single data map.
+		// Field keys must be camelCase to match what the frontend (DetailPanel) reads.
+		entryData := make(map[string]interface{})
+		for k, v := range se.Fields {
+			entryData[k] = v
+		}
+		if se.PrivateKeyPEM != "" {
+			entryData["privateKey"] = se.PrivateKeyPEM
+		}
+		entryData["title"] = se.Title
+		dataJSON, _ := json.Marshal(entryData)
+		decryptedResult = map[string]interface{}{
+			"id":         se.ID,
+			"type":       se.Type,
+			"category":   string(se.Category),
+			"data":       json.RawMessage(dataJSON),
+			"created_at": se.CreatedAt,
+			"updated_at": se.UpdatedAt,
+		}
+		log.Printf("[translator:DECRYPT] VaultEntry path entryID=%s category=%s", se.ID, se.Category)
+	}
+
+	if decryptedResult == nil {
 		return ws.WriteMessage(conn, ipc.MsgError, []byte("decryption failed"))
-	}
-
-	var fullEntry struct {
-		ID   string          `json:"id"`
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
-	}
-	if json.Unmarshal(pt, &fullEntry) != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("invalid entry format"))
-	}
-
-	decryptedResult := map[string]interface{}{
-		"id":         stored.Block.ID,
-		"type":       fullEntry.Type,
-		"data":       fullEntry.Data,
-		"created_at": stored.Block.CreatedAt,
-		"updated_at": stored.Block.UpdatedAt,
 	}
 
 	resultJSON, _ := json.Marshal(decryptedResult)

@@ -34,7 +34,8 @@ import (
 	gorillaws "github.com/gorilla/websocket"
 )
 
-const daemonVersion = "omega-2026-05-24-v3"
+// daemonVersion is set at build time via: -ldflags "-X main.daemonVersion=..."
+var daemonVersion = "omega-2026-05-24-v3"
 
 func main() {
 	log.Printf("[Omega] ===== DAEMON START v%s =====", daemonVersion)
@@ -87,7 +88,7 @@ func main() {
 	// Convenience aliases for components that still need direct access.
 	secMod := vault.SecurityModule()
 	cryptoProv := vault.CryptoProvider()
-	blockStore := vault.RawStorage().BlockStore()
+	blockStore := vault.BlockStore() // storage.BlockStore — works for both single-user and enterprise tiers
 
 	// ── 5b. Entry handler (CRUD operations) ───────────────────────────────────
 	entryStoreHandler := storage.NewEntryHandler(blockStore)
@@ -131,12 +132,13 @@ func main() {
 		return nil
 	})
 
-	// ── 7b. Subscribe to AUTH.LOGOUT to close STORAGE gate (explicit lock only) ──
+	// ── 7b. Subscribe to AUTH.LOGOUT to close STORAGE gate and lock session ──
 	bus.Subscribe(kernel.EvAuthLogout, func(e kernel.Event) error {
-		log.Printf("[Omega] AUTH.LOGOUT received — closing STORAGE gate")
+		log.Printf("[Omega] AUTH.LOGOUT received — closing STORAGE gate, locking session")
 		if gatable, ok := bus.(interface{ CloseGate() }); ok {
 			gatable.CloseGate()
 		}
+		sessionCtx.Lock()
 		return nil
 	})
 
@@ -177,6 +179,7 @@ func main() {
 	// ── 9. API translator ────────────────────────────────────────────────────
 	translator := api.NewTranslator(reg.Bus(), db, appDir, cryptoProv, workspaceMgr)
 	translatorPtr = translator
+	translator.SetSessionContext(sessionCtx)
 	translator.SetMVKResolver(func() []byte {
 		handle := sessionCtx.ActiveHandle()
 		if handle == "" {
@@ -249,16 +252,20 @@ func main() {
 	}
 
 	// ── 11. HTTP listeners ───────────────────────────────────────────────────
-	ipcListener, err := net.Listen("tcp", "127.0.0.1:0")
+	// startTierListener is implemented per-tier in listener_single.go / listener_enterprise.go:
+	//   Single-User:  local TCP on 127.0.0.1:0 (plain HTTP, Tauri only)
+	//   Enterprise:   mTLS TCP on 0.0.0.0:9443 (TLS 1.3, mutual auth)
+	ipcMux := http.NewServeMux()
+	ipcListener, ipcAddr, err := startTierListener(vault, ipcMux)
 	if err != nil {
 		log.Fatalf("[Omega] Bind IPC listener: %v", err)
 	}
+
 	uiListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		log.Fatalf("[Omega] Bind UI listener: %v", err)
 	}
 
-	ipcAddr := ipcListener.Addr().String()
 	uiAddr := uiListener.Addr().String()
 	ipcPort := extractPort(ipcAddr)
 	uiPort := extractPort(uiAddr)
@@ -267,18 +274,69 @@ func main() {
 	fmt.Printf("GRIMLOCKER_COOKIE=%s\n", cookieB64)
 	fmt.Printf("GRIMLOCKER_TOKEN=%s\n", token)
 	fmt.Printf("GRIMLOCKER_UI=http://127.0.0.1:%d\n", uiPort)
-	fmt.Printf("GRIMLOCKER_IPC=ws://%s/ws\n", ipcAddr)
+	fmt.Printf("GRIMLOCKER_IPC=%s\n", tierListenerAddr(ipcAddr))
 
-	ipcMux := http.NewServeMux()
+	// shutdownCh receives from both OS signals and the /shutdown HTTP endpoint.
+	shutdownCh := make(chan struct{}, 1)
+
+	// ipcMux was pre-created and passed to startTierListener; add routes now.
 	ipcMux.HandleFunc("/ws", bridge.HandleWebSocket)
 	ipcMux.Handle("/api/v1", api.NewHandler(reg.Bus()))
+
+	// /shutdown — graceful shutdown endpoint for Tauri (and ops tooling).
+	// Tauri calls POST /shutdown instead of SIGKILL so the daemon can clean up.
+	ipcMux.HandleFunc("/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "shutting_down"})
+		go func() {
+			time.Sleep(100 * time.Millisecond) // let response flush before shutdown
+			select {
+			case shutdownCh <- struct{}{}:
+			default:
+			}
+		}()
+	})
+
+	// /init — one-shot vault initialization for CLI and headless deployments.
+	// Only works before the vault has been initialized. POST {"password":"..."}
+	ipcMux.HandleFunc("/init", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "POST required"})
+			return
+		}
+		var req struct {
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "password required"})
+			return
+		}
+		phrase, err := grimdb.InitializeVault(req.Password, appDir)
+		if err != nil {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"recovery_phrase": phrase})
+	})
+
 	ipcMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":   "ready",
+			"tier":     vault.Tier(),
+			"version":  daemonVersion,
 			"ipc_port": ipcPort,
 			"ui_port":  uiPort,
 			"pid":      os.Getpid(),
+			"vault_unlocked": sessionCtx.IsUnlocked(),
 		})
 	})
 
@@ -303,26 +361,53 @@ func main() {
 		}
 	}()
 
-	fmt.Printf("[GRIMLOCKER] ===== DAEMON READY ===== IPC=ws://%s/ws UI=http://%s\n", ipcAddr, uiAddr)
+	fmt.Printf("[GRIMLOCKER] ===== DAEMON READY ===== IPC=%s UI=http://%s\n", tierListenerAddr(ipcAddr), uiAddr)
 	log.Printf("[Omega] Daemon running. Press Ctrl+C to stop.")
 
 	// ── 12. Graceful shutdown ─────────────────────────────────────────────────
+	// shutdownCh is triggered by OS signals OR the /shutdown HTTP endpoint.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	go func() {
+		<-sigCh
+		select {
+		case shutdownCh <- struct{}{}:
+		default:
+		}
+	}()
 
-	log.Printf("[Omega] Shutting down...")
+	<-shutdownCh // block until shutdown requested
+	log.Printf("[Omega] Graceful shutdown initiated...")
+
+	// Step 1: Stop accepting new connections.
 	_ = ipcHTTP.Close()
 	_ = uiHTTP.Close()
 	if ipcServer != nil && runtime.GOOS != "windows" {
 		_ = ipcServer.Stop()
 	}
+
+	// Step 2: Flush in-flight storage writes.
+	if err := blockStore.Flush(); err != nil {
+		log.Printf("[Omega] blockStore.Flush: %v", err)
+	}
 	if err := blockStore.Close(); err != nil {
 		log.Printf("[Omega] blockStore.Close: %v", err)
 	}
+
+	// Step 3: Lock session — revokes MVK handle from security module.
+	sessionCtx.Lock()
+
+	// Step 4: Destroy Rust enclave session key handle if one was created.
+	if skh := translator.SessionKeyHandle(); skh != "" {
+		rustbridge.SessionDestroy(skh)
+		log.Printf("[Omega] Rust enclave session handle revoked")
+	}
+
+	// Step 5: Stop all kernel modules (5-second timeout).
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = reg.Bus().Shutdown(shutdownCtx)
+
 	log.Printf("[Omega] Shutdown complete.")
 }
 

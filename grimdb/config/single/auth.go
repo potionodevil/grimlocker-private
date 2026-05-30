@@ -188,6 +188,9 @@ func (a *LocalAuth) Lockdown() security.LockdownManager { return a.secMod.Lockdo
 // AuditLog returns the AuditLog from the security module.
 func (a *LocalAuth) AuditLog() security.AuditLog { return a.secMod.Audit() }
 
+// Tier identifies the authentication mechanism used by this provider.
+func (a *LocalAuth) Tier() string { return "local-argon2id" }
+
 // replyAuthFail emits an AUTH.RESULT failure event.
 func replyAuthFail(bus kernel.Dispatcher, req kernel.Event, reason string) error {
 	log.Printf("[auth:FAIL] replyAuthFail reason=%q (req.ID=%s)", reason, req.ID)

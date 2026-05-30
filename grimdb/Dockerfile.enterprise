@@ -1,0 +1,72 @@
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM golang:1.25-bookworm AS builder
+
+WORKDIR /build
+
+# Cache Go module downloads separately from source code.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+# CGO_ENABLED=0: fully static binary, no libc dependency.
+# The Rust enclave falls back to pure-Go cryptography (non-fatal, logged at startup).
+ARG BUILD_DATE
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -tags enterprise \
+    -ldflags="-s -w -X 'main.daemonVersion=enterprise-${BUILD_DATE:-latest}'" \
+    -o /build/grimlocker-daemon \
+    ./cmd/daemon
+
+# Minimal health-check binary (called by Docker HEALTHCHECK).
+# No shell available in distroless, so we need a static Go binary.
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" \
+    -o /build/grimlocker-healthcheck \
+    ./cmd/healthcheck
+
+# Create the runtime directory structure here (no shell in distroless).
+RUN mkdir -p /build/runtime/var/lib/grimlocker \
+             /build/runtime/etc/grimlocker/tls
+
+# ── Stage 2: Runtime (distroless/static) ─────────────────────────────────────
+# gcr.io/distroless/static-debian12:nonroot:
+#   - Includes CA certificates (for OIDC JWKS HTTPS + S3 TLS)
+#   - No shell, no package manager, no /bin/sh
+#   - Runs as uid=65532 (nonroot) by default
+#   - Image size: ~2 MB base + our ~13 MB binary = ~15 MB total
+FROM gcr.io/distroless/static-debian12:nonroot
+
+# Copy the daemon binary.
+COPY --from=builder /build/grimlocker-daemon       /usr/local/bin/grimlocker-daemon
+
+# Copy the health-check binary.
+COPY --from=builder /build/grimlocker-healthcheck  /usr/local/bin/grimlocker-healthcheck
+
+# Copy pre-created directory structure.
+COPY --from=builder --chown=nonroot:nonroot /build/runtime /
+
+# mTLS client port (mutual TLS required).
+EXPOSE 9443
+
+# Plaintext probe port (liveness/readiness, Docker HEALTHCHECK).
+EXPOSE 9090
+
+# Docker HEALTHCHECK using our static binary — no curl, no shell.
+HEALTHCHECK \
+    --interval=10s \
+    --timeout=3s \
+    --start-period=15s \
+    --retries=3 \
+    CMD ["/usr/local/bin/grimlocker-healthcheck"]
+
+# Environment defaults — override via docker run -e or docker-compose.
+ENV GRIMLOCKER_TIER=enterprise \
+    GRIMLOCKER_APP_DIR=/var/lib/grimlocker \
+    GRIMLOCKER_MTLS_CERT_PATH=/etc/grimlocker/tls/server.crt \
+    GRIMLOCKER_MTLS_KEY_PATH=/etc/grimlocker/tls/server.key \
+    GRIMLOCKER_MTLS_CA_PATH=/etc/grimlocker/tls/ca.crt \
+    HEALTHCHECK_PORT=9090
+
+# Runs as uid=65532 (nonroot) — set in the base image.
+CMD ["/usr/local/bin/grimlocker-daemon"]

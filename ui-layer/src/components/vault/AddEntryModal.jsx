@@ -4,6 +4,11 @@ import { tauriBridge } from '../../services/tauriBridge'
 import { useGrimStore } from '../../store/useGrimStore'
 import { FileVaultUpload } from './FileVaultUpload'
 
+// Passphrase mode for SSH key generation
+// 'none'   — no passphrase (key fully functional without one)
+// 'auto'   — daemon generates a 32-char crypto-random passphrase (shown once)
+// 'custom' — user types their own passphrase
+
 const ENTRY_TYPES = [
   {
     id: 'password',
@@ -32,11 +37,14 @@ const ENTRY_TYPES = [
 ]
 
 export function AddEntryModal({ open, onClose }) {
-  const [type, setType]             = useState('password')
-  const [saving, setSaving]         = useState(false)
-  const [generating, setGenerating] = useState(false) // SSH key generation
-  const [form, setForm]             = useState({})
-  const fetchEntries                = useGrimStore((s) => s.fetchEntries)
+  const [type, setType]                   = useState('password')
+  const [saving, setSaving]               = useState(false)
+  const [generating, setGenerating]       = useState(false)
+  const [form, setForm]                   = useState({})
+  const [sshMode, setSshMode]             = useState('generate') // 'generate' | 'manual'
+  const [passphraseMode, setPassphrase]   = useState('none')    // 'none' | 'auto' | 'custom'
+  const [customPassphrase, setCustomPass] = useState('')
+  const fetchEntries                      = useGrimStore((s) => s.fetchEntries)
 
   if (!open) return null
 
@@ -79,30 +87,40 @@ export function AddEntryModal({ open, onClose }) {
 
   /**
    * Generate an Ed25519 SSH key pair via the TOOL.SSH_GEN kernel event.
-   * On success, auto-fills publicKey + privateKey fields. The key pair is
-   * also automatically saved to the vault by the daemon (save_to_vault: true).
+   * The comment is built from the sshKeyName field as "name@grimlocker.sec".
+   * The key pair is automatically saved to the vault by the daemon.
    */
   const handleGenerateSSHKey = async () => {
-    const comment = form.title?.trim() || form.username?.trim() || 'grimlocker-generated'
+    const rawName = form.sshKeyName?.trim() || 'key'
+    const comment = `${rawName}@grimlocker.sec`
+    const useAutoPassphrase = passphraseMode === 'auto'
+    const passphrase = passphraseMode === 'custom' ? customPassphrase : ''
+
+    if (passphraseMode === 'custom' && !customPassphrase.trim()) {
+      alert('Enter a passphrase or switch to Auto-generate or None.')
+      return
+    }
+
     setGenerating(true)
     try {
-      const result = await tauriBridge.generateSSHKey(comment, true)
-      // The private key is stored in the vault by the daemon; we surface the
-      // public key in the textarea so the user can copy it immediately.
-      setForm((prev) => ({
-        ...prev,
-        publicKey:  result.public_key  || '',
-        privateKey: `(stored securely in vault — entry ID: ${result.entry_id || 'unknown'})`,
-        // Hint the user about the fingerprint
-        notes: `Fingerprint: ${result.fingerprint || ''}`,
-      }))
+      const result = await tauriBridge.generateSSHKey(comment, true, passphrase, useAutoPassphrase)
       if (result.entry_id) {
-        // Key is already saved — refresh entries and close modal.
         await fetchEntries()
-        alert(`SSH key pair generated!\n\nPublic key:\n${result.public_key}\n\nFingerprint: ${result.fingerprint}`)
+
+        let successMsg = `SSH key pair generated!\n\nName: ${comment}\n\nPublic key:\n${result.public_key}\nFingerprint: ${result.fingerprint}`
+        if (result.passphrase) {
+          successMsg += `\n\nPassphrase (shown once — save it now):\n${result.passphrase}`
+        } else if (passphraseMode === 'none') {
+          successMsg += '\n\nNo passphrase — key is fully functional without one.'
+        }
+
+        alert(successMsg)
         onClose()
         setForm({})
         setType('password')
+        setSshMode('generate')
+        setPassphrase('none')
+        setCustomPass('')
       }
     } catch (err) {
       console.error('[AddEntry] SSH key generation failed:', err)
@@ -164,7 +182,7 @@ export function AddEntryModal({ open, onClose }) {
                   {ENTRY_TYPES.map((t) => (
                     <button
                       key={t.id}
-                      onClick={() => { setType(t.id); setForm({}) }}
+                      onClick={() => { setType(t.id); setForm({}); setSshMode('generate'); setPassphrase('none'); setCustomPass('') }}
                       className={[
                         'px-3 h-7 rounded-md text-sm transition-fast',
                         type === t.id
@@ -172,7 +190,7 @@ export function AddEntryModal({ open, onClose }) {
                           : 'text-text-secondary hover:text-text-primary hover:bg-surface-subtle',
                       ].join(' ')}
                     >
-                      {t.id === 'file_vault' ? '📁 ' : ''}{t.label}
+                      {t.label}
                     </button>
                   ))}
                 </div>
@@ -186,63 +204,190 @@ export function AddEntryModal({ open, onClose }) {
                 ) : (
                   /* ── Regular entry fields ── */
                   <>
-                    {/* SSH Generate button — shown above the SSH fields */}
-                    {type === 'ssh' && (
-                      <div className="flex items-center justify-between py-2 px-3 bg-surface-subtle rounded-lg">
-                        <div>
-                          <p className="text-sm font-medium text-text-primary">Ed25519 Key Pair</p>
-                          <p className="text-xs text-text-secondary mt-0.5">
-                            Auto-generate a secure key pair and save it directly to the vault.
-                          </p>
+                    {/* SSH: Generate / Manual sub-tabs */}
+                    {type === 'ssh' ? (
+                      <>
+                        {/* Sub-tab bar */}
+                        <div className="flex items-center gap-1 p-1 bg-surface-subtle rounded-lg">
+                          {[
+                            { id: 'generate', label: 'Generate' },
+                            { id: 'manual',   label: 'Manual' },
+                          ].map((m) => (
+                            <button
+                              key={m.id}
+                              onClick={() => setSshMode(m.id)}
+                              className={[
+                                'flex-1 h-7 rounded-md text-sm transition-fast',
+                                sshMode === m.id
+                                  ? 'bg-surface-base text-text-primary font-medium shadow-sm'
+                                  : 'text-text-secondary hover:text-text-primary',
+                              ].join(' ')}
+                            >
+                              {m.label}
+                            </button>
+                          ))}
                         </div>
-                        <button
-                          onClick={handleGenerateSSHKey}
-                          disabled={generating}
-                          className="ml-4 shrink-0 h-8 px-3 rounded-md text-sm font-medium text-white bg-accent hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-fast flex items-center gap-1.5"
-                        >
-                          {generating ? (
-                            <>
-                              <span className="inline-block w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                              Generating…
-                            </>
-                          ) : (
-                            <>⚡ Generate</>
-                          )}
-                        </button>
-                      </div>
-                    )}
 
-                    {activeType.fields.map((field) => (
-                      <div key={field}>
-                        <label className="block text-sm text-text-secondary mb-1 capitalize">
-                          {field.replace(/([A-Z])/g, ' $1').trim()}
-                          {field === 'title' && <span className="text-danger ml-0.5">*</span>}
-                        </label>
-                        {field === 'notes' || field === 'privateKey' || field === 'publicKey' || field === 'certificate' ? (
-                          <textarea
-                            value={form[field] || ''}
-                            onChange={(e) => update(field, e.target.value)}
-                            rows={field === 'notes' ? 3 : 6}
-                            className="w-full px-3 py-2 rounded-md bg-surface-base border border-border text-text-primary text-sm placeholder:text-text-disabled focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent transition-fast resize-none font-mono"
-                            placeholder={`Enter ${field.replace(/([A-Z])/g, ' $1').trim().toLowerCase()}…`}
-                          />
+                        {sshMode === 'generate' ? (
+                          /* ── Generate mode ── */
+                          <div className="space-y-3">
+                            <div>
+                              <label className="block text-sm text-text-secondary mb-1">
+                                Key Name
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={form.sshKeyName || ''}
+                                  onChange={(e) => update('sshKeyName', e.target.value)}
+                                  placeholder="e.g. server, deploy, homelab"
+                                  className="flex-1 h-9 px-3 rounded-md bg-surface-base border border-border text-text-primary text-sm placeholder:text-text-disabled focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent transition-fast"
+                                />
+                                <span className="text-sm text-text-tertiary whitespace-nowrap">
+                                  @grimlocker.sec
+                                </span>
+                              </div>
+                              <p className="text-xs text-text-tertiary mt-1">
+                                The key will be saved as{' '}
+                                <span className="font-mono text-accent">
+                                  {(form.sshKeyName?.trim() || 'key')}@grimlocker.sec
+                                </span>
+                              </p>
+                            </div>
+
+                            {/* Passphrase selector */}
+                            <div>
+                              <label className="block text-sm text-text-secondary mb-1.5">
+                                Passphrase
+                              </label>
+                              <div className="flex items-center gap-1 p-1 bg-surface-subtle rounded-lg mb-2">
+                                {[
+                                  { id: 'none',   label: 'None' },
+                                  { id: 'auto',   label: 'Auto-generate' },
+                                  { id: 'custom', label: 'Custom' },
+                                ].map((m) => (
+                                  <button
+                                    key={m.id}
+                                    type="button"
+                                    onClick={() => { setPassphrase(m.id); if (m.id !== 'custom') setCustomPass('') }}
+                                    className={[
+                                      'flex-1 h-7 rounded-md text-sm transition-fast',
+                                      passphraseMode === m.id
+                                        ? 'bg-surface-base text-text-primary font-medium shadow-sm'
+                                        : 'text-text-secondary hover:text-text-primary',
+                                    ].join(' ')}
+                                  >
+                                    {m.label}
+                                  </button>
+                                ))}
+                              </div>
+                              {passphraseMode === 'none' && (
+                                <p className="text-xs text-text-tertiary">
+                                  Key works without a passphrase. Vault encryption still protects the private key at rest.
+                                </p>
+                              )}
+                              {passphraseMode === 'auto' && (
+                                <p className="text-xs text-text-tertiary">
+                                  A 32-character random passphrase will be shown once after generation. Save it immediately.
+                                </p>
+                              )}
+                              {passphraseMode === 'custom' && (
+                                <input
+                                  type="password"
+                                  value={customPassphrase}
+                                  onChange={(e) => setCustomPass(e.target.value)}
+                                  placeholder="Enter passphrase…"
+                                  className="w-full h-9 px-3 rounded-md bg-surface-base border border-border text-text-primary text-sm placeholder:text-text-disabled focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent transition-fast"
+                                />
+                              )}
+                            </div>
+
+                            <button
+                              onClick={handleGenerateSSHKey}
+                              disabled={generating}
+                              className="w-full h-9 rounded-md text-sm font-medium text-white bg-accent hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-fast flex items-center justify-center gap-2"
+                            >
+                              {generating ? (
+                                <>
+                                  <span className="inline-block w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                  Generating Ed25519 key…
+                                </>
+                              ) : (
+                                'Generate Ed25519 Key Pair'
+                              )}
+                            </button>
+
+                            <p className="text-xs text-text-tertiary text-center">
+                              Uses <span className="font-mono">crypto/ed25519</span> + <span className="font-mono">crypto/rand</span> — private key stored encrypted in vault
+                            </p>
+                          </div>
                         ) : (
-                          <input
-                            type={field === 'password' ? 'password' : 'text'}
-                            value={form[field] || ''}
-                            onChange={(e) => update(field, e.target.value)}
-                            className="w-full h-9 px-3 rounded-md bg-surface-base border border-border text-text-primary text-sm placeholder:text-text-disabled focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent transition-fast"
-                            placeholder={`Enter ${field.replace(/([A-Z])/g, ' $1').trim().toLowerCase()}…`}
-                          />
+                          /* ── Manual mode ── */
+                          <>
+                            {activeType.fields.map((field) => (
+                              <div key={field}>
+                                <label className="block text-sm text-text-secondary mb-1 capitalize">
+                                  {field.replace(/([A-Z])/g, ' $1').trim()}
+                                  {field === 'title' && <span className="text-danger ml-0.5">*</span>}
+                                </label>
+                                {field === 'notes' || field === 'privateKey' || field === 'publicKey' ? (
+                                  <textarea
+                                    value={form[field] || ''}
+                                    onChange={(e) => update(field, e.target.value)}
+                                    rows={field === 'notes' ? 3 : 6}
+                                    className="w-full px-3 py-2 rounded-md bg-surface-base border border-border text-text-primary text-sm placeholder:text-text-disabled focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent transition-fast resize-none font-mono"
+                                    placeholder={`Enter ${field.replace(/([A-Z])/g, ' $1').trim().toLowerCase()}…`}
+                                  />
+                                ) : (
+                                  <input
+                                    type="text"
+                                    value={form[field] || ''}
+                                    onChange={(e) => update(field, e.target.value)}
+                                    className="w-full h-9 px-3 rounded-md bg-surface-base border border-border text-text-primary text-sm placeholder:text-text-disabled focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent transition-fast"
+                                    placeholder={`Enter ${field.replace(/([A-Z])/g, ' $1').trim().toLowerCase()}…`}
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </>
                         )}
-                      </div>
-                    ))}
+                      </>
+                    ) : (
+                      /* ── Non-SSH entry types ── */
+                      <>
+                        {activeType.fields.map((field) => (
+                          <div key={field}>
+                            <label className="block text-sm text-text-secondary mb-1 capitalize">
+                              {field.replace(/([A-Z])/g, ' $1').trim()}
+                              {field === 'title' && <span className="text-danger ml-0.5">*</span>}
+                            </label>
+                            {field === 'notes' || field === 'privateKey' || field === 'publicKey' || field === 'certificate' ? (
+                              <textarea
+                                value={form[field] || ''}
+                                onChange={(e) => update(field, e.target.value)}
+                                rows={field === 'notes' ? 3 : 6}
+                                className="w-full px-3 py-2 rounded-md bg-surface-base border border-border text-text-primary text-sm placeholder:text-text-disabled focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent transition-fast resize-none font-mono"
+                                placeholder={`Enter ${field.replace(/([A-Z])/g, ' $1').trim().toLowerCase()}…`}
+                              />
+                            ) : (
+                              <input
+                                type={field === 'password' ? 'password' : 'text'}
+                                value={form[field] || ''}
+                                onChange={(e) => update(field, e.target.value)}
+                                className="w-full h-9 px-3 rounded-md bg-surface-base border border-border text-text-primary text-sm placeholder:text-text-disabled focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent transition-fast"
+                                placeholder={`Enter ${field.replace(/([A-Z])/g, ' $1').trim().toLowerCase()}…`}
+                              />
+                            )}
+                          </div>
+                        ))}
+                      </>
+                    )}
                   </>
                 )}
               </div>
 
-              {/* Footer — hidden for file_vault (FileVaultUpload has its own buttons) */}
-              {!isFileVault && (
+              {/* Footer — hidden for file_vault and SSH generate mode */}
+              {!isFileVault && !(type === 'ssh' && sshMode === 'generate') && (
                 <div className="shrink-0 px-5 py-4 border-t border-border flex justify-end gap-2">
                   <button
                     onClick={onClose}

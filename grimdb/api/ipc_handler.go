@@ -16,15 +16,26 @@ import (
 // actionMap translates JSON action names to kernel EventType values.
 // Only actions in this table are accepted; all others return 400.
 var actionMap = map[string]kernel.EventType{
-	"vault.unlock":   kernel.EvAuthUnlock,
-	"vault.init":     kernel.EvAuthSetup,
-	"vault.status":   kernel.EvAuthStatus,
-	"vault.logout":   kernel.EvAuthLogout,
+	// Auth / session
+	"vault.unlock": kernel.EvAuthUnlock,
+	"vault.init":   kernel.EvAuthSetup,
+	"vault.status": kernel.EvAuthStatus,
+	"vault.logout": kernel.EvAuthLogout,
+
+	// Raw block storage (low-level)
 	"storage.write":  kernel.EvStorageWrite,
 	"storage.read":   kernel.EvStorageRead,
 	"storage.delete": kernel.EvStorageDelete,
 	"storage.list":   kernel.EvStorageList,
-	"sync.begin":     kernel.EvSyncBegin,
+
+	// High-level vault entries (CLI and REST clients)
+	"entry.create": kernel.EvEntryCreate,
+	"entry.read":   kernel.EvEntryRead,
+	"entry.update": kernel.EvEntryUpdate,
+	"entry.delete": kernel.EvEntryDelete,
+	"entry.query":  kernel.EvEntryQuery,
+
+	"sync.begin": kernel.EvSyncBegin,
 }
 
 // blockedChannels are channels that the UI and SDK may never dispatch to directly.

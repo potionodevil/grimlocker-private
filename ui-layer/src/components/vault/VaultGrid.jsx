@@ -78,7 +78,7 @@ export function VaultGrid({ filter = 'all' }) {
                   : 'text-text-secondary hover:text-text-primary hover:bg-surface-subtle',
               ].join(' ')}
             >
-              {f.id === 'FILE_VAULT' ? '📁 ' : ''}{f.label}
+              {f.label}
             </button>
           ))}
         </div>
@@ -166,7 +166,9 @@ export function VaultGrid({ filter = 'all' }) {
 function EmptyState({ isFileVault, onUpload }) {
   return (
     <div className="flex flex-col items-center justify-center py-24 text-center">
-      <div className="text-4xl mb-4">{isFileVault ? '📁' : '🔒'}</div>
+      <div className="text-4xl mb-4 text-text-disabled font-mono select-none">
+        {isFileVault ? '▤' : '·'}
+      </div>
       <p className="text-base font-medium text-text-primary mb-1">
         {isFileVault ? 'No files stored yet' : 'No entries yet'}
       </p>
@@ -180,7 +182,7 @@ function EmptyState({ isFileVault, onUpload }) {
           onClick={onUpload}
           className="h-9 px-4 rounded-md text-sm font-medium text-white bg-accent hover:bg-accent-hover transition-fast"
         >
-          ⬆ Upload File
+          Upload File
         </button>
       )}
     </div>

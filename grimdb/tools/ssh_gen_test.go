@@ -10,7 +10,7 @@ import (
 )
 
 func TestGenerateEd25519Pair_BasicShape(t *testing.T) {
-	pair, err := GenerateEd25519Pair("test@grimlocker")
+	pair, err := GenerateEd25519Pair("test@grimlocker", "")
 	if err != nil {
 		t.Fatalf("GenerateEd25519Pair: %v", err)
 	}
@@ -37,11 +37,11 @@ func TestGenerateEd25519Pair_BasicShape(t *testing.T) {
 }
 
 func TestGenerateEd25519Pair_UniqueEachCall(t *testing.T) {
-	p1, err := GenerateEd25519Pair("user1")
+	p1, err := GenerateEd25519Pair("user1", "")
 	if err != nil {
 		t.Fatalf("GenerateEd25519Pair 1: %v", err)
 	}
-	p2, err := GenerateEd25519Pair("user2")
+	p2, err := GenerateEd25519Pair("user2", "")
 	if err != nil {
 		t.Fatalf("GenerateEd25519Pair 2: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestGenerateEd25519Pair_UniqueEachCall(t *testing.T) {
 }
 
 func TestGenerateEd25519Pair_PublicKeyValid(t *testing.T) {
-	pair, err := GenerateEd25519Pair("verify@grimlocker")
+	pair, err := GenerateEd25519Pair("verify@grimlocker", "")
 	if err != nil {
 		t.Fatalf("GenerateEd25519Pair: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestGenerateEd25519Pair_PublicKeyValid(t *testing.T) {
 }
 
 func TestGenerateEd25519Pair_EmptyComment(t *testing.T) {
-	pair, err := GenerateEd25519Pair("")
+	pair, err := GenerateEd25519Pair("", "")
 	if err != nil {
 		t.Fatalf("GenerateEd25519Pair with empty comment: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestGenerateEd25519Pair_EmptyComment(t *testing.T) {
 }
 
 func TestGenerateEd25519Pair_PrivateKeyParseable(t *testing.T) {
-	pair, err := GenerateEd25519Pair("parse@test")
+	pair, err := GenerateEd25519Pair("parse@test", "")
 	if err != nil {
 		t.Fatalf("GenerateEd25519Pair: %v", err)
 	}
@@ -120,6 +120,47 @@ func TestGenerateEd25519Pair_PrivateKeyParseable(t *testing.T) {
 
 	if len(*ed) != ed25519.PrivateKeySize {
 		t.Errorf("private key size: got %d, want %d", len(*ed), ed25519.PrivateKeySize)
+	}
+}
+
+func TestGenerateEd25519Pair_WithPassphrase(t *testing.T) {
+	pair, err := GenerateEd25519Pair("passphrase@test", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("GenerateEd25519Pair with passphrase: %v", err)
+	}
+
+	// The PEM should still be a valid OpenSSH private key block.
+	if !bytes.Contains(pair.PrivateKeyPEM, []byte("OPENSSH PRIVATE KEY")) {
+		t.Errorf("encrypted private key PEM missing OPENSSH PRIVATE KEY header")
+	}
+
+	// Attempting to parse without passphrase must fail.
+	_, err = ssh.ParseRawPrivateKey(pair.PrivateKeyPEM)
+	if err == nil {
+		t.Fatal("expected error when parsing passphrase-protected key without passphrase, got nil")
+	}
+
+	// Parsing with the correct passphrase must succeed.
+	_, err = ssh.ParseRawPrivateKeyWithPassphrase(pair.PrivateKeyPEM, []byte("correct-horse-battery-staple"))
+	if err != nil {
+		t.Fatalf("ssh.ParseRawPrivateKeyWithPassphrase: %v", err)
+	}
+}
+
+func TestGenerateSecurePassphrase(t *testing.T) {
+	p1, err := generateSecurePassphrase(32)
+	if err != nil {
+		t.Fatalf("generateSecurePassphrase: %v", err)
+	}
+	if len(p1) != 32 {
+		t.Errorf("expected passphrase length 32, got %d", len(p1))
+	}
+	p2, err := generateSecurePassphrase(32)
+	if err != nil {
+		t.Fatalf("generateSecurePassphrase 2: %v", err)
+	}
+	if p1 == p2 {
+		t.Error("two generated passphrases are identical — CSPRNG failure?")
 	}
 }
 

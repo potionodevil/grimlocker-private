@@ -2,11 +2,21 @@ import { clsx } from 'clsx'
 import { StrengthDot } from './StrengthDot'
 import { useGrimStore } from '../../store/useGrimStore'
 
-const TYPE_ICONS = {
-  password: '\uD83D\uDD11',
-  ssh:      '\uD83D\uDD10',
-  cert:     '\uD83D\uDCC4',
-  default:  '\uD83D\uDD12',
+const TYPE_LABELS = {
+  password:    'PW',
+  ssh:         'SSH',
+  cert:        'CERT',
+  certificate: 'CERT',
+  file_vault:  'FILE',
+}
+
+function TypeBadge({ type }) {
+  const label = TYPE_LABELS[type] || (type ? type.slice(0, 4).toUpperCase() : '?')
+  return (
+    <span className="shrink-0 px-1.5 py-0.5 rounded text-xs font-mono font-semibold bg-surface-subtle text-text-tertiary border border-border leading-none">
+      {label}
+    </span>
+  )
 }
 
 function relativeTime(nanos) {
@@ -26,7 +36,6 @@ function relativeTime(nanos) {
 
 export function EntryCard({ entry, listView = false, onContextMenu }) {
   const fetchEntry = useGrimStore((s) => s.fetchEntry)
-  const icon = TYPE_ICONS[entry.type] ?? TYPE_ICONS.default
 
   const handleClick = () => fetchEntry(entry.id)
 
@@ -45,7 +54,7 @@ export function EntryCard({ entry, listView = false, onContextMenu }) {
         onContextMenu={handleContextMenu}
         className="flex items-center gap-4 h-dp-row px-4 border-b border-border cursor-pointer hover:bg-surface-subtle transition-fast group"
       >
-        <span className="text-lg shrink-0">{icon}</span>
+        <TypeBadge type={entry.type} />
         <div className="flex-1 min-w-0">
           <p className="text-base font-medium text-text-primary truncate">{entry.title || 'Untitled'}</p>
           <p className="text-sm text-text-secondary truncate">{entry.username || entry.label || '\u2014'}</p>
@@ -70,7 +79,7 @@ export function EntryCard({ entry, listView = false, onContextMenu }) {
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-lg shrink-0">{icon}</span>
+          <TypeBadge type={entry.type} />
           <p className="text-base font-semibold text-text-primary truncate">{entry.title || 'Untitled'}</p>
         </div>
         <button

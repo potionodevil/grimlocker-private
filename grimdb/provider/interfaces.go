@@ -15,7 +15,7 @@ import (
 
 // AuthProvider encapsulates the complete authentication logic for a tier.
 // The kernel calls HandleUnlockEvent and subscribes it to kernel.EvAuthUnlock.
-// Concrete: config/single.LocalAuth (Argon2id) or config/enterprise.IAMProvider (SAML/LDAP).
+// Concrete: config/single.LocalAuth (Argon2id) or config/enterprise.OIDCProvider (JWT/OIDC).
 type AuthProvider interface {
 	// HandleUnlockEvent returns a kernel.Handler that implements the full
 	// unlock flow (Steps 0–7 from makeAuthUnlockHandler):
@@ -41,6 +41,21 @@ type AuthProvider interface {
 	// Lockdown state and audit log access.
 	Lockdown() security.LockdownManager
 	AuditLog() security.AuditLog
+
+	// Tier returns the auth mechanism identifier ("local-argon2id" or "oidc-jwt").
+	Tier() string
+}
+
+// IdentityProvider is an optional extension point for federated identity systems.
+// Concrete: future SAML 2.0, LDAP/AD, or multi-tenant IAM implementations.
+// Not required for Phase 1 (OIDC is handled directly by OIDCProvider).
+type IdentityProvider interface {
+	// Protocol returns the identity protocol ("saml2", "ldap", "oidc").
+	Protocol() string
+
+	// Validate checks a credential (token, assertion, or bind result) and
+	// returns the canonical subject identifier or an error.
+	Validate(credential []byte) (subjectID string, err error)
 }
 
 // StorageProvider encapsulates a storage backend for a tier.

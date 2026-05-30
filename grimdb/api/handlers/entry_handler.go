@@ -103,6 +103,9 @@ func (h *EntryHandler) HandleCreate(conn *gorillaws.Conn, payload []byte) error 
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return websocket.WriteMessage(conn, ipc.MsgError, []byte("invalid request"))
 	}
+	if req.SubjectID == "" {
+		req.SubjectID = "default"
+	}
 
 	if !h.policy.CheckWrite(req.SubjectID) {
 		h.policy.OnUnauthorized(req.SubjectID, "ENTRY.CREATE")
@@ -130,6 +133,9 @@ func (h *EntryHandler) HandleRead(conn *gorillaws.Conn, payload []byte) error {
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return websocket.WriteMessage(conn, ipc.MsgError, []byte("invalid request"))
+	}
+	if req.SubjectID == "" {
+		req.SubjectID = "default"
 	}
 
 	if !h.policy.CheckRead(req.SubjectID) {
@@ -161,6 +167,9 @@ func (h *EntryHandler) HandleUpdate(conn *gorillaws.Conn, payload []byte) error 
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return websocket.WriteMessage(conn, ipc.MsgError, []byte("invalid request"))
 	}
+	if req.SubjectID == "" {
+		req.SubjectID = "default"
+	}
 
 	if !h.policy.CheckWrite(req.SubjectID) {
 		h.policy.OnUnauthorized(req.SubjectID, "ENTRY.UPDATE")
@@ -188,6 +197,9 @@ func (h *EntryHandler) HandleDelete(conn *gorillaws.Conn, payload []byte) error 
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return websocket.WriteMessage(conn, ipc.MsgError, []byte("invalid request"))
+	}
+	if req.SubjectID == "" {
+		req.SubjectID = "default"
 	}
 
 	if !h.policy.CheckWrite(req.SubjectID) {
@@ -219,33 +231,38 @@ func (h *EntryHandler) HandleIngestBegin(conn *gorillaws.Conn, payload []byte) e
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return websocket.WriteMessage(conn, ipc.MsgError, []byte("invalid request"))
 	}
+	if req.SubjectID == "" {
+		req.SubjectID = "default"
+	}
 
 	if !h.policy.CheckWrite(req.SubjectID) {
 		h.policy.OnUnauthorized(req.SubjectID, "ENTRY.INGEST")
 		return websocket.WriteMessage(conn, ipc.MsgError, []byte("unauthorized"))
 	}
 
-	// Create io.Pipe for streaming
 	pr, pw := io.Pipe()
 
-	// Store the active ingest
-	h.mu.Lock()
-	h.activeIngests[conn] = &activeIngest{
+	// Create the activeIngest first, then register and launch the goroutine.
+	// The goroutine receives the pointer directly to eliminate the map-lookup
+	// race with HandleIngestEnd (which deletes the map entry before runIngest
+	// might start for small/fast uploads).
+	ai := &activeIngest{
 		pw:       pw,
 		manifest: make(chan storage.BlobManifest, 1),
 		err:      make(chan error, 1),
 	}
+
+	h.mu.Lock()
+	h.activeIngests[conn] = ai
 	h.mu.Unlock()
 
-	// Start ingest goroutine
 	go h.runIngest(conn, pr, ingestReq{
 		SubjectID: req.SubjectID,
 		FileName:  req.FileName,
 		MIMEType:  req.MIMEType,
 		TotalSize: req.TotalSize,
-	})
+	}, ai)
 
-	// Send acknowledgment
 	ackPayload, _ := json.Marshal(map[string]string{"status": "ready"})
 	return websocket.WriteMessage(conn, ipc.MsgAck, ackPayload)
 }
@@ -307,14 +324,9 @@ type ingestReq struct {
 }
 
 // runIngest runs the ingest engine in a goroutine and reports progress.
-func (h *EntryHandler) runIngest(conn *gorillaws.Conn, r io.Reader, req ingestReq) {
-	h.mu.Lock()
-	ingest, ok := h.activeIngests[conn]
-	h.mu.Unlock()
-	if !ok {
-		return
-	}
-
+// ingest is passed directly from HandleIngestBegin to avoid a map-lookup race
+// with HandleIngestEnd, which deletes the map entry before this goroutine starts.
+func (h *EntryHandler) runIngest(conn *gorillaws.Conn, r io.Reader, req ingestReq, ingest *activeIngest) {
 	// Progress callback — sends updates to client
 	progressFn := func(bytesRead, totalSize int64) {
 		pct := 0.0

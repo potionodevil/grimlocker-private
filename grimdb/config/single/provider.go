@@ -9,6 +9,7 @@ import (
 	"github.com/grimlocker/grimdb/kernel"
 	"github.com/grimlocker/grimdb/provider"
 	"github.com/grimlocker/grimdb/security"
+	"github.com/grimlocker/grimdb/storage"
 	"github.com/grimlocker/grimdb/storage/grimdb"
 )
 
@@ -87,6 +88,10 @@ func (p *Provider) KernelModules() []kernel.Module {
 // SecurityModule returns the raw security.Module for components that require it
 // (translator MVK resolver, policy manager audit log, integrity monitor).
 func (p *Provider) SecurityModule() *security.Module { return p.secMod }
+
+// BlockStore returns the underlying BlockStore as a storage.BlockStore interface.
+// This is the tier-agnostic way to get the block store for EntryHandler, IngestEngine, etc.
+func (p *Provider) BlockStore() storage.BlockStore { return p.storage.BlockStore() }
 
 // CryptoProvider returns the raw crypto.Provider for components that require it
 // (translator, ingest engine).

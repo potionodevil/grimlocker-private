@@ -119,7 +119,7 @@ func (m *Module) buildHandlers() map[kernel.EventType]secHandlerFn {
 		kernel.EvAuthInitReady: noop, // watchdog startup check
 		kernel.EvAuthUnlock:    noop, // handled by daemon/main.go bus.Subscribe
 		kernel.EvAuthReady:     noop, // emitted by SessionContext.Unlock
-		kernel.EvAuthLogout:    noop, // emitted by SessionContext.Lock
+		kernel.EvAuthLogout:    m.handleAuthLogout,
 		kernel.EvAuthKeyReady:  noop, // emitted after unlock+index load
 	}
 }
@@ -194,6 +194,14 @@ func (m *Module) handleAuthStatus(e kernel.Event) error {
 		"remaining_attempts": m.lockdown.RemainingAttempts(),
 		"lockdown_until":     m.lockdown.LockdownUntil().Unix(),
 	})
+	reply := kernel.ReplyEvent(moduleID, kernel.EvAuthResult, e, payload)
+	return m.dispatcher.Dispatch(reply)
+}
+
+func (m *Module) handleAuthLogout(e kernel.Event) error {
+	// Send ACK reply first so REST API callers don't time out.
+	// The STORAGE gate is closed by the subscription in main.go.
+	payload, _ := json.Marshal(map[string]interface{}{"locked": true})
 	reply := kernel.ReplyEvent(moduleID, kernel.EvAuthResult, e, payload)
 	return m.dispatcher.Dispatch(reply)
 }

@@ -1,0 +1,71 @@
+{
+  "realm": "grimlocker",
+  "enabled": true,
+  "displayName": "Grimlocker Enterprise",
+  "accessTokenLifespan": 300,
+  "ssoSessionMaxLifespan": 86400,
+  "bruteForceProtected": true,
+  "failureFactor": 3,
+
+  "roles": {
+    "realm": [
+      { "name": "vault-user",  "description": "Can unlock and access vault entries" },
+      { "name": "vault-admin", "description": "Can manage vault settings and rotate keys" }
+    ]
+  },
+
+  "clients": [
+    {
+      "clientId": "grimlocker-daemon",
+      "name": "Grimlocker Enterprise Daemon",
+      "enabled": true,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "changeme",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": true,
+      "publicClient": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "access.token.lifespan": "300"
+      },
+      "defaultClientScopes": ["openid", "profile", "email"],
+      "optionalClientScopes": ["offline_access"]
+    }
+  ],
+
+  "users": [
+    {
+      "username": "admin@grimlocker.local",
+      "email": "admin@grimlocker.local",
+      "firstName": "Grimlocker",
+      "lastName": "Admin",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "GrimlockAdmin1!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["vault-admin", "vault-user"]
+    },
+    {
+      "username": "user@grimlocker.local",
+      "email": "user@grimlocker.local",
+      "firstName": "Vault",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "VaultUser1!",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["vault-user"]
+    }
+  ]
+}

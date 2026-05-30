@@ -2,111 +2,120 @@
 
 // Package enterprise provides the Enterprise tier implementation of provider interfaces.
 //
-// Current status: STUBS — all methods return ErrNotImplemented.
-//
-// Planned implementation:
-//   - IAMProvider: SAML 2.0 / LDAP / SSO authentication instead of local Argon2id
-//   - RemoteVault: S3-compatible or MinIO/Azure Blob backend instead of local files
-//   - RemoteStorage: Encrypted remote block store with TLS transport
+// Enterprise tier features:
+//   - OIDCProvider: JWT access token validation (Keycloak / Azure AD / Okta)
+//   - RemoteVault: AES-256-GCM encrypted block storage on S3 / MinIO
+//   - mTLS: Mutual TLS between client EXE and daemon (see security/mtls)
 package enterprise
 
 import (
-	"errors"
+	"path/filepath"
 
 	"github.com/grimlocker/grimdb/crypto"
 	"github.com/grimlocker/grimdb/kernel"
 	"github.com/grimlocker/grimdb/provider"
 	"github.com/grimlocker/grimdb/security"
 	"github.com/grimlocker/grimdb/storage"
-	"github.com/grimlocker/grimdb/storage/grimdb"
+	"github.com/grimlocker/grimdb/storage/remote"
 )
 
-// ErrNotImplemented is returned by all enterprise stubs until the feature is built.
-var ErrNotImplemented = errors.New("enterprise: not implemented")
-
-// ─── Provider ────────────────────────────────────────────────────────────────
-
-// Provider is the Enterprise VaultProvider stub.
+// Provider is the Enterprise VaultProvider.
 type Provider struct {
-	appDir string
+	cfg         *EnterpriseConfig
+	secMod      *security.Module
+	cryptoMod   *crypto.Module
+	cryptoPrv   crypto.Provider
+	auth        *OIDCProvider
+	remoteVault *remote.RemoteVault
+	adapter     *remote.BlockStoreAdapter
 }
 
-// NewProvider creates an Enterprise Provider. Currently returns a stub.
-func NewProvider(appDir string) *Provider { return &Provider{appDir: appDir} }
-
-func (p *Provider) Auth() provider.AuthProvider               { return &iamProvider{} }
-func (p *Provider) StorageProvider() provider.StorageProvider { return &remoteStorage{} }
-func (p *Provider) Crypto() crypto.Provider                   { return crypto.New() }
-func (p *Provider) Tier() string                              { return "enterprise" }
-func (p *Provider) KernelModules() []kernel.Module            { return nil }
-
-// SetSession is a no-op for the enterprise stub (IAMProvider manages sessions).
-func (p *Provider) SetSession(s *security.SessionContext) {}
-
-// SecurityModule returns nil for the enterprise stub.
-// The IAMProvider will own its own security module when implemented.
-func (p *Provider) SecurityModule() *security.Module { return nil }
-
-// CryptoProvider returns a local crypto provider (same for all tiers).
-func (p *Provider) CryptoProvider() crypto.Provider { return crypto.New() }
-
-// RawStorage returns a stub remote storage.
-func (p *Provider) RawStorage() *remoteStorage { return &remoteStorage{} }
-
-// ─── IAMProvider (AuthProvider stub) ─────────────────────────────────────────
-
-// iamProvider is a stub that will implement SAML/LDAP/SSO auth.
-type iamProvider struct{}
-
-func (i *iamProvider) HandleUnlockEvent(
-	bus kernel.Dispatcher,
-	sessionCtx *security.SessionContext,
-	onSessionKey func([]byte, string),
-) kernel.Handler {
-	return func(e kernel.Event) error {
-		return ErrNotImplemented
+// NewProvider constructs the full Enterprise provider.
+func NewProvider(appDir, entropyPath string) (*Provider, error) {
+	cfg, err := LoadEnterpriseConfig(appDir, entropyPath)
+	if err != nil {
+		return nil, err
 	}
+	return newProviderFromConfig(cfg)
 }
 
-func (i *iamProvider) StoreMVK(key []byte) (string, error)      { return "", ErrNotImplemented }
-func (i *iamProvider) RetrieveMVK(handle string) ([]byte, bool) { return nil, false }
-func (i *iamProvider) RevokeMVK(handle string)                  {}
-func (i *iamProvider) Lockdown() security.LockdownManager       { return nil }
-func (i *iamProvider) AuditLog() security.AuditLog              { return nil }
+func newProviderFromConfig(cfg *EnterpriseConfig) (*Provider, error) {
+	cryptoPrv := crypto.New()
 
-// ─── RemoteStorage (StorageProvider stub) ─────────────────────────────────────
+	secMod := security.NewModule(security.LockdownConfig{
+		Threshold:       3,
+		MaxOverrides:    4,
+		LockdownMinutes: 200,
+	}, filepath.Clean(cfg.EntropyPath))
 
-// remoteStorage is a stub that will implement S3/MinIO/Azure block storage.
-type remoteStorage struct{}
+	vault, err := remote.NewRemoteVault(remote.RemoteVaultConfig{
+		Endpoint:  cfg.S3Endpoint,
+		Region:    cfg.S3Region,
+		Bucket:    cfg.S3Bucket,
+		AccessKey: cfg.S3AccessKey,
+		SecretKey: cfg.S3SecretKey,
+	})
+	if err != nil {
+		return nil, err
+	}
 
-func (r *remoteStorage) WriteBlock(b storage.Block) error          { return ErrNotImplemented }
-func (r *remoteStorage) ReadBlock(id string) (storage.Block, error) {
-	return storage.Block{}, ErrNotImplemented
+	adapter := remote.NewBlockStoreAdapter(vault)
+	oidcAuth := NewOIDCProvider(cfg, secMod, vault)
+	cryptoMod := crypto.NewModule(cryptoPrv, secMod.RetrieveMVK)
+
+	return &Provider{
+		cfg:         cfg,
+		secMod:      secMod,
+		cryptoMod:   cryptoMod,
+		cryptoPrv:   cryptoPrv,
+		auth:        oidcAuth,
+		remoteVault: vault,
+		adapter:     adapter,
+	}, nil
 }
-func (r *remoteStorage) DeleteBlock(id string) error                              { return ErrNotImplemented }
-func (r *remoteStorage) ListBlocks() ([]storage.BlockMeta, error)                 { return nil, ErrNotImplemented }
-func (r *remoteStorage) QueryBlocks(_ storage.Category) ([]storage.BlockMeta, error) { return nil, ErrNotImplemented }
-func (r *remoteStorage) Flush() error                                              { return ErrNotImplemented }
-func (r *remoteStorage) Close() error                                              { return nil }
-func (r *remoteStorage) SetMVKFunc(fn func() []byte) {}
-func (r *remoteStorage) LoadIndex() error            { return ErrNotImplemented }
-func (r *remoteStorage) KernelModule() kernel.Module {
-	// Enterprise storage adapter will be wired here when implemented.
-	db, _ := grimdb.NewGrimDB(":memory:")
-	bs := grimdb.NewBlockStoreImpl("/tmp/enterprise-stub")
-	return grimdb.NewAdapter(db, bs)
+
+func (p *Provider) SetSession(s *security.SessionContext) {
+	p.secMod.SetSession(s)
+	p.adapter.SetSession(s)
 }
 
-// BlockStore returns a stub BlockStoreImpl for enterprise tier.
-// When IAMProvider and RemoteVault are implemented, this will return
-// an encrypted remote block store.
-func (r *remoteStorage) BlockStore() *grimdb.BlockStoreImpl {
-	return grimdb.NewBlockStoreImpl("/tmp/enterprise-stub")
+func (p *Provider) Auth() provider.AuthProvider               { return p.auth }
+func (p *Provider) Storage() provider.StorageProvider         { return &enterpriseStorage{vault: p.remoteVault, adapter: p.adapter} }
+func (p *Provider) Crypto() crypto.Provider                   { return p.cryptoPrv }
+func (p *Provider) Tier() string                              { return "enterprise" }
+func (p *Provider) SecurityModule() *security.Module          { return p.secMod }
+func (p *Provider) CryptoProvider() crypto.Provider           { return p.cryptoPrv }
+func (p *Provider) RawVault() *remote.RemoteVault             { return p.remoteVault }
+
+// BlockStore returns the RemoteVault as a storage.BlockStore interface.
+// Mirrors single.Provider.BlockStore() so main.go can call it without build-tag guards.
+func (p *Provider) BlockStore() storage.BlockStore            { return p.remoteVault }
+func (p *Provider) EnterpriseConfig() *EnterpriseConfig       { return p.cfg }
+func (p *Provider) TestConnectivity() error                   { return p.remoteVault.TestConnectivity() }
+
+func (p *Provider) KernelModules() []kernel.Module {
+	return []kernel.Module{p.secMod, p.cryptoMod, p.adapter}
 }
 
-// Adapter returns a stub storage Adapter for enterprise tier.
-func (r *remoteStorage) Adapter() *grimdb.Adapter {
-	db, _ := grimdb.NewGrimDB(":memory:")
-	bs := grimdb.NewBlockStoreImpl("/tmp/enterprise-stub")
-	return grimdb.NewAdapter(db, bs)
+// ── enterpriseStorage implements provider.StorageProvider ────────────────────
+
+type enterpriseStorage struct {
+	vault   *remote.RemoteVault
+	adapter *remote.BlockStoreAdapter
 }
+
+// storage.BlockStore delegation to RemoteVault.
+func (s *enterpriseStorage) WriteBlock(b storage.Block) error                    { return s.vault.WriteBlock(b) }
+func (s *enterpriseStorage) ReadBlock(id string) (storage.Block, error)          { return s.vault.ReadBlock(id) }
+func (s *enterpriseStorage) DeleteBlock(id string) error                         { return s.vault.DeleteBlock(id) }
+func (s *enterpriseStorage) ListBlocks() ([]storage.BlockMeta, error)            { return s.vault.ListBlocks() }
+func (s *enterpriseStorage) QueryBlocks(c storage.Category) ([]storage.BlockMeta, error) {
+	return s.vault.QueryBlocks(c)
+}
+func (s *enterpriseStorage) Flush() error { return s.vault.Flush() }
+func (s *enterpriseStorage) Close() error { return s.vault.Close() }
+
+// provider.StorageProvider extension methods.
+func (s *enterpriseStorage) SetMVKFunc(fn func() []byte) { s.vault.SetMVKFunc(fn) }
+func (s *enterpriseStorage) LoadIndex() error             { return s.vault.LoadIndex() }
+func (s *enterpriseStorage) KernelModule() kernel.Module  { return s.adapter }

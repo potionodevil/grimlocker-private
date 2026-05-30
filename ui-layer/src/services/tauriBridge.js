@@ -1416,9 +1416,12 @@ class TauriBridge {
    * Generate an Ed25519 SSH key pair and optionally save it to the vault.
    * @param {string} [comment] — Key comment (e.g. "user@host" or a label).
    * @param {boolean} [saveToVault=true] — Whether to persist the key pair in the vault.
-   * @returns {Promise<{public_key: string, fingerprint: string, entry_id: string}>}
+   * @param {string} [passphrase=''] — Optional passphrase to encrypt the private key PEM.
+   * @param {boolean} [autoPassphrase=false] — If true, the daemon generates a secure random passphrase.
+   *   The generated passphrase is returned once in the response and never stored in the vault.
+   * @returns {Promise<{public_key: string, fingerprint: string, entry_id: string, passphrase?: string}>}
    */
-  generateSSHKey(comment = 'grimlocker-generated', saveToVault = true) {
+  generateSSHKey(comment = 'grimlocker-generated', saveToVault = true, passphrase = '', autoPassphrase = false) {
     return new Promise((resolve, reject) => {
       if (!this.connected) {
         reject(new Error('Not connected to daemon'))
@@ -1448,7 +1451,12 @@ class TauriBridge {
         reject(new Error(error))
       })
 
-      const payload = new TextEncoder().encode(JSON.stringify({ comment, save_to_vault: saveToVault }))
+      const payload = new TextEncoder().encode(JSON.stringify({
+        comment,
+        save_to_vault: saveToVault,
+        passphrase,
+        auto_passphrase: autoPassphrase,
+      }))
       this._send(MSG_SSH_KEY_GEN, payload)
     })
   }

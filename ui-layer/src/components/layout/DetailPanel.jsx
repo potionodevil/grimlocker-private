@@ -2,14 +2,35 @@ import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useGrimStore } from '../../store/useGrimStore'
 
-const MASK = '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'
+const MASK = '••••••••'
+
+// Type badge labels (no emoji)
+const TYPE_LABELS = {
+  password:    'PW',
+  ssh:         'SSH',
+  cert:        'CERT',
+  certificate: 'CERT',
+  file_vault:  'FILE',
+}
 
 function MaskedField({ label, value, revealed }) {
   return (
     <div>
       <p className="text-sm text-text-tertiary mb-0.5">{label}</p>
-      <p className={`text-base break-all font-mono ${revealed ? 'text-text-primary' : 'text-text-tertiary select-none'}`}>
-        {revealed ? (value || '\u2014') : (value ? MASK : '\u2014')}
+      <p className={`text-sm break-all font-mono leading-relaxed ${revealed ? 'text-text-primary' : 'text-text-tertiary select-none'}`}>
+        {revealed ? (value || '—') : (value ? MASK : '—')}
+      </p>
+    </div>
+  )
+}
+
+/** Plain visible field — for non-sensitive data like public keys. */
+function PlainField({ label, value }) {
+  return (
+    <div>
+      <p className="text-sm text-text-tertiary mb-0.5">{label}</p>
+      <p className="text-xs break-all font-mono text-text-primary leading-relaxed bg-surface-subtle rounded px-2 py-1.5 select-all">
+        {value || '—'}
       </p>
     </div>
   )
@@ -68,9 +89,12 @@ export function DetailPanel({ entry, onClose }) {
   }
 
   const entryData = decrypted?.data || {}
-  const entryType = decrypted?.type || entry?.type || 'unknown'
+  const entryType = decrypted?.type || entry?.type || entry?.category?.toLowerCase() || 'unknown'
+  const typeLabel = TYPE_LABELS[entryType] || entryType.toUpperCase().slice(0, 4)
 
-  const typeIcon = { password: '\uD83D\uDD11', ssh: '\uD83D\uDD10', cert: '\uD83D\uDCC4' }[entryType] || '\uD83D\uDD12'
+  // Public key / fingerprint are exposed in metadata (non-sensitive).
+  const publicKey  = entry.publicKey  || entryData.publicKey
+  const fingerprint = entry.fingerprint || entryData.fingerprint
 
   return (
     <AnimatePresence>
@@ -93,22 +117,29 @@ export function DetailPanel({ entry, onClose }) {
           transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
           className="fixed right-0 top-0 bottom-0 w-96 bg-surface-base border-l border-border shadow-md z-30 flex flex-col"
         >
+          {/* Header */}
           <div className="h-14 flex items-center justify-between px-5 border-b border-border shrink-0">
-            <div className="flex items-center gap-2">
-              <span className="text-lg">{typeIcon}</span>
-              <h2 className="text-base font-semibold text-text-primary">{entry.title || 'Entry Details'}</h2>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="shrink-0 px-1.5 py-0.5 rounded text-xs font-mono font-semibold bg-surface-subtle text-text-tertiary border border-border">
+                {typeLabel}
+              </span>
+              <h2 className="text-base font-semibold text-text-primary truncate">
+                {entry.title || 'Entry Details'}
+              </h2>
             </div>
             <button
               onClick={onClose}
-              className="w-7 h-7 flex items-center justify-center rounded-md text-text-tertiary hover:bg-surface-subtle hover:text-text-primary transition-fast"
+              className="shrink-0 w-7 h-7 flex items-center justify-center rounded-md text-text-tertiary hover:bg-surface-subtle hover:text-text-primary transition-fast ml-2"
             >
-              \u2715
+              &#x2715;
             </button>
           </div>
 
+          {/* Body */}
           <div className="flex-1 overflow-y-auto p-5 space-y-4">
             <MaskedField label="Title" value={entry.title} revealed={true} />
 
+            {/* ── Password entry ── */}
             {entryType === 'password' && (
               <>
                 <div>
@@ -136,15 +167,27 @@ export function DetailPanel({ entry, onClose }) {
               </>
             )}
 
+            {/* ── SSH key entry ── */}
             {entryType === 'ssh' && (
               <>
+                {/* Public key — always visible (not sensitive) */}
                 <div>
                   <div className="flex items-center justify-between mb-0.5">
-                    <p className="text-sm text-text-tertiary">Username</p>
-                    <CopyButton value={isRevealed ? entryData.username : undefined} />
+                    <p className="text-sm text-text-tertiary">Public Key</p>
+                    <CopyButton value={publicKey} />
                   </div>
-                  <MaskedField label="" value={entryData.username || entry.username} revealed={isRevealed} />
+                  <PlainField label="" value={publicKey} />
                 </div>
+
+                {/* Fingerprint — always visible */}
+                {fingerprint && (
+                  <div>
+                    <p className="text-sm text-text-tertiary mb-0.5">Fingerprint</p>
+                    <p className="text-xs font-mono text-text-secondary">{fingerprint}</p>
+                  </div>
+                )}
+
+                {/* Private key — only after Reveal */}
                 <div>
                   <div className="flex items-center justify-between mb-0.5">
                     <p className="text-sm text-text-tertiary">Private Key</p>
@@ -152,17 +195,22 @@ export function DetailPanel({ entry, onClose }) {
                   </div>
                   <MaskedField label="" value={entryData.privateKey} revealed={isRevealed} />
                 </div>
-                <div>
-                  <div className="flex items-center justify-between mb-0.5">
-                    <p className="text-sm text-text-tertiary">Public Key</p>
-                    <CopyButton value={isRevealed ? entryData.publicKey : undefined} />
+
+                {/* Username (for manual SSH entries) */}
+                {(entryData.username || entry.username) && (
+                  <div>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <p className="text-sm text-text-tertiary">Username</p>
+                      <CopyButton value={isRevealed ? entryData.username : undefined} />
+                    </div>
+                    <MaskedField label="" value={entryData.username || entry.username} revealed={isRevealed} />
                   </div>
-                  <MaskedField label="" value={entryData.publicKey} revealed={isRevealed} />
-                </div>
+                )}
               </>
             )}
 
-            {entryType === 'cert' && (
+            {/* ── Certificate entry ── */}
+            {(entryType === 'cert' || entryType === 'certificate') && (
               <>
                 <div>
                   <div className="flex items-center justify-between mb-0.5">
@@ -190,11 +238,12 @@ export function DetailPanel({ entry, onClose }) {
 
             <MaskedField
               label="Modified"
-              value={entry.updatedAt ? new Date(entry.updatedAt / 1e6).toLocaleString() : '\u2014'}
+              value={entry.updatedAt ? new Date(entry.updatedAt / 1e6).toLocaleString() : '—'}
               revealed={true}
             />
           </div>
 
+          {/* Footer */}
           <div className="shrink-0 p-4 border-t border-border flex gap-2 justify-end">
             {isRevealed ? (
               <button
@@ -212,7 +261,7 @@ export function DetailPanel({ entry, onClose }) {
                 {isDecrypting ? 'Decrypting...' : 'Reveal'}
               </button>
             )}
-            <button variant="ghost" size="sm" onClick={onClose}
+            <button onClick={onClose}
               className="h-9 px-4 rounded-md text-sm font-medium text-text-secondary hover:bg-surface-subtle transition-fast"
             >
               Close

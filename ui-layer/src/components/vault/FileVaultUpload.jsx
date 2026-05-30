@@ -107,7 +107,9 @@ export function FileVaultUpload({ onSuccess, onCancel }) {
         {file ? (
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3 text-left">
-              <span className="text-2xl">📄</span>
+              <span className="text-xs font-mono font-semibold px-1.5 py-0.5 rounded bg-surface-subtle border border-border text-text-tertiary shrink-0">
+                FILE
+              </span>
               <div>
                 <p className="text-sm font-medium text-text-primary">{file.name}</p>
                 <p className="text-xs text-text-secondary">{formatSize(file.size)}</p>
@@ -125,7 +127,7 @@ export function FileVaultUpload({ onSuccess, onCancel }) {
           </div>
         ) : (
           <>
-            <div className="text-3xl mb-2">📂</div>
+            <div className="text-3xl mb-2 text-text-disabled font-mono">&#x25A4;</div>
             <p className="text-sm font-medium mb-1">Drop a file here</p>
             <p className="text-xs text-text-tertiary">or click to browse</p>
           </>
@@ -179,7 +181,7 @@ export function FileVaultUpload({ onSuccess, onCancel }) {
           disabled={!file || uploading}
           className="h-8 px-4 rounded-md text-sm font-medium text-white bg-accent hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed transition-fast"
         >
-          {uploading ? 'Uploading…' : '🔒 Encrypt & Store'}
+          {uploading ? 'Uploading…' : 'Encrypt & Store'}
         </button>
       </div>
     </div>

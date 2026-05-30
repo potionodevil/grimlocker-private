@@ -4,28 +4,28 @@ import { isDevMode } from '../../utils/devMode'
 const NAV_SECTIONS = [
   {
     items: [
-      { id: 'all',       label: 'All Items',   icon: '⬡' },
+      { id: 'all',       label: 'All Items',    icon: '⬡' },
     ],
   },
   {
     label: 'Vault',
     items: [
-      { id: 'passwords',  label: 'Passwords',   icon: '🔑' },
-      { id: 'ssh',        label: 'SSH Keys',    icon: '🔐' },
-      { id: 'certs',      label: 'Certificates',icon: '📄' },
-      { id: 'FILE_VAULT', label: 'File Vault',  icon: '📁' },
+      { id: 'passwords',  label: 'Passwords',   icon: '##' },
+      { id: 'ssh',        label: 'SSH Keys',    icon: '>_' },
+      { id: 'certs',      label: 'Certificates',icon: '[]' },
+      { id: 'FILE_VAULT', label: 'File Vault',  icon: '▤' },
     ],
   },
   {
     label: 'Workspace',
     items: [
-      { id: 'admin',     label: 'Admin',       icon: '🛡' },
+      { id: 'admin',     label: 'Admin',        icon: '◈' },
     ],
   },
   ...(isDevMode() ? [{
     label: 'Development',
     items: [
-      { id: 'debug',     label: 'Debug',       icon: '🔧' },
+      { id: 'debug',     label: 'Debug',        icon: '◆' },
     ],
   }] : []),
 ]
@@ -58,7 +58,7 @@ export function Sidebar({ activeView, onNavigate }) {
                     : 'text-text-secondary hover:bg-surface-subtle hover:text-text-primary',
                 )}
               >
-                <span className="text-base leading-none">{item.icon}</span>
+                <span className="text-xs font-mono leading-none w-4 text-center shrink-0">{item.icon}</span>
                 {item.label}
               </button>
             ))}
@@ -77,7 +77,7 @@ export function Sidebar({ activeView, onNavigate }) {
               : 'text-text-secondary hover:bg-surface-subtle hover:text-text-primary',
           )}
         >
-          <span className="text-base">⚙</span>
+          <span className="text-xs font-mono leading-none w-4 text-center shrink-0">&#x2699;</span>
           Preferences
         </button>
       </div>
