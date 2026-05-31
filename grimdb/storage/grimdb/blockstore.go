@@ -1,3 +1,25 @@
+// Package grimdb implements the file-backed encrypted block store (GrimDB).
+//
+// Storage layout on disk:
+//
+//	vault_entries.enc  — append-only data file; each block occupies:
+//	                     nonce(12 bytes) + ciphertext+AEAD-tag + HMAC(32 bytes)
+//	vault_index.enc    — encrypted JSON index mapping block ID → blockRecord.
+//	                     Written atomically via a .tmp file + rename.
+//
+// Encryption: ChaCha20-Poly1305 with a per-block random 12-byte nonce.
+// The encryption key (MVK) is never stored in heap memory — callers provide
+// a resolver function via SetMVKFunc that fetches the key from locked memory.
+//
+// Block integrity: each block carries an HMAC-SHA256 over (id ‖ nonce ‖ ciphertext)
+// computed with a key derived from the MVK via HMAC-SHA256("grimlocker-hmac-v1").
+// ReadBlock verifies the HMAC before returning data, using constant-time comparison.
+//
+// Deletion is secure: DeleteBlock overwrites the ciphertext region with zeros on
+// disk before removing the block from the index (best-effort on SSDs with wear-leveling).
+//
+// Concurrency: a single sync.RWMutex guards the in-memory index and all file I/O.
+// Reads hold RLock; writes hold Lock. Multiple concurrent reads are safe.
 package grimdb
 
 import (
@@ -7,7 +29,6 @@ import (
 	"crypto/subtle"
 	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -15,6 +36,7 @@ import (
 	"time"
 
 	"github.com/grimlocker/grimdb/crypto"
+	gerrors "github.com/grimlocker/grimdb/errors"
 	"github.com/grimlocker/grimdb/storage"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -93,7 +115,7 @@ func (bs *BlockStoreImpl) LoadIndex() error {
 			bs.index = make(map[string]blockRecord)
 			return nil
 		}
-		return fmt.Errorf("open index file: %w", err)
+		return gerrors.NewStorageIOError("open_index", "", err)
 	}
 	defer f.Close()
 
@@ -102,36 +124,37 @@ func (bs *BlockStoreImpl) LoadIndex() error {
 		if err == io.EOF {
 			return nil
 		}
-		return fmt.Errorf("read index length: %w", err)
+		return gerrors.NewStorageIOError("read_index_length", "", err)
 	}
 
 	indexLen := binary.BigEndian.Uint32(lenBuf)
 	nonce := make([]byte, 12)
 	if _, err := io.ReadFull(f, nonce); err != nil {
-		return fmt.Errorf("read index nonce: %w", err)
+		return gerrors.NewStorageIOError("read_index_nonce", "", err)
 	}
 
 	ct := make([]byte, indexLen)
 	if _, err := io.ReadFull(f, ct); err != nil {
-		return fmt.Errorf("read encrypted index: %w", err)
+		return gerrors.NewStorageIOError("read_encrypted_index", "", err)
 	}
 
 	if err := crypto.ValidateKeyLength(bs.mvk()); err != nil {
-		return fmt.Errorf("blockstore LoadIndex: %w", err)
+		return gerrors.NewCryptoInvalidKeyError(len(bs.mvk()))
 	}
 	cipher, err := chacha20poly1305.New(bs.mvk())
 	if err != nil {
-		return err
+		return gerrors.NewCryptoDecryptionError("", err)
 	}
 
 	indexJSON, err := cipher.Open(nil, nonce, ct, nil)
 	if err != nil {
-		return fmt.Errorf("decrypt index: %w", err)
+		return gerrors.NewCryptoDecryptionError("vault_index", err)
 	}
 
 	var idx map[string]blockRecord
 	if err := json.Unmarshal(indexJSON, &idx); err != nil {
-		return fmt.Errorf("unmarshal index: %w", err)
+		return gerrors.NewStorageCorruptionError("unmarshal_index", "",
+			map[string]string{"json_error": err.Error()})
 	}
 	bs.index = idx
 
@@ -143,8 +166,17 @@ func (bs *BlockStoreImpl) LoadIndex() error {
 	return nil
 }
 
-// WriteBlock encrypts and appends a block to the data file, then persists the index.
-// The block's Data field must already be encrypted ciphertext.
+// WriteBlock encrypts and appends a block to the vault_entries.enc data file,
+// then atomically updates the encrypted index.
+//
+// The block's Data field must be the plaintext or ciphertext depending on the
+// storage strategy in use (NopStrategy passes data through unchanged).
+// WriteBlock generates a random 12-byte nonce, derives an HMAC key from the MVK,
+// computes HMAC-SHA256(id ‖ nonce ‖ data), appends nonce+hmac+data to the file,
+// and calls persistIndexLocked to flush the updated in-memory index.
+//
+// Returns *errors.GrimlockError with code ErrCodeStorageIO on any I/O failure.
+// The vault must be unlocked (MVK resolver set) before calling WriteBlock.
 func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -164,7 +196,7 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 	if len(b.Nonce) == 0 {
 		b.Nonce = make([]byte, 12)
 		if _, err := rand.Read(b.Nonce); err != nil {
-			return fmt.Errorf("nonce generation: %w", err)
+			return gerrors.NewStorageIOError("nonce_generation", b.ID, err)
 		}
 	}
 
@@ -179,7 +211,7 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 
 	f, err := os.OpenFile(dataFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
-		return fmt.Errorf("open data file: %w", err)
+		return gerrors.NewStorageIOError("open_data_file", b.ID, err)
 	}
 
 	stat, _ := f.Stat()
@@ -199,7 +231,7 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 	}
 
 	if err := f.Close(); err != nil {
-		return fmt.Errorf("close data file: %w", err)
+		return gerrors.NewStorageIOError("close_data_file", b.ID, err)
 	}
 
 	bs.index[b.ID] = blockRecord{
@@ -217,7 +249,15 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 	return bs.persistIndexLocked()
 }
 
-// ReadBlock retrieves and verifies a block from the store.
+// ReadBlock retrieves a block from the store by its ID, verifies its HMAC,
+// and returns the raw (still-encrypted) ciphertext inside the Block.Data field.
+//
+// HMAC verification uses constant-time comparison to prevent timing attacks.
+// If verification fails, ErrCodeStorageCorruption (2002) is returned — this
+// indicates either tampered data or a mismatched MVK (e.g. wrong password).
+//
+// Returns ErrCodeStorageNotFound (2003) if the block ID is not in the index.
+// Returns ErrCodeStorageIO (2001) on any disk read failure.
 func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
 	bs.mu.RLock()
 	rec, exists := bs.index[id]
@@ -226,18 +266,18 @@ func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
 	bs.mu.RUnlock()
 
 	if !exists {
-		return storage.Block{}, fmt.Errorf("block not found: %s", id)
+		return storage.Block{}, gerrors.NewStorageNotFoundError(id)
 	}
 
 	f, err := os.Open(filePath)
 	if err != nil {
-		return storage.Block{}, err
+		return storage.Block{}, gerrors.NewStorageIOError("open_data_file", id, err)
 	}
 	defer f.Close()
 
 	ct := make([]byte, rec.Length)
 	if _, err := f.ReadAt(ct, rec.Offset); err != nil {
-		return storage.Block{}, fmt.Errorf("read block: %w", err)
+		return storage.Block{}, gerrors.NewStorageIOError("read_block_data", id, err)
 	}
 
 	// Verify HMAC before returning.
@@ -247,7 +287,8 @@ func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
 	mac.Write(rec.Nonce)
 	mac.Write(ct)
 	if subtle.ConstantTimeCompare(mac.Sum(nil), rec.HMAC) != 1 {
-		return storage.Block{}, fmt.Errorf("HMAC verification failed for block %s", id)
+		return storage.Block{}, gerrors.NewStorageCorruptionError("hmac_verify", id,
+			map[string]string{"reason": "HMAC mismatch — data may be tampered"})
 	}
 
 	b := storage.Block{
@@ -262,8 +303,13 @@ func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
 	return bs.strategy.OnRead(b)
 }
 
-// DeleteBlock removes a block from the index and zeroes the ciphertext
-// region on disk before removing from the index (secure delete).
+// DeleteBlock performs a secure delete: it overwrites the block's ciphertext
+// region on disk with zeros (best-effort; SSDs with wear-leveling may retain
+// copies), then removes the block from the in-memory index and persists the
+// updated index atomically.
+//
+// Silently returns nil if the block ID is not in the index (idempotent).
+// Returns ErrCodeStorageIO (2001) if the disk overwrite or index persist fails.
 func (bs *BlockStoreImpl) DeleteBlock(id string) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -282,7 +328,12 @@ func (bs *BlockStoreImpl) DeleteBlock(id string) error {
 	return bs.persistIndexLocked()
 }
 
-// ListBlocks returns metadata for all known blocks.
+// ListBlocks returns a snapshot of BlockMeta for all blocks in the in-memory
+// index. No disk I/O is performed — the index is loaded once during LoadIndex
+// and kept in sync by WriteBlock/DeleteBlock.
+//
+// The vault must be unlocked for the index to be populated; calling ListBlocks
+// on a locked vault returns an empty slice (the index is zeroed on ZeroMVK).
 func (bs *BlockStoreImpl) ListBlocks() ([]storage.BlockMeta, error) {
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
@@ -322,13 +373,18 @@ func (bs *BlockStoreImpl) QueryBlocks(category storage.Category) ([]storage.Bloc
 	return result, nil
 }
 
-// Flush atomically rewrites the index.
+// Flush atomically rewrites the encrypted index to vault_index.enc.
+// Called during graceful shutdown before zeroing the MVK to ensure no
+// pending writes are lost. Safe to call concurrently — acquires the write lock.
 func (bs *BlockStoreImpl) Flush() error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	return bs.persistIndexLocked()
 }
 
+// Close flushes the index and logs the final block count. Always call Close
+// (or defer it) before the daemon exits to prevent index corruption.
+// Returns ErrCodeStorageIndexFailed (2005) if the final persist fails.
 func (bs *BlockStoreImpl) Close() error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -378,20 +434,20 @@ func (bs *BlockStoreImpl) zeroBlockDataLocked(rec blockRecord) error {
 func (bs *BlockStoreImpl) persistIndexLocked() error {
 	indexJSON, err := json.Marshal(bs.index)
 	if err != nil {
-		return fmt.Errorf("marshal index: %w", err)
+		return gerrors.NewStorageIndexError("marshal_index", err)
 	}
 
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
-		return err
+		return gerrors.NewStorageIOError("nonce_generation_index", "", err)
 	}
 
 	if err := crypto.ValidateKeyLength(bs.mvk()); err != nil {
-		return fmt.Errorf("blockstore persistIndex: %w", err)
+		return gerrors.NewCryptoInvalidKeyError(len(bs.mvk()))
 	}
 	cipher, err := chacha20poly1305.New(bs.mvk())
 	if err != nil {
-		return err
+		return gerrors.NewCryptoEncryptionError("new_cipher_index", err)
 	}
 
 	ct := cipher.Seal(nil, nonce, indexJSON, nil)

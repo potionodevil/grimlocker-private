@@ -4,6 +4,7 @@ package single
 
 import (
 	"github.com/grimlocker/grimdb/kernel"
+	"github.com/grimlocker/grimdb/storage"
 	"github.com/grimlocker/grimdb/storage/grimdb"
 )
 
@@ -24,11 +25,16 @@ func newLocalStorage(db *grimdb.GrimDB, appDir string) *LocalStorage {
 
 // --- storage.BlockStore delegation ---
 
-func (s *LocalStorage) WriteBlock(b interface{}) error {
-	// Type-checked at compile time via the embed in provider.StorageProvider.
-	// Actual delegation occurs through the blockStore field.
-	return nil // implemented via BlockStoreImpl directly
+func (s *LocalStorage) WriteBlock(b storage.Block) error { return s.blockStore.WriteBlock(b) }
+
+func (s *LocalStorage) ReadBlock(id string) (storage.Block, error) { return s.blockStore.ReadBlock(id) }
+func (s *LocalStorage) DeleteBlock(id string) error                { return s.blockStore.DeleteBlock(id) }
+func (s *LocalStorage) ListBlocks() ([]storage.BlockMeta, error)   { return s.blockStore.ListBlocks() }
+func (s *LocalStorage) QueryBlocks(cat storage.Category) ([]storage.BlockMeta, error) {
+	return s.blockStore.QueryBlocks(cat)
 }
+func (s *LocalStorage) Flush() error { return s.blockStore.Flush() }
+func (s *LocalStorage) Close() error { return s.blockStore.Close() }
 
 // BlockStore returns the raw BlockStoreImpl for direct use where needed
 // (e.g., IngestEngine, EntryHandler).

@@ -15,8 +15,9 @@ import (
 	"github.com/grimlocker/grimdb/security/mtls"
 )
 
-// startTierListener starts an mTLS listener on :9443 for the enterprise tier
-// and a plaintext probe listener on :9090 for Docker/k8s liveness checks.
+// startTierListener starts an mTLS listener for the enterprise tier.
+// Binds to GRIMLOCKER_BIND_ADDR (default "0.0.0.0:9443") and starts a plaintext
+// probe listener on GRIMLOCKER_PROBE_PORT (default "9090", localhost only).
 // vault must be *enterprise.Provider.
 func startTierListener(vault interface{}, ipcMux *http.ServeMux) (net.Listener, string, error) {
 	ep, ok := vault.(*enterprise.Provider)
@@ -37,12 +38,17 @@ func startTierListener(vault interface{}, ipcMux *http.ServeMux) (net.Listener, 
 		return nil, "", fmt.Errorf("mTLS config: %w", err)
 	}
 
-	ln, err := net.Listen("tcp", "0.0.0.0:9443")
+	bindAddr := os.Getenv("GRIMLOCKER_BIND_ADDR")
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0:9443"
+	}
+
+	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {
-		return nil, "", fmt.Errorf("listen 0.0.0.0:9443: %w", err)
+		return nil, "", fmt.Errorf("listen %s: %w", bindAddr, err)
 	}
 	tlsLn := tls.NewListener(ln, tlsCfg)
-	log.Printf("[Omega] Enterprise mTLS listener on 0.0.0.0:9443 (TLS 1.3, mutual auth)")
+	log.Printf("[Omega] Enterprise mTLS listener on %s (TLS 1.3, mutual auth)", bindAddr)
 
 	// Plaintext probe port — only /health, no auth, no mTLS.
 	// Used by: Docker HEALTHCHECK, Kubernetes liveness/readiness probes.

@@ -1,3 +1,23 @@
+// Package kernel implements the event bus that is the central nervous system of
+// the Grimlocker daemon. All inter-module communication MUST go through the
+// Dispatcher — modules never import or call each other directly.
+//
+// Core concepts:
+//
+//   - Event: the unit of communication (typed JSON payload with TTL and ID).
+//   - Dispatcher: routes events to registered handlers by channel prefix.
+//   - Module: a stateful component that owns one or more channels (e.g. "CRYPTO").
+//   - Handler: a func(Event) error called in a dedicated goroutine per event.
+//   - Gate: the STORAGE channel is blocked until AUTH.KEY_READY is received,
+//     preventing any block reads/writes before the vault is unlocked.
+//
+// Bus lifecycle:
+//
+//  1. NewBus(opts...) — create the bus (with optional gated channels).
+//  2. Register(module) — subscribe a Module to its declared channels.
+//  3. StartAll(ctx) — call Start() on every registered Module in order.
+//  4. Dispatch(event) / Request(ctx, event) — send events.
+//  5. Shutdown(ctx) — drain and stop all modules.
 package kernel
 
 import (

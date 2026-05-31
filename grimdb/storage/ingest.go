@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"time"
 
 	"github.com/grimlocker/grimdb/crypto"
@@ -178,6 +179,15 @@ func (e *IngestEngine) IngestWithOptions(
 	if err := e.store.WriteBlock(manifestBlock); err != nil {
 		e.deleteChunks(chunkIDs)
 		return BlobManifest{}, fmt.Errorf("write manifest: %w", err)
+	}
+
+	// Critical: flush the index to disk after writing manifest.
+	// Without this, the index may not be persisted and data can become
+	// inconsistent if the connection closes before the next operation.
+	if err := e.store.Flush(); err != nil {
+		log.Printf("[IngestEngine] WARNING: Flush after manifest write failed: %v", err)
+		e.deleteChunks(chunkIDs)
+		return BlobManifest{}, fmt.Errorf("flush index: %w", err)
 	}
 
 	// Final progress callback.

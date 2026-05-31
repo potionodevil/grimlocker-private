@@ -1,3 +1,21 @@
+// Package security (session.go) implements SessionContext — the global
+// vault-unlock state shared between the security module, the storage adapter,
+// and the API translator.
+//
+// SessionContext answers one question: "Is the vault currently unlocked?"
+// It is the authoritative source of truth for the active MVK handle and
+// is consulted by HandshakeStatus so reconnecting WebSocket clients can
+// re-attach to an already-unlocked vault without re-entering their password.
+//
+// Thread-safe: all exported methods acquire the internal mutex.
+//
+// Lifecycle:
+//
+//	NewSessionContext()          // create (vault starts locked)
+//	sessionCtx.Unlock(handle)   // called after AUTH.KEY_READY
+//	sessionCtx.IsUnlocked()     // polled by storage adapter gate check
+//	sessionCtx.Lock()           // called on AUTH.LOGOUT
+//	sessionCtx.SessionDestroy() // called during graceful shutdown
 package security
 
 import (

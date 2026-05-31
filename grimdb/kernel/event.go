@@ -1,3 +1,14 @@
+// Package kernel (event.go) defines the Event type and all EventType constants
+// used across the Grimlocker daemon. Every inter-module message is an Event.
+//
+// EventType naming convention: CHANNEL.ACTION (e.g. "CRYPTO.ENCRYPT").
+// The channel prefix (everything before ".") is used by the bus to route
+// events to the correct Module.Handle implementation.
+//
+// Adding a new event:
+//  1. Add a constant here (e.g. EvFooBar EventType = "FOO.BAR").
+//  2. Register a handler in the owning module's buildHandlers() / buildRegistry().
+//  3. Document the JSON payload schema in a comment next to the constant.
 package kernel
 
 // EventType is the channel address of an event. The prefix before "." is the
@@ -41,7 +52,7 @@ const (
 	EvEntryDelete EventType = "ENTRY.DELETE"
 	EvEntryIngest EventType = "ENTRY.INGEST"
 	EvEntryResult EventType = "ENTRY.RESULT"
-	EvEntryQuery  EventType = "ENTRY.QUERY"  // client → daemon: {category: "PASSWORD"|"SSH_KEY"|…}
+	EvEntryQuery  EventType = "ENTRY.QUERY" // client → daemon: {category: "PASSWORD"|"SSH_KEY"|…}
 
 	// TOOL channel — owned by tools module
 	EvToolSSHGen EventType = "TOOL.SSH_GEN" // client → daemon: {comment: string}
@@ -75,6 +86,15 @@ const (
 	// KERNEL channel — handshake & status reporting
 	EvKernelStatus      EventType = "KERNEL.STATUS"
 	EvKernelStateReport EventType = "KERNEL.STATE_REPORT"
+	EvKernelStateMirror EventType = "KERNEL.STATE_MIRROR" // full vault state push on reconnect
+
+	// RECONNECT channel — UI re-attach protocol (Phase 3)
+	EvReconnectResume EventType = "RECONNECT.RESUME" // client requests session resume
+	EvReconnectSync   EventType = "RECONNECT.SYNC"   // server pushes full state to reconnected client
+
+	// GQL channel — GrimQueryLanguage binary protocol (Phase 4)
+	EvGQLQuery  EventType = "GQL.QUERY"  // client → server: binary-encoded GQLQuery frame
+	EvGQLResult EventType = "GQL.RESULT" // server → client: GQLResult (success or error)
 
 	// SYSTEM channel — errors, health, telemetry
 	EvSystemError       EventType = "SYSTEM.ERROR"

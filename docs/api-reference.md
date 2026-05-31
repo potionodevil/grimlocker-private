@@ -1,6 +1,6 @@
 # API Reference
 
-This document specifies the complete IPC protocol, WebSocket API, message types, and client-server interaction patterns.
+This document specifies the complete IPC protocol, WebSocket API, REST API, message types, and client-server interaction patterns.
 
 ---
 
@@ -8,14 +8,131 @@ This document specifies the complete IPC protocol, WebSocket API, message types,
 
 ### Single-User Mode
 
-| Port | Protocol | Purpose |
+Ports are **dynamically allocated** on startup. The daemon prints them to stdout:
+
+```
+GRIMLOCKER_IPC=ws://127.0.0.1:<ipc-port>/ws
+GRIMLOCKER_UI=http://127.0.0.1:<ui-port>
+```
+
+| Route | Protocol | Purpose |
 |---|---|---|
-| `8080` | HTTP | Serves embedded static UI assets (go:embed). No authentication required. |
-| `8374` | WebSocket | IPC bridge for frontend-daemon communication. Token-based authentication. |
+| `127.0.0.1:<ipc-port>/ws` | WebSocket | IPC bridge — binary protocol |
+| `127.0.0.1:<ipc-port>/api/v1` | HTTP POST JSON | REST event dispatch |
+| `127.0.0.1:<ipc-port>/health` | HTTP GET | Daemon health + vault status |
+| `127.0.0.1:<ipc-port>/init` | HTTP POST JSON | One-shot vault initialization |
+| `127.0.0.1:<ipc-port>/shutdown` | HTTP POST | Request graceful daemon shutdown |
+| `127.0.0.1:<ui-port>/` | HTTP GET | Embedded React UI (go:embed) |
 
 ### Enterprise Mode
 
-Additional ports/configurations are documented in the Enterprise deployment guide.
+| Port | Protocol | Purpose |
+|---|---|---|
+| `:9443` | TCP/TLS (mTLS) | Client connections — requires mutual TLS |
+| `:9090` | HTTP plaintext | Liveness probe only (`/health`) |
+
+---
+
+## REST API (`/api/v1`)
+
+The REST API accepts `POST` requests with JSON body `{"action":"<name>","payload":{...}}` and returns `{"ok":bool,"payload":{...},"error":"..."}`.
+
+### Available Actions
+
+| Action | Event | Description |
+|---|---|---|
+| `vault.unlock` | `AUTH.UNLOCK` | Authenticate and unlock vault |
+| `vault.logout` | `AUTH.LOGOUT` | Lock vault (clear session) |
+| `vault.status` | `AUTH.STATUS` | Get lockdown / attempt state |
+| `vault.init` | `AUTH.SETUP` | Check vault initialization state |
+| `entry.create` | `ENTRY.CREATE` | Create a vault entry |
+| `entry.read` | `ENTRY.READ` | Read entry by ID |
+| `entry.update` | `ENTRY.UPDATE` | Update entry by ID |
+| `entry.delete` | `ENTRY.DELETE` | Delete entry by ID |
+| `entry.query` | `ENTRY.QUERY` | List entries by category |
+| `storage.write` | `STORAGE.WRITE` | Write raw encrypted block |
+| `storage.read` | `STORAGE.READ` | Read raw block by ID |
+| `storage.delete` | `STORAGE.DELETE` | Delete raw block |
+| `storage.list` | `STORAGE.LIST` | List all block metadata |
+
+### `POST /api/v1` — vault.unlock
+
+```json
+// Request
+{"action":"vault.unlock","payload":{"password":"MyMasterPassword"}}
+
+// Response (success)
+{"ok":true,"payload":{"success":true,"mvk_handle":"abc123","session_key":"<base64>"}}
+
+// Response (failure)
+{"ok":true,"payload":{"success":false,"reason":"invalid password"}}
+```
+
+### `POST /api/v1` — entry.create
+
+```json
+// Request
+{
+  "action": "entry.create",
+  "payload": {
+    "id": "github/myuser",
+    "title": "github/myuser",
+    "category": "password",
+    "fields": {"value": "ghp_secret123"}
+  }
+}
+
+// Response
+{"ok":true,"payload":{"id":"<uuid>","title":"github/myuser","category":"password",...}}
+```
+
+### `POST /init` — Vault Initialization
+
+Initialize a new vault (first-run only). Returns an error if vault already exists.
+
+```json
+// Request
+POST /init
+{"password":"MyMasterPassword"}
+
+// Response (success)
+{"recovery_phrase":"<base64-phrase>"}
+
+// Response (vault already initialized)
+HTTP 409 {"error":"vault already initialized"}
+```
+
+⚠️ **Store the recovery phrase securely.** It cannot be retrieved again.
+
+### `POST /shutdown` — Graceful Shutdown
+
+Requests a clean daemon shutdown. The daemon flushes storage, revokes cryptographic handles, and exits within ~5 seconds.
+
+```json
+// Request
+POST /shutdown   (no body required)
+
+// Response (immediate)
+{"status":"shutting_down"}
+```
+
+### `GET /health` — Daemon Health
+
+Returns current daemon state.
+
+```json
+{
+  "status": "ready",
+  "tier": "single",
+  "version": "omega-2026-05-30-v1",
+  "ipc_port": 12345,
+  "ui_port": 12346,
+  "vault_unlocked": false,
+  "pid": 1234
+}
+```
+
+`vault_unlocked: true` is sent to reconnecting WebSocket clients via `HandshakeStatus` so the UI can re-attach to an already-unlocked vault without prompting for the password again.
 
 ---
 
@@ -422,19 +539,86 @@ Socket path:
   Windows:     \\.\pipe\grimlocker
 
 Commands:
-  grimlocker client unlock
-  grimlocker client lock
-  grimlocker client status
-  grimlocker client create-entry --title "..." --username "..." --password "..."
-  grimlocker client list-entries
-  grimlocker client get-entry --id "..."
-  grimlocker client delete-entry --id "..."
-  grimlocker client wipe
-  grimlocker client health
+  grimlocker init   <password>               Initialize a new vault (first run)
+  grimlocker unlock <password|oidc-token>    Authenticate and unlock
+  grimlocker get    <title-or-uuid>          Retrieve entry (search by title)
+  grimlocker set    <id> <value> [category]  Create entry
+  grimlocker update <id> <value> [category]  Update entry
+  grimlocker delete <title-or-uuid>          Delete entry (search by title)
+  grimlocker list   [category]               List entries
+  grimlocker lock                            Lock vault
+  grimlocker status                          Vault status (locked / lockdown state)
+  grimlocker health                          Daemon health JSON
+  grimlocker audit  [count]                  Recent audit log (default: 20)
+  grimlocker version                         Print version (no daemon needed)
+  grimlocker help                            Show usage
 ```
 
-### Remote Mode (Enterprise)
+### Tier Detection (Environment)
+
+The CLI auto-detects the tier from environment variables:
+
+```bash
+# Single-user (local IPC)
+export GRIMLOCKER_IPC=ws://127.0.0.1:<port>/ws
+export GRIMLOCKER_TOKEN=<token>
+
+# Enterprise (remote mTLS)
+export GRIMLOCKER_DAEMON_ADDR=grimlocker.example.com:9443
+export GRIMLOCKER_CLIENT_CERT=deploy/tls/client.crt
+export GRIMLOCKER_CLIENT_KEY=deploy/tls/client.key
+export GRIMLOCKER_CA_CERT=deploy/tls/ca.crt
+```
+
+---
+
+## File Upload Protocol (WebSocket Binary)
+
+File ingestion uses a three-phase streaming protocol over the binary WebSocket:
 
 ```
-grimlocker client --remote --addr grimlocker.example.com:9443 --cert client.crt --key client.key unlock
+Phase 1 — BEGIN:
+  Client → Server: 0x20 MSG_FILE_INGEST_BEGIN
+    Payload: {"file_name":"doc.pdf","mime_type":"application/pdf","total_size":102400}
+  Server → Client: 0x08 MSG_ACK
+    Payload: {"status":"ready"}
+
+Phase 2 — CHUNKS (repeated):
+  Client → Server: 0x21 MSG_FILE_CHUNK
+    Payload: <64 KB raw binary data>
+  Server → Client: 0x23 MSG_INGEST_PROGRESS (optional)
+    Payload: {"progress":0.42,"stage":"ingesting","message":"43008 / 102400 bytes"}
+
+Phase 3 — END:
+  Client → Server: 0x22 MSG_FILE_INGEST_END
+    Payload: (empty)
+  Server → Client: 0x1D MSG_ENTRY_RESULT
+    Payload: {"id":"<uuid>","file_name":"doc.pdf","mime_type":"...","sha256":"<hex>",
+              "chunk_ids":["..."],"compressed":true,"algorithm":"zstd","total_size":102400}
+    OR
+  Server → Client: 0x09 MSG_ERROR
+    Payload: "mvk not available" | "ingest timeout" | ...
 ```
+
+The ingest engine pipeline per chunk: **Read → SHA-256 hash → zstd compress → ChaCha20-Poly1305 encrypt → Write block**
+
+On any error, all written chunks are automatically rolled back (atomic ingest).
+
+---
+
+## Reconnect & Vault State Persistence
+
+The daemon does **not** reset the vault state when the WebSocket disconnects. The session remains unlocked across reconnects (e.g. Tauri window navigation, browser refresh).
+
+On every new WebSocket connection, `HandshakeStatus` sends:
+
+```json
+// MSG_ACK (0x08) payload
+{
+  "status": "Online",
+  "initialized": true,
+  "unlocked": true
+}
+```
+
+The UI checks `unlocked` to decide whether to show the vault dashboard directly (re-attach) or the unlock screen (fresh session).

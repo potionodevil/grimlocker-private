@@ -23,6 +23,8 @@ import (
 	ws "github.com/grimlocker/grimdb/api/websocket"
 	rustbridge "github.com/grimlocker/grimdb/cgo"
 	"github.com/grimlocker/grimdb/crypto"
+	gerrors "github.com/grimlocker/grimdb/errors"
+	"github.com/grimlocker/grimdb/gql"
 	"github.com/grimlocker/grimdb/kernel"
 	"github.com/grimlocker/grimdb/security"
 	"github.com/grimlocker/grimdb/storage"
@@ -35,13 +37,14 @@ const requestTimeout = 30 * time.Second
 // Translator converts binary IPC frames into kernel Events and delivers
 // kernel result Events back as binary frames.
 type Translator struct {
-	bus          kernel.Dispatcher
-	db           *grimdb.GrimDB
-	appDir       string
-	crypto       crypto.Provider
-	bridge       *ws.Bridge
-	entryHandler *handlers.EntryHandler
-	workspaceMgr *storage.WorkspaceManager
+	bus           kernel.Dispatcher
+	db            *grimdb.GrimDB
+	appDir        string
+	crypto        crypto.Provider
+	bridge        *ws.Bridge
+	entryHandler  *handlers.EntryHandler
+	workspaceMgr  *storage.WorkspaceManager
+	gqlDispatcher *gql.Dispatcher
 
 	// tokenValidator is injected by the daemon to validate AUTH.TOKEN_SUBMIT payloads.
 	tokenValidator func(string) bool
@@ -78,8 +81,11 @@ func NewTranslator(bus kernel.Dispatcher, db *grimdb.GrimDB, appDir string, cryp
 	}
 }
 
-// SetSessionContext injects the session context so HandshakeStatus can push
-// the vault unlock state to reconnecting clients.
+// SetSessionContext injects the global SessionContext so that HandshakeStatus
+// can include vault_unlocked=true/false in the initial WebSocket handshake.
+// This lets reconnecting clients re-attach to an already-unlocked vault without
+// prompting the user for their password again.
+// Call once during daemon startup, before serving WebSocket connections.
 func (t *Translator) SetSessionContext(s *security.SessionContext) {
 	t.sessionCtx = s
 }
@@ -94,21 +100,71 @@ func (t *Translator) SessionKeyHandle() string {
 // Includes vault initialization AND unlock state so reconnecting clients
 // can re-attach to an already-unlocked vault without asking the user to
 // re-enter their password.
+//
+// Phase 3: Extended to push full vault state mirror (active workspace,
+// entry count, gate status) so the UI can fully reconstruct its state
+// after a transient WebSocket disconnect (e.g., Tauri page navigation).
 func (t *Translator) HandshakeStatus(conn *gorillaws.Conn) error {
 	initialized, _, _ := grimdb.CheckVaultStatus(t.appDir)
 	unlocked := t.sessionCtx != nil && t.sessionCtx.IsUnlocked()
 
-	payload, _ := json.Marshal(map[string]interface{}{
+	state := map[string]interface{}{
 		"status":      "Online",
 		"initialized": initialized,
 		"unlocked":    unlocked,
-	})
+	}
+
+	// Full state mirror: push additional context so the UI can re-attach
+	// without re-querying the daemon for every piece of state.
+	if unlocked && t.sessionCtx != nil {
+		state["gate_open"] = true
+		state["mvk_handle_ok"] = t.sessionCtx.MVKHandle() != ""
+
+		// Entry count: query block store index size (non-blocking, in-memory).
+		if t.bus != nil {
+			ev := kernel.NewEvent("api", kernel.EvStorageList, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			result, err := t.bus.Request(ctx, ev)
+			cancel()
+			if err == nil {
+				var stored struct {
+					Metas []storage.BlockMeta `json:"metas,omitempty"`
+				}
+				if json.Unmarshal(result.Payload, &stored) == nil {
+					state["entry_count"] = len(stored.Metas)
+				}
+			}
+		}
+
+		// Workspace info
+		if t.workspaceMgr != nil {
+			ws := t.workspaceMgr.Active()
+			if ws != nil {
+				state["active_workspace"] = map[string]string{
+					"id":   ws.ID,
+					"name": ws.Name,
+				}
+			}
+		}
+	} else {
+		state["gate_open"] = false
+	}
+
+	payload, _ := json.Marshal(state)
 	return ws.WriteMessage(conn, ipc.MsgAck, payload)
 }
 
-// SetEntryHandler injects the entry handler for CRUD operations.
+// SetEntryHandler injects the EntryHandler used by MsgEntryCreate, MsgEntryUpdate,
+// MsgEntryDelete, and the file-ingest message types. Must be called after the
+// entry handler's dispatcher is set (i.e. after reg.StartAll). If not set,
+// those message types return an "entry handler unavailable" error to the client.
 func (t *Translator) SetEntryHandler(eh *handlers.EntryHandler) {
 	t.entryHandler = eh
+}
+
+// SetGQLDispatcher injects the GQL dispatcher for handling binary GQL frames.
+func (t *Translator) SetGQLDispatcher(gd *gql.Dispatcher) {
+	t.gqlDispatcher = gd
 }
 
 // SetBridge sets the WebSocket bridge for broadcasting log events.
@@ -127,7 +183,11 @@ func (t *Translator) SetBridge(bridge *ws.Bridge) {
 	t.bus.Subscribe(kernel.EvStorageVFSMount, t.makeLogHandler("STORAGE.VFS_MOUNT"))
 }
 
-// SetMVKResolver injects a function that returns the current MVK from locked memory.
+// SetMVKResolver injects the function used to fetch the current Master Vault Key
+// from locked memory (security.Module.RetrieveMVK). The translator uses this to
+// encrypt/decrypt legacy entries that were written directly via wsSaveEntry.
+// The returned slice must not be held past the current call frame — it points
+// directly into locked memory managed by the security module.
 func (t *Translator) SetMVKResolver(fn func() []byte) {
 	t.mvkResolver = fn
 }
@@ -192,7 +252,11 @@ func generateID() string {
 	return hex.EncodeToString(b[:])
 }
 
-// SetTokenValidator injects the function used to validate AUTH.TOKEN_SUBMIT payloads.
+// SetTokenValidator injects the function used to validate the one-time token
+// sent by the UI during the three-way WebSocket handshake (MsgAuthTokenSubmit).
+// The token is generated at daemon startup via GenerateSecureToken() and
+// sent to Tauri as a cookie; the UI echoes it back to prove it originates
+// from the legitimate Tauri shell, not an external browser tab.
 func (t *Translator) SetTokenValidator(fn func(string) bool) {
 	t.tokenValidator = fn
 }
@@ -331,6 +395,12 @@ func (t *Translator) HandleWS(msgType byte, payload []byte, conn *gorillaws.Conn
 	case ipc.MsgSSHKeyGen:
 		return t.wsSSHKeyGen(conn, payload)
 
+	case ipc.MsgReconnect:
+		return t.wsReconnect(conn, payload)
+
+	case ipc.MsgGQLQuery:
+		return t.wsGQLQuery(conn, payload)
+
 	case ipc.MsgSystemHeartbeat:
 		// Client acknowledged heartbeat — no action needed.
 		return nil
@@ -347,6 +417,25 @@ func (t *Translator) emitSystemError(msg string) {
 	}
 	payload, _ := json.Marshal(map[string]string{"error": msg, "source": "kernel"})
 	t.bridge.Broadcast(ipc.MsgError, payload)
+}
+
+// wsError writes a structured error response to the WebSocket client.
+// If err is a *GrimlockError, the error_code is included in the JSON payload.
+// Falls back to plain text for non-typed errors.
+func wsError(conn *gorillaws.Conn, err error) error {
+	if ge, ok := err.(*gerrors.GrimlockError); ok {
+		payload, _ := json.Marshal(map[string]interface{}{
+			"error":      ge.Message,
+			"error_code": ge.Code,
+		})
+		return ws.WriteMessage(conn, ipc.MsgError, payload)
+	}
+	return ws.WriteMessage(conn, ipc.MsgError, []byte(err.Error()))
+}
+
+// wsErrorMsg writes a plain string error (for cases where we have no typed error).
+func wsErrorMsg(conn *gorillaws.Conn, msg string) error {
+	return ws.WriteMessage(conn, ipc.MsgError, []byte(msg))
 }
 
 // --- Header / Ciphertext passthrough (unchanged from grimdb-go) ---
@@ -453,7 +542,7 @@ func (t *Translator) wsUnlockVault(conn *gorillaws.Conn, payload []byte) error {
 
 	result, err := t.bus.Request(ctx, ev)
 	if err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("unlock timeout"))
+		return wsError(conn, gerrors.NewBusTimeoutError("AUTH.UNLOCK"))
 	}
 
 	var res struct {
@@ -468,7 +557,8 @@ func (t *Translator) wsUnlockVault(conn *gorillaws.Conn, payload []byte) error {
 		if reason == "" {
 			reason = "invalid password"
 		}
-		return ws.WriteMessage(conn, ipc.MsgError, []byte(reason))
+		return wsError(conn, gerrors.NewAuthInvalidError("vault_unlock", nil).
+			WithDetails("reason", reason))
 	}
 
 	// Store the session key on the translator if it wasn't already set
@@ -497,7 +587,7 @@ func (t *Translator) wsSaveEntry(conn *gorillaws.Conn, payload []byte) error {
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &raw); err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("invalid entry payload"))
+		return wsError(conn, gerrors.NewProtocolError("save_entry_unmarshal", err))
 	}
 
 	entryID := generateID()
@@ -514,15 +604,15 @@ func (t *Translator) wsSaveEntry(conn *gorillaws.Conn, payload []byte) error {
 	// Encrypt the entry JSON with the master vault key.
 	mk := t.mvkResolver()
 	if mk == nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("vault locked: no key available"))
+		return wsError(conn, gerrors.NewVaultLockedError())
 	}
 	nonce, err := t.crypto.NewNonce()
 	if err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("nonce generation failed"))
+		return wsError(conn, gerrors.NewCryptoEncryptionError("new_nonce", err))
 	}
 	ct, err := t.crypto.Encrypt(mk, nonce[:], entryJSON, nil)
 	if err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("encryption failed"))
+		return wsError(conn, gerrors.NewCryptoEncryptionError("entry_encrypt", err))
 	}
 	// Prepend nonce to ciphertext so the blob is self-contained.
 	blob := make([]byte, 12+len(ct))
@@ -542,14 +632,19 @@ func (t *Translator) wsSaveEntry(conn *gorillaws.Conn, payload []byte) error {
 
 	result, err := t.bus.Request(ctx, ev)
 	if err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("save timeout"))
+		return wsError(conn, gerrors.NewBusTimeoutError("STORAGE.WRITE"))
 	}
 	var res struct {
-		Error string `json:"error"`
+		Error     string `json:"error"`
+		ErrorCode int    `json:"error_code,omitempty"`
 	}
 	_ = json.Unmarshal(result.Payload, &res)
 	if res.Error != "" {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte(res.Error))
+		if res.ErrorCode != 0 {
+			ge := &gerrors.GrimlockError{Code: res.ErrorCode, Message: res.Error}
+			return wsError(conn, ge)
+		}
+		return wsErrorMsg(conn, res.Error)
 	}
 
 	log.Printf("[translator:SAVE] entryID=%s type=%s blobLen=%d", entryID, raw.Type, len(blob))
@@ -564,7 +659,7 @@ func (t *Translator) wsListEntries(conn *gorillaws.Conn) error {
 
 	result, err := t.bus.Request(ctx, ev)
 	if err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("list timeout"))
+		return wsError(conn, gerrors.NewBusTimeoutError("STORAGE.LIST"))
 	}
 
 	var stored struct {
@@ -588,6 +683,9 @@ func (t *Translator) wsListEntries(conn *gorillaws.Conn) error {
 	}
 	summaries := make([]entrySummary, 0, len(stored.Metas))
 	mk := t.mvkResolver()
+	if mk == nil {
+		return wsError(conn, gerrors.NewVaultLockedError())
+	}
 
 	for _, meta := range stored.Metas {
 		sum := entrySummary{
@@ -670,32 +768,36 @@ func (t *Translator) wsGetEntry(conn *gorillaws.Conn, payload []byte) error {
 
 	result, err := t.bus.Request(ctx, ev)
 	if err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("get timeout"))
+		return wsError(conn, gerrors.NewBusTimeoutError("STORAGE.READ"))
 	}
 
 	var stored struct {
-		Block *storage.Block `json:"block,omitempty"`
-		Error string         `json:"error,omitempty"`
+		Block     *storage.Block `json:"block,omitempty"`
+		Error     string         `json:"error,omitempty"`
+		ErrorCode int            `json:"error_code,omitempty"`
 	}
 	if err := json.Unmarshal(result.Payload, &stored); err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("invalid read response"))
+		return wsError(conn, gerrors.NewProtocolError("get_entry_unmarshal", err))
 	}
 	if stored.Error != "" || stored.Block == nil {
+		if stored.ErrorCode == gerrors.ErrCodeStorageNotFound {
+			return wsError(conn, gerrors.NewStorageNotFoundError(string(payload)))
+		}
 		msg := "entry not found"
 		if stored.Error != "" {
 			msg = stored.Error
 		}
-		return ws.WriteMessage(conn, ipc.MsgError, []byte(msg))
+		return wsErrorMsg(conn, msg)
 	}
 
 	mk := t.mvkResolver()
 	if mk == nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("vault locked: no key available"))
+		return wsError(conn, gerrors.NewVaultLockedError())
 	}
 
 	blob := stored.Block.Data
 	if len(blob) < 12 {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("corrupt entry: blob too short"))
+		return wsError(conn, gerrors.NewStorageCorruptionError("entry_blob_too_short", string(payload), nil))
 	}
 
 	var metadata map[string]interface{}
@@ -787,7 +889,7 @@ func (t *Translator) wsDecryptEntry(conn *gorillaws.Conn, payload []byte) error 
 
 	result, err := t.bus.Request(ctx, ev)
 	if err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("decrypt timeout"))
+		return wsError(conn, gerrors.NewBusTimeoutError("STORAGE.READ"))
 	}
 
 	var stored struct {
@@ -807,12 +909,12 @@ func (t *Translator) wsDecryptEntry(conn *gorillaws.Conn, payload []byte) error 
 
 	mk := t.mvkResolver()
 	if mk == nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("vault locked: no key available"))
+		return wsError(conn, gerrors.NewVaultLockedError())
 	}
 
 	blob := stored.Block.Data
 	if len(blob) < 12 {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("corrupt entry: blob too short"))
+		return wsError(conn, gerrors.NewStorageCorruptionError("decrypt_blob_too_short", req.ID, nil))
 	}
 
 	var decryptedResult map[string]interface{}
@@ -894,15 +996,19 @@ func (t *Translator) wsDeleteEntry(conn *gorillaws.Conn, payload []byte) error {
 
 	result, err := t.bus.Request(ctx, ev)
 	if err != nil {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte("delete timeout"))
+		return wsError(conn, gerrors.NewBusTimeoutError("STORAGE.DELETE"))
 	}
 
 	var res struct {
-		Error string `json:"error"`
+		Error     string `json:"error"`
+		ErrorCode int    `json:"error_code,omitempty"`
 	}
 	_ = json.Unmarshal(result.Payload, &res)
 	if res.Error != "" {
-		return ws.WriteMessage(conn, ipc.MsgError, []byte(res.Error))
+		if res.ErrorCode != 0 {
+			return wsError(conn, &gerrors.GrimlockError{Code: res.ErrorCode, Message: res.Error})
+		}
+		return wsErrorMsg(conn, res.Error)
 	}
 	return ws.WriteMessage(conn, ipc.MsgAck, nil)
 }
@@ -1105,6 +1211,165 @@ func (t *Translator) wsDeleteWorkspace(conn *gorillaws.Conn, payload []byte) err
 	}
 
 	return ws.WriteMessage(conn, ipc.MsgAck, nil)
+}
+
+// wsGQLQuery handles MsgGQLQuery: binary GQL frames that go through the
+// two-stage validator (syntactic + semantic/ACL) before reaching the dispatcher.
+// This is the Phase 4 injection-immune query path.
+//
+// Frame format: GQL binary frame (8-byte header + binary payload).
+// The payload is deserialized, validated against schema and ACL, then dispatched
+// to the appropriate storage operation. Results are returned as MsgGQLResult.
+func (t *Translator) wsGQLQuery(conn *gorillaws.Conn, payload []byte) error {
+	if t.gqlDispatcher == nil {
+		return ws.WriteMessage(conn, ipc.MsgGQLResult,
+			gql.NewErrorFrame(-100, "GQL dispatcher unavailable").Encode())
+	}
+
+	frame, err := gql.DecodeFrame(payload)
+	if err != nil {
+		log.Printf("[gql] frame decode error: %v", err)
+		return ws.WriteMessage(conn, ipc.MsgGQLResult,
+			gql.NewErrorFrame(-101, fmt.Sprintf("invalid frame: %v", err)).Encode())
+	}
+
+	// Build session info for ACL validation
+	session := &gqlSessionAdapter{sessionCtx: t.sessionCtx}
+
+	query, err := gql.ValidateFrame(frame, session)
+	if err != nil {
+		// Distinguish syntactic vs semantic errors for proper error codes
+		code := int32(-102)
+		msg := err.Error()
+		switch err.(type) {
+		case *gql.SyntacticError:
+			code = -102
+		case *gql.SemanticError:
+			code = -103
+		}
+		log.Printf("[gql] validation error: %v", err)
+		return ws.WriteMessage(conn, ipc.MsgGQLResult,
+			gql.NewErrorFrame(code, msg).Encode())
+	}
+
+	// Result/Error frames don't have a query (e.g., OpcodeResult)
+	if query == nil {
+		return ws.WriteMessage(conn, ipc.MsgGQLResult,
+			gql.NewErrorFrame(-104, "not a query frame").Encode())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := t.gqlDispatcher.Dispatch(ctx, query)
+	if err != nil {
+		log.Printf("[gql] dispatch error: %v", err)
+		return ws.WriteMessage(conn, ipc.MsgGQLResult,
+			gql.NewErrorFrame(-105, fmt.Sprintf("dispatch error: %v", err)).Encode())
+	}
+
+	resultFrame := gql.NewResultFrame(result)
+	log.Printf("[gql] %s OK (entries=%d total=%d)", query.Operation, len(result.Entries), result.TotalCount)
+	return ws.WriteMessage(conn, ipc.MsgGQLResult, resultFrame.Encode())
+}
+
+// gqlSessionAdapter wraps security.SessionContext to implement gql.SessionInfo.
+type gqlSessionAdapter struct {
+	sessionCtx *security.SessionContext
+}
+
+func (a *gqlSessionAdapter) IsUnlocked() bool {
+	if a.sessionCtx == nil {
+		return false
+	}
+	return a.sessionCtx.IsUnlocked()
+}
+
+func (a *gqlSessionAdapter) ActiveHandle() string {
+	if a.sessionCtx == nil {
+		return ""
+	}
+	return a.sessionCtx.ActiveHandle()
+}
+
+func (a *gqlSessionAdapter) UserID() string {
+	return "default"
+}
+
+func (a *gqlSessionAdapter) HasRole(role string) bool {
+	return role == "default"
+}
+
+// wsReconnect handles the MsgReconnect protocol: client sends its session
+// token to resume a previous vault session without re-entering the password.
+// The daemon validates the token, checks vault state, and if everything matches,
+// pushes the full state mirror to the client via MsgStateMirror.
+//
+// Phase 3: UI-decoupling — Tauri page navigation briefly disconnects/reconnects
+// the WebSocket. This handler lets the UI re-attach to an already-unlocked vault
+// without prompting the user for their password again.
+func (t *Translator) wsReconnect(conn *gorillaws.Conn, payload []byte) error {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil || req.Token == "" {
+		return ws.WriteMessage(conn, ipc.MsgSessionResumeErr,
+			[]byte(`{"error":"invalid reconnect payload"}`))
+	}
+
+	// Validate the reconnection token against the daemon session token.
+	if t.tokenValidator != nil && !t.tokenValidator(req.Token) {
+		return ws.WriteMessage(conn, ipc.MsgSessionResumeErr,
+			[]byte(`{"error":"invalid session token"}`))
+	}
+
+	// Check vault state: is it still unlocked?
+	unlocked := t.sessionCtx != nil && t.sessionCtx.IsUnlocked()
+	if !unlocked {
+		return ws.WriteMessage(conn, ipc.MsgSessionResumeErr,
+			[]byte(`{"error":"vault locked — re-auth required"}`))
+	}
+
+	// Build full state mirror for the reconnected client.
+	// Push vault state, workspace info, and entry count so the UI
+	// can fully reconstruct its state without additional queries.
+	state := map[string]interface{}{
+		"unlocked":        true,
+		"gate_open":       true,
+		"mvk_handle_ok":   t.sessionCtx.MVKHandle() != "",
+		"session_resumed": true,
+	}
+
+	// Entry count: query block store index (non-blocking, in-memory).
+	if t.bus != nil {
+		ev := kernel.NewEvent("api", kernel.EvStorageList, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		result, err := t.bus.Request(ctx, ev)
+		cancel()
+		if err == nil {
+			var stored struct {
+				Metas []storage.BlockMeta `json:"metas,omitempty"`
+			}
+			if json.Unmarshal(result.Payload, &stored) == nil {
+				state["entry_count"] = len(stored.Metas)
+			}
+		}
+	}
+
+	// Workspace info
+	if t.workspaceMgr != nil {
+		ws := t.workspaceMgr.Active()
+		if ws != nil {
+			state["active_workspace"] = map[string]string{
+				"id":   ws.ID,
+				"name": ws.Name,
+			}
+		}
+	}
+
+	stateJSON, _ := json.Marshal(state)
+	log.Printf("[translator:RECONNECT] Session resumed — vault unlocked, entries=%v", state["entry_count"])
+	return ws.WriteMessage(conn, ipc.MsgStateMirror, stateJSON)
 }
 
 // wsEntryQuery dispatches an ENTRY.QUERY event and streams the filtered entry

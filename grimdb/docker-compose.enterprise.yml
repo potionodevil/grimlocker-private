@@ -125,12 +125,18 @@ services:
       GRIMLOCKER_MTLS_KEY_PATH: /etc/grimlocker/tls/server.key
       GRIMLOCKER_MTLS_CA_PATH: /etc/grimlocker/tls/ca.crt
 
+      # Bind address for the mTLS listener (default: 0.0.0.0:9443).
+      # Set to 127.0.0.1:9443 to restrict to localhost only.
+      GRIMLOCKER_BIND_ADDR: "${GRIMLOCKER_BIND_ADDR:-0.0.0.0:9443}"
+
       # Entropy / data directory inside container
       GRIMLOCKER_APP_DIR: /var/lib/grimlocker
 
     ports:
-      - "9443:9443"   # mTLS client connections
-      - "9090:9090"   # Plaintext probe port (Docker HEALTHCHECK, k8s probes)
+      - "${GRIMLOCKER_BIND_ADDR:-0.0.0.0}:9443:9443"   # mTLS client connections
+      # Port 9090 is NOT exposed to the host. The Docker HEALTHCHECK runs
+      # inside the container and calls 127.0.0.1:9090 directly — no external
+      # access needed. Exposing it would leak /health data on all interfaces.
     volumes:
       - ./deploy/tls:/etc/grimlocker/tls:ro  # Mount TLS certs (./scripts/gen-certs.sh)
     networks:

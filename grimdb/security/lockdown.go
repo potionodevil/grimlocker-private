@@ -1,9 +1,27 @@
+// Package security (lockdown.go) implements the LockdownManager — a state
+// machine that enforces progressive authentication lockout.
+//
+// States:
+//
+//	LockdownNone → normal operation, up to Threshold failures allowed.
+//	LockdownSoft → threshold exceeded; soft lockout for LockdownMinutes,
+//	               up to MaxOverrides additional attempts permitted.
+//	LockdownHard → MaxOverrides exhausted (or TriggerHard called directly);
+//	               the OnHard callback is invoked (zeroise keys + os.Exit).
+//
+// Thread-safe: all methods lock m.mu before reading/writing state.
+//
+// Default values (used when config fields are ≤ 0):
+//   - Threshold: 3 failures before soft lockdown
+//   - MaxOverrides: 4 additional attempts during soft lockdown
+//   - LockdownMinutes: 200 minutes soft lockdown duration
 package security
 
 import (
-	"fmt"
 	"sync"
 	"time"
+
+	gerrors "github.com/grimlocker/grimdb/errors"
 )
 
 // LockdownState describes the current lockout level.
@@ -75,7 +93,7 @@ func (m *lockdownManager) RecordFailure() (LockdownState, error) {
 
 	switch m.state {
 	case LockdownHard:
-		return LockdownHard, fmt.Errorf("hard lockdown active")
+		return LockdownHard, gerrors.NewAuthLockdownError(0)
 
 	case LockdownSoft:
 		m.overridesLeft--
@@ -84,18 +102,20 @@ func (m *lockdownManager) RecordFailure() (LockdownState, error) {
 			if m.onHard != nil {
 				m.onHard()
 			}
-			return LockdownHard, fmt.Errorf("override attempts exhausted: hard lockdown")
+			return LockdownHard, gerrors.NewAuthLockdownError(0)
 		}
-		return LockdownSoft, fmt.Errorf("soft lockdown: %d overrides remaining", m.overridesLeft)
+		return LockdownSoft, gerrors.NewAuthLockdownError(m.overridesLeft)
 
 	default:
 		m.failures++
 		if m.failures >= m.threshold {
 			m.state = LockdownSoft
 			m.lockdownUntil = time.Now().Add(time.Duration(m.lockdownMinutes) * time.Minute)
-			return LockdownSoft, fmt.Errorf("too many failures: soft lockdown until %s", m.lockdownUntil.Format(time.RFC3339))
+			return LockdownSoft, gerrors.NewAuthLockdownError(0)
 		}
-		return LockdownNone, fmt.Errorf("invalid credentials (%d/%d)", m.failures, m.threshold)
+		remaining := m.threshold - m.failures
+		return LockdownNone, gerrors.NewAuthInvalidError("credentials", nil).
+			WithDetails("attempts_remaining", remaining)
 	}
 }
 

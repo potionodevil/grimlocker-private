@@ -1,3 +1,5 @@
+//go:build windows
+
 // Package rustbridge provides Go bindings to the grimlocker-core Rust DLL.
 // On Windows, it uses syscall.LoadDLL to load the shared library at runtime,
 // avoiding the need for CGO and a C compiler.
@@ -7,7 +9,6 @@
 package rustbridge
 
 import (
-	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -419,29 +420,4 @@ func DeriveArgon2id(password, salt []byte, time, memory uint32, threads uint8, k
 		return nil, fmt.Errorf("derive_argon2id: %s", msg)
 	}
 	return outBuf[:outLen], nil
-}
-
-// --- Helpers ---
-
-func encodeOffsetsJSON(offsets []int64) string {
-	buf := make([]byte, 0, len(offsets)*12+2)
-	buf = append(buf, '[')
-	for i, o := range offsets {
-		if i > 0 {
-			buf = append(buf, ',')
-		}
-		buf = append(buf, fmt.Sprintf("%d", o)...)
-	}
-	buf = append(buf, ']')
-	return string(buf)
-}
-
-// Base64Encode encodes binary data to base64.
-func Base64Encode(data []byte) string {
-	return base64.StdEncoding.EncodeToString(data)
-}
-
-// Base64Decode decodes base64 to binary.
-func Base64Decode(s string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s)
 }

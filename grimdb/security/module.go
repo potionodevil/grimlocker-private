@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/grimlocker/grimdb/crypto"
+	gerrors "github.com/grimlocker/grimdb/errors"
 	"github.com/grimlocker/grimdb/kernel"
 )
 
@@ -150,7 +151,7 @@ func (m *Module) Handle(e kernel.Event) error {
 func (m *Module) StoreMVK(key []byte) (string, error) {
 	locked, err := m.guard.AllocLocked(len(key))
 	if err != nil {
-		return "", fmt.Errorf("alloc locked: %w", err)
+		return "", gerrors.NewSecurityMemlockError(err)
 	}
 	copy(locked, key)
 
@@ -234,7 +235,11 @@ func (m *Module) handleAuthGetHandle(e kernel.Event) error {
 }
 
 func (m *Module) hardLockdownCallback() {
-	log.Printf("[security] HARD LOCKDOWN: zeroising all key material")
+	lockdownErr := gerrors.NewSecurityLockdownError("hard_lockdown_triggered",
+		map[string]string{"entropy_path": m.entropyPath})
+	lockdownErr.ModuleID = moduleID
+	log.Printf("[security] HARD LOCKDOWN: zeroising all key material — %s", lockdownErr.Error())
+
 	m.mu.Lock()
 	for handle, key := range m.mvkHandles {
 		m.guard.Zeroize(key)
@@ -250,7 +255,7 @@ func (m *Module) hardLockdownCallback() {
 		_ = m.dispatcher.Dispatch(ev)
 	}
 
-	log.Printf("[security] HARD LOCKDOWN: exiting process")
+	log.Printf("[security] HARD LOCKDOWN: exiting process (code=%d)", gerrors.ErrCodeSecurityLockdown)
 	m.exitFunc(1)
 }
 

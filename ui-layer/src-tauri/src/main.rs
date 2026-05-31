@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::{Serialize};
+use serde::Serialize;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -51,7 +51,10 @@ fn rust_secure_wipe(path: String) -> Result<String, String> {
 
 fn main() {
     let daemon_state = DaemonState {
-        handle: Mutex::new(DaemonHandle { child: None, intentional_shutdown: false }),
+        handle: Mutex::new(DaemonHandle {
+            child: None,
+            intentional_shutdown: false,
+        }),
         config: Mutex::new(DaemonConfig::default()),
     };
 
@@ -85,30 +88,48 @@ fn main() {
         .expect("error while running Grimlocker");
 }
 
+fn target_triple() -> &'static str {
+    let arch = std::env::consts::ARCH;
+    let os = std::env::consts::OS;
+    match (arch, os) {
+        ("x86_64", "linux") => "x86_64-unknown-linux-gnu",
+        ("aarch64", "linux") => "aarch64-unknown-linux-gnu",
+        ("x86_64", "windows") => "x86_64-pc-windows-msvc",
+        ("aarch64", "windows") => "aarch64-pc-windows-msvc",
+        ("x86_64", "macos") => "x86_64-apple-darwin",
+        ("aarch64", "macos") => "aarch64-apple-darwin",
+        _ => "",
+    }
+}
+
+fn exe_suffix() -> &'static str {
+    std::env::consts::EXE_SUFFIX
+}
+
 fn resolve_sidecar(app_handle: &tauri::AppHandle) -> PathBuf {
-    let target_triple = std::env::consts::ARCH.to_string()
-        + "-pc-"
-        + std::env::consts::OS
-        + if cfg!(windows) { "-msvc" } else { "" };
+    let triple = target_triple();
+    let ext = exe_suffix();
 
     if cfg!(dev) {
         let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         // Prefer the new grimdb-daemon binary; fall back to grimlocker-go for compat.
         let candidate = manifest_dir
             .join("binaries")
-            .join(format!("grimdb-daemon-{}.exe", target_triple));
+            .join(format!("grimdb-daemon-{}{}", triple, ext));
         if candidate.exists() {
             return candidate;
         }
 
         let fallback_go = manifest_dir
             .join("binaries")
-            .join(format!("grimlocker-go-{}.exe", target_triple));
+            .join(format!("grimlocker-go-{}{}", triple, ext));
         if fallback_go.exists() {
             return fallback_go;
         }
 
-        let fallback_plain = manifest_dir.join("binaries").join("grimdb-daemon.exe");
+        let fallback_plain = manifest_dir
+            .join("binaries")
+            .join(format!("grimdb-daemon{}", ext));
         if fallback_plain.exists() {
             return fallback_plain;
         }
@@ -123,7 +144,7 @@ fn resolve_sidecar(app_handle: &tauri::AppHandle) -> PathBuf {
 
     resource_path
         .join("binaries")
-        .join(format!("grimdb-daemon-{}", target_triple))
+        .join(format!("grimdb-daemon-{}{}", triple, ext))
 }
 
 fn spawn_daemon(app_handle: &tauri::AppHandle, app_dir: &std::path::Path) {
@@ -133,7 +154,12 @@ fn spawn_daemon(app_handle: &tauri::AppHandle, app_dir: &std::path::Path) {
 
     if !sidecar_path.exists() {
         eprintln!("[Tauri] Sidecar binary not found at: {:?}", sidecar_path);
-        eprintln!("[Tauri] Run: cd grimdb && go build -o ../ui-layer/src-tauri/binaries/grimdb-daemon-x86_64-pc-windows-msvc.exe ./cmd/daemon/");
+        let build_cmd = if cfg!(windows) {
+            "cd grimdb && bash build.sh".to_string()
+        } else {
+            format!("cd grimdb && go build -o ../ui-layer/src-tauri/binaries/grimdb-daemon-{}{} ./cmd/daemon/", target_triple(), exe_suffix())
+        };
+        eprintln!("[Tauri] Run: {}", build_cmd);
         return;
     }
 
@@ -176,7 +202,9 @@ fn spawn_daemon(app_handle: &tauri::AppHandle, app_dir: &std::path::Path) {
                             state.config.lock().unwrap().token = Some(token.trim().to_string());
                         }
                         if let Some(ws_url) = l.strip_prefix("GRIMLOCKER_IPC=ws://") {
-                            if let Some(port_str) = ws_url.split(':').nth(1).and_then(|s| s.split('/').next()) {
+                            if let Some(port_str) =
+                                ws_url.split(':').nth(1).and_then(|s| s.split('/').next())
+                            {
                                 if let Ok(port) = port_str.parse::<u16>() {
                                     let state = app_handle_for_stdout.state::<DaemonState>();
                                     state.config.lock().unwrap().ipc_port = Some(port);
@@ -221,31 +249,36 @@ fn spawn_daemon(app_handle: &tauri::AppHandle, app_dir: &std::path::Path) {
 
     let app_handle_monitor = app_handle.clone();
     let app_dir_monitor = app_dir.to_path_buf();
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_millis(500));
-            let should_respawn = {
-                let state = app_handle_monitor.state::<DaemonState>();
-                let mut handle = state.handle.lock().unwrap();
-                if handle.intentional_shutdown {
-                    break;
-                }
-                match handle.child.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
-                    Some(status) => {
-                        eprintln!("[Tauri] Go daemon exited unexpectedly ({:?}) — respawning in 1s", status);
-                        handle.child = None;
-                        drop(handle);
-                        state.config.lock().unwrap().token = None;
-                        true
-                    }
-                    None => false,
-                }
-            };
-            if should_respawn {
-                thread::sleep(Duration::from_secs(1));
-                spawn_daemon(&app_handle_monitor, &app_dir_monitor);
+    thread::spawn(move || loop {
+        thread::sleep(Duration::from_millis(500));
+        let should_respawn = {
+            let state = app_handle_monitor.state::<DaemonState>();
+            let mut handle = state.handle.lock().unwrap();
+            if handle.intentional_shutdown {
                 break;
             }
+            match handle
+                .child
+                .as_mut()
+                .and_then(|c| c.try_wait().ok().flatten())
+            {
+                Some(status) => {
+                    eprintln!(
+                        "[Tauri] Go daemon exited unexpectedly ({:?}) — respawning in 1s",
+                        status
+                    );
+                    handle.child = None;
+                    drop(handle);
+                    state.config.lock().unwrap().token = None;
+                    true
+                }
+                None => false,
+            }
+        };
+        if should_respawn {
+            thread::sleep(Duration::from_secs(1));
+            spawn_daemon(&app_handle_monitor, &app_dir_monitor);
+            break;
         }
     });
 }
@@ -256,16 +289,24 @@ fn kill_daemon(app_handle: &tauri::AppHandle) {
     handle.intentional_shutdown = true;
 
     let ipc_port = state.config.lock().unwrap().ipc_port;
+    let token = state.config.lock().unwrap().token.clone();
 
     if let Some(mut child) = handle.child.take() {
         let pid = child.id();
-        println!("[Tauri] Window destroyed — requesting graceful shutdown (PID: {})", pid);
+        println!(
+            "[Tauri] Window destroyed — requesting graceful shutdown (PID: {})",
+            pid
+        );
 
         // Step 1: Request graceful shutdown via HTTP endpoint.
         // The daemon flushes storage, revokes enclave handles, then exits.
         if let Some(port) = ipc_port {
             let url = format!("http://127.0.0.1:{}/shutdown", port);
-            let _ = ureq::post(&url).send_string("");
+            let mut req = ureq::post(&url);
+            if let Some(ref t) = token {
+                req = req.set("X-Grimlocker-Token", t);
+            }
+            let _ = req.send_string("");
         }
 
         // Step 2: Wait up to 3 seconds for the daemon to exit cleanly.
@@ -282,7 +323,10 @@ fn kill_daemon(app_handle: &tauri::AppHandle) {
         }
 
         // Step 3: Graceful shutdown timed out — force kill as fallback.
-        println!("[Tauri] Graceful shutdown timed out — force killing daemon (PID: {})", pid);
+        println!(
+            "[Tauri] Graceful shutdown timed out — force killing daemon (PID: {})",
+            pid
+        );
         if let Err(e) = child.kill() {
             eprintln!("[Tauri] Failed to kill daemon: {}", e);
         }

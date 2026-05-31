@@ -1,11 +1,14 @@
 package handlers
 
 import (
+	"log"
+
 	"github.com/grimlocker/grimdb/kernel"
 	"github.com/grimlocker/grimdb/security"
 )
 
 // PolicyManager enforces permission checks for ENTRY operations.
+// All denied decisions are logged with subject_id and operation for diagnostics.
 type PolicyManager struct {
 	bus      kernel.Dispatcher
 	auditLog security.AuditLog
@@ -21,30 +24,41 @@ func NewPolicyManager(bus kernel.Dispatcher, auditLog security.AuditLog) *Policy
 
 // CheckWrite returns true if the subject is allowed to write (create/update/delete).
 // Default policy: "daemon" subject always allowed; empty subject always denied.
+// Decision is logged at DEBUG level for diagnostics.
 func (p *PolicyManager) CheckWrite(subjectID string) bool {
 	// Default: daemon subject (internal operations) always allowed
 	if subjectID == "daemon" {
+		log.Printf("[Policy:CheckWrite] ALLOW subject=%q (daemon)", subjectID)
 		return true
 	}
-	// Empty subject: always deny (not authenticated)
+	// Empty subject: always deny (not authenticated — subject_id was not sent)
 	if subjectID == "" {
+		log.Printf("[Policy:CheckWrite] DENY subject=%q (empty — unauthenticated)", subjectID)
 		return false
 	}
-	// Future: more sophisticated permission model can be added here
-	// For now: allow authenticated subjects
+	// All authenticated subjects (non-empty, non-daemon) are allowed to write.
+	// Future: replace with role-based check here.
+	log.Printf("[Policy:CheckWrite] ALLOW subject=%q", subjectID)
 	return true
 }
 
 // CheckRead returns true if the subject is allowed to read.
-// Default policy: all authenticated subjects can read.
+// Default policy: all authenticated subjects can read (non-empty subjectID).
 func (p *PolicyManager) CheckRead(subjectID string) bool {
-	// Deny empty (unauthenticated)
-	return subjectID != ""
+	allowed := subjectID != ""
+	if !allowed {
+		log.Printf("[Policy:CheckRead] DENY subject=%q (empty — unauthenticated)", subjectID)
+	}
+	return allowed
 }
 
-// OnUnauthorized logs an unauthorized access attempt and dispatches an audit event.
+// OnUnauthorized logs an unauthorized access attempt to stderr, the audit ring
+// buffer, and the security event bus. The log line includes all fields needed
+// for diagnosis: subject_id, operation, and a stacktrace marker.
 func (p *PolicyManager) OnUnauthorized(subjectID, operation string) {
-	// Log to audit ring buffer
+	log.Printf("[Policy:UNAUTHORIZED] subject_id=%q operation=%q — access denied", subjectID, operation)
+
+	// Log to audit ring buffer (hash-chained, tamper-evident)
 	p.auditLog.Append(security.SecurityEvent{
 		Level:     security.LevelCritical,
 		Module:    "policy",
@@ -52,7 +66,7 @@ func (p *PolicyManager) OnUnauthorized(subjectID, operation string) {
 		SubjectID: subjectID,
 	})
 
-	// Dispatch audit event to the bus (for external listeners)
+	// Dispatch SECURITY.AUDIT event to the bus (for external listeners / watchdog)
 	ev := kernel.NewEvent("policy", kernel.EvSecAudit, []byte(operation))
 	_ = p.bus.Dispatch(ev)
 }

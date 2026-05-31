@@ -99,16 +99,80 @@ Entry 3: hash = SHA-256(Entry2.hash || 9012 || INFO || storage || "FILE_WRITTEN"
 
 If Entry 2 is tampered with, Entry 3's prevHash no longer matches its recomputed value.
 
+## 6. Graceful Shutdown Flow (Tauri → Daemon)
+
+```mermaid
+sequenceDiagram
+    participant T as Tauri (main.rs)
+    participant D as Daemon (main.go)
+    participant B as BlockStore
+    participant S as Security Module
+    participant R as Rust Enclave
+    participant K as Kernel Bus
+
+    T->>D: POST /shutdown
+    D->>T: 200 {"status":"shutting_down"}
+    Note over D: 100ms delay (flush HTTP response)
+    D->>B: Flush() — complete in-flight writes
+    D->>B: Close()
+    D->>S: sessionCtx.Lock() — revoke MVK
+    D->>R: SessionDestroy(sessionKeyHandle)
+    D->>K: bus.Shutdown(5s timeout)
+    K->>K: Stop() all modules
+    D->>D: log "Shutdown complete"
+    D->>D: os.Exit(0)
+
+    Note over T: Polls child.try_wait() every 100ms (3s timeout)
+    T->>T: Process exited → "Daemon shut down gracefully"
+    Note over T: Fallback: child.kill() after 3s timeout
+```
+
+## 7. WebSocket Reconnect — Vault State Re-Attach
+
+The daemon persists vault unlock state across WebSocket disconnects. The Tauri app briefly disconnects during page navigation.
+
+```mermaid
+sequenceDiagram
+    participant UI as Tauri UI
+    participant B as WS Bridge
+    participant T as Translator
+    participant S as SessionContext
+
+    UI->>B: connect (new WebSocket)
+    B->>T: handshake callback
+    T->>S: IsUnlocked() → true
+    T->>B: MsgAck {status:"Online", initialized:true, unlocked:true}
+    B->>UI: MsgAck payload
+    Note over UI: unlocked:true → skip login screen,\ngo directly to Dashboard
+```
+
 ## Message Flow Summary
 
-| Message | Direction | Handler | Purpose |
-|---------|-----------|---------|---------|
-| `MsgFileIngestBegin` | Client→Server | `EntryHandler.HandleIngestBegin` | Start file upload |
-| `MsgFileChunk` | Client→Server | `EntryHandler.HandleChunk` | Stream file data |
-| `MsgFileIngestEnd` | Client→Server | `EntryHandler.HandleIngestEnd` | Complete upload |
-| `MsgIngestProgress` | Server→Client | `Translator` (pushed) | Report progress |
-| `MsgEntryCreate` | Client→Server | `EntryHandler.HandleCreate` | New entry |
-| `MsgEntryUpdate` | Client→Server | `EntryHandler.HandleUpdate` | Modify entry |
-| `MsgEntryDelete` | Client→Server | `EntryHandler.HandleDelete` | Remove entry |
-| `MsgEntryResult` | Server→Client | `Translator` | CRUD result |
-| `MsgLogBroadcast` | Server→Client | `Translator` (pushed to all) | Security/lifecycle events |
+| Message | Byte | Direction | Handler | Purpose |
+|---------|------|-----------|---------|---------|
+| `MsgFileIngestBegin` | `0x20` | Client→Server | `EntryHandler.HandleIngestBegin` | Start file upload |
+| `MsgFileChunk` | `0x21` | Client→Server | `EntryHandler.HandleChunk` | Stream file data |
+| `MsgFileIngestEnd` | `0x22` | Client→Server | `EntryHandler.HandleIngestEnd` | Complete upload |
+| `MsgIngestProgress` | `0x23` | Server→Client | `EntryHandler` (pushed) | Report progress |
+| `MsgEntryCreate` | `0x18` | Client→Server | `EntryHandler.HandleCreate` | New entry |
+| `MsgEntryUpdate` | `0x19` | Client→Server | `EntryHandler.HandleUpdate` | Modify entry |
+| `MsgEntryDelete` | `0x1A` | Client→Server | `EntryHandler.HandleDelete` | Remove entry |
+| `MsgEntryResult` | `0x1D` | Server→Client | `Translator` | CRUD / ingest result |
+| `MsgAck` | `0x08` | Server→Client | Bridge handshake | `{status,initialized,unlocked}` |
+| `MsgLogBroadcast` | — | Server→Client | `Translator` (pushed to all) | Security/lifecycle events |
+
+## REST API Action Map (`/api/v1`)
+
+| Action | Event | Vault Required |
+|--------|-------|---------------|
+| `vault.unlock` | `AUTH.UNLOCK` | No (unlocks it) |
+| `vault.logout` | `AUTH.LOGOUT` | Yes |
+| `vault.status` | `AUTH.STATUS` | No |
+| `entry.create` | `ENTRY.CREATE` | Yes |
+| `entry.read` | `ENTRY.READ` | Yes |
+| `entry.update` | `ENTRY.UPDATE` | Yes |
+| `entry.delete` | `ENTRY.DELETE` | Yes |
+| `entry.query` | `ENTRY.QUERY` | Yes |
+| `storage.write` | `STORAGE.WRITE` | Yes |
+| `storage.read` | `STORAGE.READ` | Yes |
+| `storage.list` | `STORAGE.LIST` | Yes |

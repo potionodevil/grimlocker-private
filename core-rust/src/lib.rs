@@ -470,7 +470,7 @@ pub extern "C" fn grimcore_decrypt_raw(
     let key_bytes = unsafe { std::slice::from_raw_parts(key, key_len) };
     let nonce_bytes = unsafe { std::slice::from_raw_parts(nonce, nonce_len) };
     let ciphertext_bytes = unsafe { std::slice::from_raw_parts(ciphertext, ciphertext_len) };
-    let aad_bytes = if aad.is_null() || aad_len == 0 {
+    let _aad_bytes = if aad.is_null() || aad_len == 0 {
         &[][..]
     } else {
         unsafe { std::slice::from_raw_parts(aad, aad_len) }
