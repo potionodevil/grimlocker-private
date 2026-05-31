@@ -229,16 +229,22 @@ func (h *EntryHandler) HandleIngestBegin(conn *gorillaws.Conn, payload []byte) e
 		TotalSize int64  `json:"total_size"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil {
-		return websocket.WriteMessage(conn, ipc.MsgError, []byte("invalid request"))
+		log.Printf("[EntryHandler:IngestBegin] JSON unmarshal error: %v (payload=%q)", err, string(payload))
+		return websocket.WriteMessage(conn, ipc.MsgError, []byte("invalid request: "+err.Error()))
 	}
 	if req.SubjectID == "" {
 		req.SubjectID = "default"
 	}
 
+	log.Printf("[EntryHandler:IngestBegin] subject_id=%q file=%q mime=%q size=%d",
+		req.SubjectID, req.FileName, req.MIMEType, req.TotalSize)
+
 	if !h.policy.CheckWrite(req.SubjectID) {
+		log.Printf("[EntryHandler:IngestBegin] UNAUTHORIZED: subject_id=%q denied ENTRY.INGEST", req.SubjectID)
 		h.policy.OnUnauthorized(req.SubjectID, "ENTRY.INGEST")
-		return websocket.WriteMessage(conn, ipc.MsgError, []byte("unauthorized"))
+		return websocket.WriteMessage(conn, ipc.MsgError, []byte("unauthorized: subject "+req.SubjectID+" denied"))
 	}
+	log.Printf("[EntryHandler:IngestBegin] policy OK for subject_id=%q", req.SubjectID)
 
 	pr, pw := io.Pipe()
 
@@ -287,6 +293,7 @@ func (h *EntryHandler) HandleChunk(conn *gorillaws.Conn, payload []byte) error {
 }
 
 // HandleIngestEnd closes the ingest pipe and waits for completion.
+// The IngestEngine.Ingest() method handles all flushing — this just waits for completion.
 func (h *EntryHandler) HandleIngestEnd(conn *gorillaws.Conn) error {
 	h.mu.Lock()
 	ingest, ok := h.activeIngests[conn]
@@ -299,19 +306,22 @@ func (h *EntryHandler) HandleIngestEnd(conn *gorillaws.Conn) error {
 		return websocket.WriteMessage(conn, ipc.MsgError, []byte("no active ingest"))
 	}
 
-	// Close pipe to signal EOF
+	// Close pipe to signal EOF to the ingest goroutine
 	_ = ingest.pw.Close()
 
 	// Wait for ingest completion (with timeout)
 	select {
 	case manifest := <-ingest.manifest:
-		// Success: send manifest
+		// Success: ingest completed and index was flushed
 		result, _ := json.Marshal(manifest)
 		return websocket.WriteMessage(conn, ipc.MsgEntryResult, result)
 	case err := <-ingest.err:
-		// Error
+		// Error during ingest
+		log.Printf("[EntryHandler:IngestEnd] Ingest error: %v", err)
 		return websocket.WriteMessage(conn, ipc.MsgError, []byte(err.Error()))
 	case <-time.After(5 * time.Minute):
+		// Timeout waiting for ingest to complete
+		log.Printf("[EntryHandler:IngestEnd] Ingest timeout after 5 minutes")
 		return websocket.WriteMessage(conn, ipc.MsgError, []byte("ingest timeout"))
 	}
 }
@@ -326,8 +336,22 @@ type ingestReq struct {
 // runIngest runs the ingest engine in a goroutine and reports progress.
 // ingest is passed directly from HandleIngestBegin to avoid a map-lookup race
 // with HandleIngestEnd, which deletes the map entry before this goroutine starts.
+//
+// CRITICAL: Progress writes MUST go through bridge.SafeWrite, NOT websocket.WriteMessage
+// directly. gorilla/websocket is not goroutine-safe — a concurrent write from this
+// goroutine while the readLoop holds connMu causes a panic + close 1005.
 func (h *EntryHandler) runIngest(conn *gorillaws.Conn, r io.Reader, req ingestReq, ingest *activeIngest) {
-	// Progress callback — sends updates to client
+	// Panic recovery: any panic in this goroutine must be caught here —
+	// goroutine panics are not caught by the bridge readLoop recovery.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[EntryHandler:runIngest] PANIC recovered: %v — sending error to client", r)
+			ingest.err <- fmt.Errorf("ingest panic: %v", r)
+		}
+	}()
+
+	// Progress callback — MUST use bridge.SafeWrite (not websocket.WriteMessage directly)
+	// to avoid concurrent-write panics on the gorilla websocket connection.
 	progressFn := func(bytesRead, totalSize int64) {
 		pct := 0.0
 		if totalSize > 0 {
@@ -338,25 +362,32 @@ func (h *EntryHandler) runIngest(conn *gorillaws.Conn, r io.Reader, req ingestRe
 			"stage":    "ingesting",
 			"message":  fmt.Sprintf("%d / %d bytes", bytesRead, req.TotalSize),
 		})
-		_ = websocket.WriteMessage(conn, ipc.MsgIngestProgress, progPayload)
+		if h.bridge != nil {
+			// SafeWrite serializes with the readLoop via per-connection mutex
+			_ = h.bridge.SafeWrite(conn, ipc.MsgIngestProgress, progPayload)
+		}
+		// If bridge is nil (e.g. in tests), progress updates are silently dropped
 	}
 
-	// Get MVK
+	// Get MVK from locked memory
 	mvk, ok := h.getMVK()
 	if !ok || len(mvk) == 0 {
-		log.Printf("[EntryHandler] MVK not available")
-		ingest.err <- fmt.Errorf("mvk not available")
+		log.Printf("[EntryHandler:runIngest] FAIL: MVK not available (handle=%q)", h.mvkHandle)
+		ingest.err <- fmt.Errorf("vault locked: MVK not available — ensure vault is unlocked before uploading")
 		return
 	}
+	log.Printf("[EntryHandler:runIngest] MVK retrieved OK — starting ingest file=%q mime=%q", req.FileName, req.MIMEType)
 
 	// Run ingest
 	ctx := context.Background()
 	manifest, err := h.ingest.Ingest(ctx, mvk, req.FileName, req.MIMEType, r, progressFn)
 	if err != nil {
-		log.Printf("[EntryHandler] Ingest error: %v", err)
+		log.Printf("[EntryHandler:runIngest] Ingest error file=%q: %v", req.FileName, err)
 		ingest.err <- err
 		return
 	}
 
+	log.Printf("[EntryHandler:runIngest] Ingest complete file=%q manifestID=%s chunks=%d",
+		req.FileName, manifest.ID, len(manifest.ChunkIDs))
 	ingest.manifest <- manifest
 }

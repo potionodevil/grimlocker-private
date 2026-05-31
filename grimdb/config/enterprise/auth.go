@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	gerrors "github.com/grimlocker/grimdb/errors"
 	"github.com/grimlocker/grimdb/kernel"
 	"github.com/grimlocker/grimdb/security"
 )
@@ -95,13 +96,16 @@ func (o *OIDCProvider) HandleUnlockEvent(
 
 		// Step 0: Lockdown check.
 		if state := o.secMod.Lockdown().State(); state == security.LockdownHard {
+			lockdownErr := gerrors.NewAuthLockdownError(0).WithModule("oidc-auth")
+			log.Printf("[oidc-auth:FAIL] %s", lockdownErr.Error())
 			return replyOIDCFail(bus, e, "hard lockdown active")
 		}
 
 		// Step 1: Validate JWT.
 		claims, err := o.validateToken(req.Token)
 		if err != nil {
-			log.Printf("[oidc-auth:FAIL] token validation: %v", err)
+			authErr := gerrors.NewAuthInvalidError("jwt_verification", err).WithModule("oidc-auth")
+			log.Printf("[oidc-auth:FAIL] token validation: %s", authErr.Error())
 			state, _ := o.secMod.Lockdown().RecordFailure()
 			if state == security.LockdownHard {
 				return replyOIDCFail(bus, e, "too many failures: hard lockdown")
@@ -113,6 +117,8 @@ func (o *OIDCProvider) HandleUnlockEvent(
 		// Step 1b: Derive MVK from OIDC claims + server entropy.
 		mvk, err := o.deriveMVKFromClaims(claims)
 		if err != nil {
+			derivErr := gerrors.NewCryptoKeyDerivationError("oidc_mvk_derive", err).WithModule("oidc-auth")
+			log.Printf("[oidc-auth:FAIL:1b] %s", derivErr.Error())
 			return replyOIDCFail(bus, e, "MVK derivation failed")
 		}
 		log.Printf("[oidc-auth:1/7] MVK derived (len=%d)", len(mvk))
@@ -123,6 +129,8 @@ func (o *OIDCProvider) HandleUnlockEvent(
 			mvk[i] = 0
 		}
 		if err != nil {
+			// err is already *gerrors.GrimlockError (ErrCodeSecurityMemlock) from StoreMVK
+			log.Printf("[oidc-auth:FAIL:2/7] StoreMVK: %v", err)
 			return replyOIDCFail(bus, e, "failed to store key material")
 		}
 		log.Printf("[oidc-auth:2/7] MVK stored (handle=%s)", handle)

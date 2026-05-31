@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	gerrors "github.com/grimlocker/grimdb/errors"
 	"github.com/grimlocker/grimdb/kernel"
 )
 
@@ -63,9 +64,10 @@ type ipcRequest struct {
 
 // ipcResponse is the JSON body written by ServeHTTP.
 type ipcResponse struct {
-	OK      bool            `json:"ok"`
-	Payload json.RawMessage `json:"payload,omitempty"`
-	Error   string          `json:"error,omitempty"`
+	OK        bool            `json:"ok"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	ErrorCode int             `json:"error_code,omitempty"` // GrimlockError code for SDK clients
 }
 
 // ServeHTTP reads {"action":"...","payload":{...}}, validates channel restrictions,
@@ -111,8 +113,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ev := kernel.NewEvent("ipc-handler", evType, payload)
 	reply, err := h.bus.Request(ctx, ev)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(ipcResponse{Error: err.Error()})
+		// If the error is a typed GrimlockError, use its HTTP status and code.
+		status := http.StatusInternalServerError
+		code := 0
+		if ge, ok := err.(*gerrors.GrimlockError); ok {
+			status = ge.HTTPStatus()
+			code = ge.Code
+		}
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(ipcResponse{Error: err.Error(), ErrorCode: code})
 		return
 	}
 

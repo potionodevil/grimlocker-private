@@ -159,10 +159,7 @@ func (b *Bridge) CloseConnection(conn *gorillaws.Conn) {
 	conn.Close()
 	log.Printf("[bridge] Connection closed and cleaned up (%d remaining)", remaining)
 
-	if remaining == 0 && b.sessionClearer != nil {
-		log.Printf("[bridge] Last client disconnected — clearing vault session")
-		b.sessionClearer()
-	}
+	_ = remaining
 }
 
 // HandleWebSocket is the HTTP handler for the /ws endpoint.
@@ -253,11 +250,49 @@ func (b *Bridge) readLoop(conn *gorillaws.Conn) {
 		log.Printf("[WS] Client disconnected")
 	}()
 
+	conn.SetReadLimit(64 * 1024 * 1024)
+
+	conn.SetPingHandler(func(appData string) error {
+		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return conn.WriteControl(gorillaws.PongMessage, []byte(appData), time.Now().Add(5*time.Second))
+	})
+
+	conn.SetPongHandler(func(appData string) error {
+		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return nil
+	})
+
+	conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+
+	connDone := make(chan struct{})
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-connDone:
+				return
+			case <-ticker.C:
+				conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+				if err := conn.WriteControl(gorillaws.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	defer close(connDone)
+
 	for {
 		messageType, data, err := conn.ReadMessage()
 		if err != nil {
-			if gorillaws.IsUnexpectedCloseError(err, gorillaws.CloseGoingAway, gorillaws.CloseNormalClosure) {
-				log.Printf("[WS] Read error: %v", err)
+			closeErr, isClose := err.(*gorillaws.CloseError)
+			if isClose {
+				log.Printf("[WS] Read error: websocket closed — code=%d reason=%q addr=%s",
+					closeErr.Code, closeErr.Text, conn.RemoteAddr())
+			} else if gorillaws.IsUnexpectedCloseError(err, gorillaws.CloseGoingAway, gorillaws.CloseNormalClosure) {
+				log.Printf("[WS] Read error (unexpected): %v addr=%s", err, conn.RemoteAddr())
 			}
 			return
 		}
@@ -346,6 +381,15 @@ func (b *Bridge) safeWrite(conn *gorillaws.Conn, msgType byte, payload []byte) e
 	connMu.Lock()
 	defer connMu.Unlock()
 	return WriteMessage(conn, msgType, payload)
+}
+
+// SafeWrite is the exported variant of safeWrite for use by goroutines
+// running outside the readLoop (e.g. file-ingest progress callbacks).
+// gorilla/websocket is NOT goroutine-safe: all writes from background
+// goroutines MUST go through SafeWrite to avoid concurrent-write panics
+// that close the connection with close 1005 (no status).
+func (b *Bridge) SafeWrite(conn *gorillaws.Conn, msgType byte, payload []byte) error {
+	return b.safeWrite(conn, msgType, payload)
 }
 
 // Broadcast sends a message to all connected clients.

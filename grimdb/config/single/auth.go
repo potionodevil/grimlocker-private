@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 
 	rustbridge "github.com/grimlocker/grimdb/cgo"
+	gerrors "github.com/grimlocker/grimdb/errors"
 	"github.com/grimlocker/grimdb/kernel"
 	"github.com/grimlocker/grimdb/security"
 	"github.com/grimlocker/grimdb/storage/grimdb"
@@ -67,7 +68,8 @@ func (a *LocalAuth) HandleUnlockEvent(
 
 		// Step 0/7 — Lockdown check.
 		if state := a.secMod.Lockdown().State(); state == security.LockdownHard {
-			log.Printf("[unlock:FAIL] hard lockdown active")
+			lockdownErr := gerrors.NewAuthLockdownError(0)
+			log.Printf("[unlock:FAIL] hard lockdown active — %s", lockdownErr.Error())
 			return replyAuthFail(bus, e, "hard lockdown active")
 		}
 
@@ -76,11 +78,16 @@ func (a *LocalAuth) HandleUnlockEvent(
 		log.Printf("[unlock:1/7] UnlockVault starting")
 		mvk, err := grimdb.UnlockVault(req.Password, dir)
 		if err != nil {
-			log.Printf("[unlock:FAIL:1/7] UnlockVault: %v", err)
+			authErr := gerrors.NewAuthInvalidError("password_hash", err)
+			log.Printf("[unlock:FAIL:1/7] UnlockVault: %s", authErr.Error())
 			state, _ := a.secMod.Lockdown().RecordFailure()
 			if state == security.LockdownHard {
+				lockdownErr := gerrors.NewAuthLockdownError(0)
+				log.Printf("[unlock:FAIL:1/7] lockdown triggered: %s", lockdownErr.Error())
 				return replyAuthFail(bus, e, "too many failures: hard lockdown")
 			}
+			remaining := a.secMod.Lockdown().RemainingAttempts()
+			log.Printf("[unlock:FAIL:1/7] %s", gerrors.NewAuthLockdownError(remaining).Error())
 			return replyAuthFail(bus, e, "invalid password")
 		}
 		log.Printf("[unlock:1/7] UnlockVault OK (key len=%d)", len(mvk))
@@ -92,6 +99,7 @@ func (a *LocalAuth) HandleUnlockEvent(
 			mvk[i] = 0
 		}
 		if err != nil {
+			// err is already a *gerrors.GrimlockError (ErrCodeSecurityMemlock) from StoreMVK
 			log.Printf("[unlock:FAIL:2/7] StoreMVK: %v", err)
 			return replyAuthFail(bus, e, "failed to store key material")
 		}

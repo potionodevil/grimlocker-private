@@ -68,7 +68,8 @@ func (p *Provider) SetSession(s *security.SessionContext) {
 func (p *Provider) Auth() provider.AuthProvider { return p.auth }
 
 // Storage returns the StorageProvider for this tier.
-func (p *Provider) StorageProvider() provider.StorageProvider { return nil } // see RawStorage
+func (p *Provider) Storage() provider.StorageProvider         { return p.storage }
+func (p *Provider) StorageProvider() provider.StorageProvider { return p.storage }
 
 // RawStorage returns the LocalStorage (needed for daemon wiring of IngestEngine, etc.)
 func (p *Provider) RawStorage() *LocalStorage { return p.storage }

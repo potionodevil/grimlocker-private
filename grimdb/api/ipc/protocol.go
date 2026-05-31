@@ -72,6 +72,16 @@ const (
 	MsgSSHKeyGen    byte = 0x37 // client → server: JSON {comment: string, save_to_vault: bool}
 	MsgSSHKeyResult byte = 0x38 // server → client: JSON {public_key, fingerprint, entry_id}
 
+	// Reconnect / state-mirror protocol (Phase 3 — UI-agnostic lifecycle)
+	MsgReconnect        byte = 0x39 // client → server: JSON {token: string} — resume session without re-auth
+	MsgStateMirror      byte = 0x3A // server → client: JSON full vault state (unlocked, gate, workspace, entries, SKE handle)
+	MsgSessionResumeOK  byte = 0x3B // server → client: ack that session was resumed successfully
+	MsgSessionResumeErr byte = 0x3C // server → client: resume failed (session expired, vault locked, etc.)
+
+	// GQL binary protocol (Phase 4 — GrimQueryLanguage)
+	MsgGQLQuery  byte = 0x3D // client → server: GQL binary frame (injection-immune)
+	MsgGQLResult byte = 0x3E // server → client: GQLResult JSON
+
 	CookieSize   = 32
 	UnixSockPath = "/tmp/grimlocker.sock"
 	WinPipePath  = `\\.\\pipe\\grimlocker`

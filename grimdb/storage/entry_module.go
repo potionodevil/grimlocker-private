@@ -1,3 +1,22 @@
+// Package storage (entry_module.go) implements EntryHandler — the high-level
+// CRUD layer that maps ENTRY.* events to BlockStore operations.
+//
+// Unlike the raw STORAGE adapter (which works with opaque Blocks), EntryHandler
+// understands VaultEntry semantics: titles, categories, typed fields, timestamps.
+// It is wired as a direct bus subscription (not a Module) so the caller's
+// bus.Request() can receive the ENTRY.RESULT reply synchronously.
+//
+// Supported events:
+//
+//	ENTRY.CREATE → creates a new VaultEntry, assigns UUID, writes to BlockStore
+//	ENTRY.READ   → reads raw block data by ID
+//	ENTRY.UPDATE → reads existing entry, merges fields, re-writes block
+//	ENTRY.DELETE → removes block (secure delete via BlockStore.DeleteBlock)
+//	ENTRY.QUERY  → returns []BlockMeta filtered by Category from in-memory index
+//
+// All error replies include an error_code field (from *errors.GrimlockError)
+// so callers can distinguish not-found (2003) from I/O failure (2001) without
+// string matching on the "error" field.
 package storage
 
 import (
@@ -6,6 +25,7 @@ import (
 	"log"
 	"time"
 
+	gerrors "github.com/grimlocker/grimdb/errors"
 	"github.com/grimlocker/grimdb/kernel"
 )
 
@@ -57,6 +77,23 @@ func (h *EntryHandler) Handle(e kernel.Event) error {
 	return nil
 }
 
+// entryError is the structured JSON schema for ENTRY.RESULT error replies.
+// Includes error_code so callers can distinguish vault-locked vs not-found vs IO.
+type entryError struct {
+	Error     string `json:"error"`
+	ErrorCode int    `json:"error_code,omitempty"`
+}
+
+// replyErr dispatches a structured error reply for the given event.
+func replyErr(dispatcher kernel.Dispatcher, e kernel.Event, err error) {
+	code := 0
+	if ge, ok := err.(*gerrors.GrimlockError); ok {
+		code = ge.Code
+	}
+	payload, _ := json.Marshal(entryError{Error: err.Error(), ErrorCode: code})
+	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, payload)) //nolint:errcheck
+}
+
 func (h *EntryHandler) handleCreate(e kernel.Event, dispatcher kernel.Dispatcher) {
 	var req struct {
 		SubjectID string            `json:"subject_id"`
@@ -66,8 +103,7 @@ func (h *EntryHandler) handleCreate(e kernel.Event, dispatcher kernel.Dispatcher
 		Fields    map[string]string `json:"fields"`
 	}
 	if err := json.Unmarshal(e.Payload, &req); err != nil {
-		respPayload, _ := json.Marshal(map[string]string{"error": "invalid request"})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, gerrors.NewProtocolError("entry_create_unmarshal", err))
 		return
 	}
 
@@ -103,8 +139,7 @@ func (h *EntryHandler) handleCreate(e kernel.Event, dispatcher kernel.Dispatcher
 
 	if err := h.bs.WriteBlock(block); err != nil {
 		log.Printf("[entry:CREATE:FAIL] entryID=%s err=%v", entryID, err)
-		respPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, err)
 		return
 	}
 
@@ -118,19 +153,17 @@ func (h *EntryHandler) handleRead(e kernel.Event, dispatcher kernel.Dispatcher) 
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(e.Payload, &req); err != nil {
-		respPayload, _ := json.Marshal(map[string]string{"error": "invalid request"})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, gerrors.NewProtocolError("entry_read_unmarshal", err))
 		return
 	}
 
 	block, err := h.bs.ReadBlock(req.ID)
 	if err != nil {
-		respPayload, _ := json.Marshal(map[string]string{"error": "entry not found"})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, err) // already *GrimlockError (StorageNotFound etc.)
 		return
 	}
 
-	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, block.Data))
+	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, block.Data)) //nolint:errcheck
 }
 
 func (h *EntryHandler) handleUpdate(e kernel.Event, dispatcher kernel.Dispatcher) {
@@ -142,15 +175,13 @@ func (h *EntryHandler) handleUpdate(e kernel.Event, dispatcher kernel.Dispatcher
 		Category  string            `json:"category,omitempty"`
 	}
 	if err := json.Unmarshal(e.Payload, &req); err != nil {
-		respPayload, _ := json.Marshal(map[string]string{"error": "invalid request"})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, gerrors.NewProtocolError("entry_update_unmarshal", err))
 		return
 	}
 
 	block, err := h.bs.ReadBlock(req.ID)
 	if err != nil {
-		respPayload, _ := json.Marshal(map[string]string{"error": "entry not found"})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, err) // *GrimlockError (StorageNotFound)
 		return
 	}
 
@@ -172,8 +203,7 @@ func (h *EntryHandler) handleUpdate(e kernel.Event, dispatcher kernel.Dispatcher
 		// Legacy map path: preserve existing structure.
 		var existing map[string]interface{}
 		if err := json.Unmarshal(block.Data, &existing); err != nil {
-			respPayload, _ := json.Marshal(map[string]string{"error": "corrupt entry"})
-			dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+			replyErr(dispatcher, e, gerrors.NewStorageCorruptionError("entry_update_unmarshal_legacy", req.ID, nil))
 			return
 		}
 		existing["title"] = req.Title
@@ -183,12 +213,11 @@ func (h *EntryHandler) handleUpdate(e kernel.Event, dispatcher kernel.Dispatcher
 	}
 
 	if err := h.bs.WriteBlock(block); err != nil {
-		respPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, err)
 		return
 	}
 
-	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, block.Data))
+	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, block.Data)) //nolint:errcheck
 }
 
 func (h *EntryHandler) handleDelete(e kernel.Event, dispatcher kernel.Dispatcher) {
@@ -196,19 +225,17 @@ func (h *EntryHandler) handleDelete(e kernel.Event, dispatcher kernel.Dispatcher
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(e.Payload, &req); err != nil {
-		respPayload, _ := json.Marshal(map[string]string{"error": "invalid request"})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, gerrors.NewProtocolError("entry_delete_unmarshal", err))
 		return
 	}
 
 	if err := h.bs.DeleteBlock(req.ID); err != nil {
-		respPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, err)
 		return
 	}
 
 	respPayload, _ := json.Marshal(map[string]string{"status": "deleted"})
-	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload)) //nolint:errcheck
 }
 
 // handleQuery handles ENTRY.QUERY events.
@@ -228,8 +255,7 @@ func (h *EntryHandler) handleQuery(e kernel.Event, dispatcher kernel.Dispatcher)
 
 	metas, err := h.bs.QueryBlocks(Category(req.Category))
 	if err != nil {
-		respPayload, _ := json.Marshal(map[string]string{"error": err.Error()})
-		dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload))
+		replyErr(dispatcher, e, err)
 		return
 	}
 

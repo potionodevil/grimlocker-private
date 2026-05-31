@@ -58,6 +58,49 @@ type IdentityProvider interface {
 	Validate(credential []byte) (subjectID string, err error)
 }
 
+// UserAuthenticator manages user identities and credentials for RBAC.
+// Single mode: local DB check against stored Argon2id hashes.
+// Enterprise mode: delegates to OIDC/LDAP providers.
+type UserAuthenticator interface {
+	// Authenticate validates a user credential and returns the subject ID.
+	// Returns an error if the credential is invalid, expired, or the user
+	// does not exist in the identity store.
+	Authenticate(credential []byte) (subjectID string, err error)
+
+	// CreateIdentity provisions a new user in the identity store.
+	// Single mode: stores Argon2id hash locally.
+	// Enterprise mode: no-op (managed by external IAM).
+	CreateIdentity(subjectID string, credential []byte) error
+
+	// RevokeIdentity removes a user from the identity store.
+	RevokeIdentity(subjectID string) error
+
+	// Lists all known subject IDs.
+	ListIdentities() ([]string, error)
+}
+
+// AuditLogger records security-relevant operations to a persistent log.
+// Concrete: security/audit.go (in-memory ring buffer + optional file sink).
+type AuditLogger interface {
+	// Log records an event with severity, module, and message.
+	Log(level, module, message string, details map[string]string)
+
+	// Query returns recent audit events matching optional filters.
+	Query(level string, module string, limit int) []AuditEntry
+
+	// Flush persists buffered audit entries to the configured sink.
+	Flush() error
+}
+
+// AuditEntry is a single record in the audit log.
+type AuditEntry struct {
+	Timestamp int64             `json:"timestamp"`
+	Level     string            `json:"level"`
+	Module    string            `json:"module"`
+	Message   string            `json:"message"`
+	Details   map[string]string `json:"details,omitempty"`
+}
+
 // StorageProvider encapsulates a storage backend for a tier.
 // Embeds storage.BlockStore so existing code paths continue to work unchanged.
 // Concrete: config/single.LocalStorage (file-backed) or config/enterprise.RemoteVault (S3/MinIO).

@@ -4,6 +4,47 @@
 
 ---
 
+## Deployment Tiers
+
+Grimlocker ships in two tiers from the **same codebase**, separated by Go build tags:
+
+| | Single-User | Enterprise |
+|---|---|---|
+| **Build** | `go build ./cmd/daemon` | `go build -tags enterprise ./cmd/daemon` |
+| **Auth** | Argon2id master password | OIDC JWT (Keycloak / Azure AD / Okta) |
+| **Storage** | Local `vault.gdb` file | S3 / MinIO object store |
+| **Transport** | Local IPC (127.0.0.1) | Mutual TLS on port 9443 |
+| **Client** | Tauri desktop app | `grimlocker` CLI (+ Tauri UI) |
+| **Distribution** | Windows/macOS/Linux EXE | Docker image (`distroless/static`, ~15 MB) |
+| **Shutdown** | SIGTERM → graceful | `POST /shutdown` → graceful |
+
+### Quick Start — Single-User (Tauri)
+```bash
+cd grimdb && go build -o grimlocker ./cmd/daemon
+./grimlocker
+# Open Tauri app — vault setup wizard starts automatically
+```
+
+### Quick Start — Enterprise (Docker + CLI)
+```bash
+cd grimdb
+bash scripts/gen-certs.sh                              # generate mTLS certs
+docker-compose -f docker-compose.enterprise.yml up -d  # Keycloak + MinIO + Daemon
+
+export GRIMLOCKER_DAEMON_ADDR=localhost:9443
+export GRIMLOCKER_CLIENT_CERT=deploy/tls/client.crt
+export GRIMLOCKER_CLIENT_KEY=deploy/tls/client.key
+export GRIMLOCKER_CA_CERT=deploy/tls/ca.crt
+
+go build -o grimlocker ./cmd/client
+TOKEN=$(bash scripts/get-token.sh)
+./grimlocker unlock "$TOKEN"
+./grimlocker set "github/token" "ghp_secret123"
+./grimlocker health
+```
+
+---
+
 ## Architecture Overview
 
 ```

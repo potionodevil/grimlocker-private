@@ -25,6 +25,7 @@ import (
 	apiwsbridge "github.com/grimlocker/grimdb/api/websocket"
 	rustbridge "github.com/grimlocker/grimdb/cgo"
 	"github.com/grimlocker/grimdb/config"
+	"github.com/grimlocker/grimdb/gql"
 	"github.com/grimlocker/grimdb/kernel"
 	"github.com/grimlocker/grimdb/security"
 	"github.com/grimlocker/grimdb/storage"
@@ -222,6 +223,11 @@ func main() {
 	entryHandler.SubscribeToAuthResult()
 	translator.SetEntryHandler(entryHandler)
 
+	// ── 9b-2. GQL dispatcher (Phase 4 — GrimQueryLanguage) ────────────────────
+	gqlDispatcher := gql.NewDispatcher(reg.Bus(), blockStore)
+	translator.SetGQLDispatcher(gqlDispatcher)
+	log.Printf("[Omega] GQL dispatcher initialized — injection-immune binary protocol")
+
 	// ── 9c. Watchdog (heartbeat + auto-init + VFS-mount + health) ──────────
 	watchdog := kernel.NewWatchdog(reg.Bus(), reg, appDir)
 	watchdog.SetSession(sessionCtx)
@@ -330,12 +336,12 @@ func main() {
 	ipcMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":   "ready",
-			"tier":     vault.Tier(),
-			"version":  daemonVersion,
-			"ipc_port": ipcPort,
-			"ui_port":  uiPort,
-			"pid":      os.Getpid(),
+			"status":         "ready",
+			"tier":           vault.Tier(),
+			"version":        daemonVersion,
+			"ipc_port":       ipcPort,
+			"ui_port":        uiPort,
+			"pid":            os.Getpid(),
 			"vault_unlocked": sessionCtx.IsUnlocked(),
 		})
 	})

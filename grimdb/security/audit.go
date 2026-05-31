@@ -1,3 +1,14 @@
+// Package security (audit.go) implements the AuditLog — an append-only,
+// hash-chained in-memory log of security events.
+//
+// Each SecurityEvent carries a Level (Info/Warn/Critical), the originating
+// Module, a human-readable Message, and an optional SubjectID (user/session).
+// Entries are linked via SHA-256 chaining so tampering with any entry
+// invalidates all subsequent entries.
+//
+// The log is bounded by a configurable capacity; when full the oldest entry
+// is evicted (ring-buffer semantics). Use AuditLog.Append for writing and
+// AuditLog.Entries for reading the current snapshot.
 package security
 
 import (
