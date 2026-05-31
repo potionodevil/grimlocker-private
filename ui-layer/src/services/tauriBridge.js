@@ -182,7 +182,7 @@ class TauriBridge {
    */
   async discoverToken() {
     if (typeof window !== 'undefined' && window.__TAURI__) {
-      const { invoke } = await import('@tauri-apps/api/tauri')
+      const { invoke } = await import('@tauri-apps/api/core')
       try {
         const config = await invoke('get_session_token')
         if (config.token) this.token = config.token.trim()

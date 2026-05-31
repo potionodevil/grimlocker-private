@@ -66,16 +66,16 @@ fn main() {
             rust_secure_wipe
         ])
         .setup(|app| {
-            let app_handle = app.handle();
+            let app_handle = app.handle().clone();
             let app_dir = app
-                .path_resolver()
+                .path()
                 .app_data_dir()
                 .expect("failed to resolve app data dir");
 
             spawn_daemon(&app_handle, &app_dir);
 
             let app_handle_clone = app_handle.clone();
-            let window = app.get_window("main").expect("main window not found");
+            let window = app.get_webview_window("main").expect("main window not found");
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Destroyed = event {
                     kill_daemon(&app_handle_clone);
@@ -138,9 +138,9 @@ fn resolve_sidecar(app_handle: &tauri::AppHandle) -> PathBuf {
     }
 
     let resource_path = app_handle
-        .path_resolver()
+        .path()
         .resource_dir()
-        .unwrap_or_else(|| std::path::Path::new(".").to_path_buf());
+        .unwrap_or_else(|_| std::path::Path::new(".").to_path_buf());
 
     resource_path
         .join("binaries")
