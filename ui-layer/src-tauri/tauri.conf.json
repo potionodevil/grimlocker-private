@@ -1,31 +1,14 @@
 {
+  "productName": "Grimlocker",
+  "version": "0.1.0",
+  "identifier": "com.grimlocker.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devPath": "http://localhost:3000",
-    "distDir": "../dist"
+    "devUrl": "http://localhost:3000",
+    "frontendDist": "../dist"
   },
-  "package": {
-    "productName": "Grimlocker",
-    "version": "0.1.0"
-  },
-  "tauri": {
-    "bundle": {
-      "active": false,
-      "targets": "all",
-      "identifier": "com.grimlocker.desktop",
-      "externalBin": [
-        "binaries/grimdb-daemon"
-      ]
-    },
-    "allowlist": {
-      "path": {
-        "all": true
-      }
-    },
-    "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; img-src 'self' data: blob:;"
-    },
+  "app": {
     "windows": [
       {
         "title": "GRIMLOCKER // Zero-Trust Vault",
@@ -39,6 +22,16 @@
         "transparent": false,
         "center": true
       }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; img-src 'self' data: blob:;"
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "externalBin": [
+      "binaries/grimdb-daemon"
     ]
   }
 }

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use zeroize::Zeroize;
 
 use crate::crypto;
+use crate::crypto::LockedBuffer;
 
 /// Enclave holds all key material in locked memory.
 /// MVK handles and session keys are stored here — Go never sees raw key bytes.

@@ -36,7 +36,7 @@ impl SecureBuffer {
     }
 }
 
-#[derive(Zeroize, ZeroizeOnDrop)]
+#[derive(Zeroize)]
 pub struct LockedBuffer {
     data: Vec<u8>,
     #[cfg(unix)]
@@ -108,10 +108,13 @@ impl LockedBuffer {
     }
 }
 
-#[cfg(unix)]
 impl Drop for LockedBuffer {
     fn drop(&mut self) {
-        self.unlock_memory();
+        #[cfg(unix)]
+        {
+            self.unlock_memory();
+        }
+        self.data.zeroize();
     }
 }
 
@@ -195,63 +198,61 @@ pub fn derive_key_from_password(password: &str, salt: &[u8]) -> Result<[u8; 32],
 
 #[cfg(unix)]
 pub fn create_guard_pages(size: usize) -> Result<*mut u8, Error> {
-    use nix::sys::mman::{mmap, mprotect, munmap, MapFlags, ProtFlags};
-    use nix::unistd::sysconf;
-    use nix::unistd::SysconfVar;
+    use nix::sys::mman::{mprotect, ProtFlags};
 
-    let page_size = sysconf(SysconfVar::PAGE_SIZE)
-        .ok()
-        .flatten()
-        .unwrap_or(4096) as usize;
+    let page_size = unsafe {
+        let p = libc::sysconf(libc::_SC_PAGESIZE);
+        if p == -1 { 4096 } else { p }
+    } as usize;
 
     let total_size = page_size + size + page_size;
     let aligned_size = (total_size + page_size - 1) & !(page_size - 1);
 
     let ptr = unsafe {
-        mmap(
-            None,
-            std::num::NonZeroUsize::new(aligned_size).unwrap(),
-            ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-            MapFlags::MAP_PRIVATE | MapFlags::MAP_ANONYMOUS,
+        libc::mmap(
+            std::ptr::null_mut(),
+            aligned_size,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
             -1,
             0,
         )
-        .map_err(|e| Error::MemoryAlloc(format!("mmap failed: {}", e)))?
     };
+    if ptr == libc::MAP_FAILED {
+        return Err(Error::MemoryAlloc("mmap failed".into()));
+    }
 
-    let guard_before = ptr.as_ptr();
-    let guard_after = unsafe { ptr.as_ptr().add(page_size + size) };
+    let guard_before = ptr;
+    let guard_after = unsafe { (ptr as *mut u8).add(page_size + size) as *mut libc::c_void };
 
     unsafe {
         mprotect(
-            guard_before as *mut libc::c_void,
+            guard_before,
             page_size,
             ProtFlags::PROT_NONE,
         )
         .map_err(|e| Error::MemoryAlloc(format!("guard page before: {}", e)))?;
 
         mprotect(
-            guard_after as *mut libc::c_void,
+            guard_after,
             page_size,
             ProtFlags::PROT_NONE,
         )
         .map_err(|e| Error::MemoryAlloc(format!("guard page after: {}", e)))?;
     }
 
-    let data_ptr = unsafe { ptr.as_ptr().add(page_size) };
+    let data_ptr = unsafe { (ptr as *mut u8).add(page_size) };
     Ok(data_ptr as *mut u8)
 }
 
 #[cfg(unix)]
 pub fn free_guard_pages(ptr: *mut u8, size: usize) -> Result<(), Error> {
     use nix::sys::mman::munmap;
-    use nix::unistd::sysconf;
-    use nix::unistd::SysconfVar;
 
-    let page_size = sysconf(SysconfVar::PAGE_SIZE)
-        .ok()
-        .flatten()
-        .unwrap_or(4096) as usize;
+    let page_size = unsafe {
+        let p = libc::sysconf(libc::_SC_PAGESIZE);
+        if p == -1 { 4096 } else { p }
+    } as usize;
 
     let total_size = page_size + size + page_size;
     let aligned_size = (total_size + page_size - 1) & !(page_size - 1);

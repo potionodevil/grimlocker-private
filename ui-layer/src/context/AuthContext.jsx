@@ -24,12 +24,14 @@ export function AuthProvider({ children }) {
   const [error, setError] = useState(null)
   const [attemptsRemaining, setAttemptsRemaining] = useState(3)
   const [retryCount, setRetryCount] = useState(0)
+  const retryCountRef = useRef(0)
   const autoRetryRef = useRef(null)
 
   const checkVaultStatus = useCallback(async () => {
     try {
       const status = await tauriBridge.checkVaultStatus()
       setIsInitialized(status.initialized)
+      retryCountRef.current = 0
       setRetryCount(0)
       if (status.initialized && !status.isV5) {
         setAuthState(AUTH_STATE.SETUP)
@@ -37,7 +39,8 @@ export function AuthProvider({ children }) {
         setAuthState(status.initialized ? AUTH_STATE.LOGIN : AUTH_STATE.SETUP)
       }
     } catch (err) {
-      const retryNum = retryCount + 1
+      const retryNum = retryCountRef.current + 1
+      retryCountRef.current = retryNum
       setRetryCount(retryNum)
       if (retryNum < MAX_AUTO_RETRIES) {
         const delay = Math.min(BASE_RETRY_DELAY * Math.pow(2, retryNum - 1), MAX_RETRY_DELAY)
@@ -50,10 +53,11 @@ export function AuthProvider({ children }) {
         setError('Failed to check vault status')
       }
     }
-  }, [retryCount])
+  }, [])
 
   const retryCheck = useCallback(() => {
     if (autoRetryRef.current) clearTimeout(autoRetryRef.current)
+    retryCountRef.current = 0
     setRetryCount(0)
     setError(null)
     setAuthState(AUTH_STATE.CHECKING)
@@ -61,11 +65,21 @@ export function AuthProvider({ children }) {
   }, [checkVaultStatus])
 
   useEffect(() => {
-    checkVaultStatus()
+    if (tauriBridge.connected) {
+      checkVaultStatus()
+      return
+    }
+
+    const unsub = tauriBridge.on('connected', () => {
+      unsub()
+      checkVaultStatus()
+    })
+
     return () => {
+      unsub()
       if (autoRetryRef.current) clearTimeout(autoRetryRef.current)
     }
-  }, [])
+  }, [checkVaultStatus])
 
   const initializeVault = useCallback(async (password) => {
     try {

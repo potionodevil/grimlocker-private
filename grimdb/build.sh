@@ -1,39 +1,84 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET="grimlocker-go-x86_64-pc-windows-msvc.exe"
+# ── OS Detection ─────────────────────────────────────────────────────────────
+OS_NAME="$(uname -s)"
+
+case "$OS_NAME" in
+  Linux)
+    RUST_TARGET="x86_64-unknown-linux-gnu"
+    RUST_LIB_NAME="libgrimlocker_core.so"
+    RUST_LIB_SRC_DIR="target/${RUST_TARGET}/release"
+    GO_BIN_PREFIX="grimdb-daemon"
+    GO_BIN_SUFFIX=""
+    GO_OS="linux"
+    CGO_CC=""
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    # Building on Windows with Git Bash / MSYS2 / Cygwin (native)
+    RUST_TARGET="x86_64-pc-windows-gnu"
+    RUST_LIB_NAME="grimlocker_core.dll"
+    RUST_LIB_SRC_DIR="target/${RUST_TARGET}/release"
+    GO_BIN_PREFIX="grimdb-daemon"
+    GO_BIN_SUFFIX=".exe"
+    GO_OS="windows"
+    CGO_CC=""
+    ;;
+  Darwin)
+    RUST_TARGET="$(uname -m)-apple-darwin"
+    RUST_LIB_NAME="libgrimlocker_core.dylib"
+    RUST_LIB_SRC_DIR="target/${RUST_TARGET}/release"
+    GO_BIN_PREFIX="grimdb-daemon"
+    GO_BIN_SUFFIX=""
+    GO_OS="darwin"
+    CGO_CC=""
+    ;;
+  *)
+    echo "[Error] Unsupported OS: $OS_NAME"
+    exit 1
+    ;;
+esac
+
+TARGET="${GO_BIN_PREFIX}-${RUST_TARGET}${GO_BIN_SUFFIX}"
 BUILD_VERSION=$(git describe --tags --always 2>/dev/null || echo "dev")
 
-echo "[Grimlocker] Building $TARGET (version: $BUILD_VERSION)"
+echo "[Grimlocker] Building $TARGET (version: $BUILD_VERSION) for $OS_NAME"
 
-# Phase 1: Build Rust DLL (core-rust)
-echo "[RustBuild] Compiling core-rust library..."
+# Phase 1: Build Rust library (core-rust)
+echo "[RustBuild] Compiling core-rust library for $RUST_TARGET..."
 cd ../core-rust
-cargo build --release --target x86_64-pc-windows-gnu 2>&1 | grep -v "Compiling" | grep -v "Finished" || true
 
-# Copy the DLL and import library to the grimdb directory
-DLL_PATH="target/x86_64-pc-windows-gnu/release/grimlocker_core.dll"
-LIB_PATH="target/x86_64-pc-windows-gnu/release/grimlocker_core.lib"
+# Ensure the target is installed (no-op if already present)
+rustup target add "$RUST_TARGET" 2>/dev/null || true
 
-if [ ! -f "$DLL_PATH" ]; then
-    echo "[Error] Failed to build grimlocker_core.dll"
+cargo build --release --target "$RUST_TARGET" 2>&1 | grep -v "Compiling" | grep -v "Finished" || true
+
+RUST_LIB_PATH="${RUST_LIB_SRC_DIR}/${RUST_LIB_NAME}"
+
+if [ ! -f "$RUST_LIB_PATH" ]; then
+    echo "[Error] Failed to build ${RUST_LIB_NAME}"
     exit 1
 fi
 
-cp "$DLL_PATH" ../grimdb/
-cp "$LIB_PATH" ../grimdb/
-echo "[RustBuild] DLL built and copied to ../grimdb/"
+cp "$RUST_LIB_PATH" ../grimdb/
+# Copy import library if it exists (Windows-only)
+LIB_PATH="${RUST_LIB_SRC_DIR}/grimlocker_core.lib"
+if [ -f "$LIB_PATH" ]; then
+    cp "$LIB_PATH" ../grimdb/
+fi
+echo "[RustBuild] Library built and copied to ../grimdb/"
 
 cd ../grimdb
 
-# Phase 2: Build Go daemon with CGO enabled
-echo "[GoBuild] Compiling Go daemon with CGO..."
+# Phase 2: Build Go daemon
+echo "[GoBuild] Compiling Go daemon..."
 
-# Set up CGO environment for Windows MSVC cross-compilation
+if [ -n "$CGO_CC" ]; then
+    export CC="$CGO_CC"
+    export GOOS="$GO_OS"
+    export GOARCH=amd64
+fi
 export CGO_ENABLED=1
-export CC=x86_64-w64-mingw32-gcc
-export GOOS=windows
-export GOARCH=amd64
 
 # Build with binary hardening: -trimpath removes absolute paths, -s -w strips symbols
 go build \
@@ -51,5 +96,5 @@ TAURI_BIN="${TAURI_BIN_DIR}/${TARGET}"
 mkdir -p "${TAURI_BIN_DIR}"
 
 cp "${TARGET}" "${TAURI_BIN}"
-cp "grimlocker_core.dll" "${TAURI_BIN_DIR}/"
+cp "${RUST_LIB_NAME}" "${TAURI_BIN_DIR}/"
 echo "[Grimlocker] Deployed to: ${TAURI_BIN_DIR}/"

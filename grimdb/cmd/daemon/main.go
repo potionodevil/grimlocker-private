@@ -291,9 +291,15 @@ func main() {
 
 	// /shutdown — graceful shutdown endpoint for Tauri (and ops tooling).
 	// Tauri calls POST /shutdown instead of SIGKILL so the daemon can clean up.
+	// Requires X-Grimlocker-Token header to prevent unauthorized shutdown.
 	ipcMux.HandleFunc("/shutdown", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Header.Get("X-Grimlocker-Token") != token {
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -335,6 +341,7 @@ func main() {
 
 	ipcMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+<<<<<<< HEAD
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":         "ready",
 			"tier":           vault.Tier(),
@@ -344,6 +351,21 @@ func main() {
 			"pid":            os.Getpid(),
 			"vault_unlocked": sessionCtx.IsUnlocked(),
 		})
+=======
+		healthInfo := map[string]interface{}{
+			"status": "ready",
+			"tier":   vault.Tier(),
+		}
+		authed := r.Header.Get("X-Grimlocker-Token") == token || r.URL.Query().Get("token") == token
+		if authed {
+			healthInfo["version"] = daemonVersion
+			healthInfo["ipc_port"] = ipcPort
+			healthInfo["ui_port"] = uiPort
+			healthInfo["pid"] = os.Getpid()
+			healthInfo["vault_unlocked"] = sessionCtx.IsUnlocked()
+		}
+		_ = json.NewEncoder(w).Encode(healthInfo)
+>>>>>>> ccc431c2ec1ac0b28a026e71df64f82a1c4497e9
 	})
 
 	uiMux := http.NewServeMux()
