@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useGrimStore } from '../../store/useGrimStore'
+import { useCopyToClipboard } from '../../hooks/useClipboard'
 
 const MASK = '••••••••'
 
@@ -38,14 +39,14 @@ function PlainField({ label, value }) {
 
 function CopyButton({ value }) {
   const [copied, setCopied] = useState(false)
+  const copy = useCopyToClipboard()
 
   if (!value) return null
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(value).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    })
+  const handleCopy = async () => {
+    await copy(value)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
   }
 
   return (

@@ -41,7 +41,15 @@ var daemonVersion = "omega-2026-05-24-v3"
 func main() {
 	log.Printf("[Omega] ===== DAEMON START v%s =====", daemonVersion)
 
-	// ── 0. Initialize Rust secure enclave ──────────────────────────────────
+	// ── 0a. Startup binary integrity check ────────────────────────────────
+	// GRIMLOCKER_EXPECTED_HASH is optional. If unset, the computed baseline is
+	// logged (first-run mode). Pin the hash in the deployment environment to
+	// enable tamper detection on subsequent starts.
+	if err := verifyStartupIntegrity(os.Getenv("GRIMLOCKER_EXPECTED_HASH")); err != nil {
+		log.Fatalf("[Omega] FATAL: %v", err)
+	}
+
+	// ── 0b. Initialize Rust secure enclave ──────────────────────────────────
 	if err := rustbridge.InitCore(); err != nil {
 		log.Printf("[Omega] Rust enclave init failed (using Go fallback): %v", err)
 	} else {
@@ -160,6 +168,44 @@ func main() {
 		log.Printf("[Omega] Integrity monitor started (baseline: %x)", integrityMon.Baseline())
 	}
 
+	// ── 7c. Rate limiter (exponential backoff on auth failures) ──────────────
+	rateLimiter := security.NewRateLimiter()
+
+	// ── 7d. Intrusion detector (anomaly-based threat detection) ──────────────
+	intrusionDetector := security.NewIntrusionDetector(func(ev security.AnomalyEvent) {
+		log.Printf("[Omega] [ANOMALY] type=%s severity=%s subject=%q detail=%q",
+			ev.Type, ev.Severity, ev.Subject, ev.Detail)
+		// On HIGH severity anomaly, dispatch SECURITY.AUDIT to the bus.
+		if ev.Severity == "HIGH" {
+			auditPayload, _ := json.Marshal(map[string]string{
+				"anomaly_type": string(ev.Type),
+				"subject":      ev.Subject,
+				"detail":       ev.Detail,
+			})
+			_ = bus.Dispatch(kernel.NewEvent("intrusion_detector", kernel.EvSecAudit, auditPayload))
+		}
+	})
+	// Wire rate limiter failures into intrusion detector.
+	// Subscribe to AUTH.RESULT failure events for anomaly tracking.
+	bus.Subscribe(kernel.EvAuthResult, func(e kernel.Event) error {
+		var res struct {
+			Success bool   `json:"success"`
+			Reason  string `json:"reason,omitempty"`
+		}
+		if err := json.Unmarshal(e.Payload, &res); err != nil {
+			return nil
+		}
+		if !res.Success {
+			intrusionDetector.RecordAuthFailure("default")
+			_, _ = rateLimiter.RecordFailure("default")
+		} else {
+			rateLimiter.RecordSuccess("default")
+		}
+		return nil
+	})
+	_ = rateLimiter       // used by future auth middleware
+	_ = intrusionDetector // used via bus subscription
+
 	// ── 8. Tokens ────────────────────────────────────────────────────────────
 	cookie := mustCookie()
 	token, err := apiwsbridge.GenerateSecureToken()
@@ -219,9 +265,11 @@ func main() {
 		return secMod.RetrieveMVK(handle)
 	}
 	entryHandler := handlers.NewEntryHandler(reg.Bus(), bridge, policyMgr, ingestEngine, retrieveMVK)
+	entryHandler.SetBlockStore(blockStore) // enables folder CRUD operations
 	// Subscribe to AUTH.RESULT to capture MVK handle for ingest operations
 	entryHandler.SubscribeToAuthResult()
 	translator.SetEntryHandler(entryHandler)
+	bridge.SetDisconnectHook(entryHandler.CleanupConn)
 
 	// ── 9b-2. GQL dispatcher (Phase 4 — GrimQueryLanguage) ────────────────────
 	gqlDispatcher := gql.NewDispatcher(reg.Bus(), blockStore)
@@ -240,7 +288,41 @@ func main() {
 
 	// ── 9e. Bridge readiness & heartbeat ─────────────────────────────────────
 	bridge.SetReady()
-	bridge.StartHeartbeat(ctx, 2*time.Second)
+	bridge.StartHeartbeat(ctx, 5*time.Second)
+
+	// ── 9f. Local Network Sync (Single User only) ─────────────────────────────
+	// Start the sync TCP listener for incoming peer connections.
+	startSyncListener(vault, blockStore, secMod.Audit())
+
+	// Initialize the sync scheduler (mDNS discovery + auto-pull).
+	// Sync only activates when the vault is unlocked.
+	if err := vault.InitSync(bus, sessionCtx, blockStore); err != nil {
+		log.Printf("[Omega] Sync init: %v (sync disabled)", err)
+	} else {
+		log.Printf("[Omega] Local Network Sync active on port %d", vault.SyncPort())
+
+		// Wire sync IPC into the translator so the frontend can query peers and trigger syncs.
+		deviceID := vault.DeviceID()
+		syncStatusFn := func() ([]byte, error) {
+			peers := vault.SyncPeers()
+			lastSync := vault.LastSyncAt()
+			var lastSyncMs int64
+			if !lastSync.IsZero() {
+				lastSyncMs = lastSync.UnixMilli()
+			}
+			return json.Marshal(map[string]interface{}{
+				"peers":        peers,
+				"last_sync_at": lastSyncMs,
+				"device_id":    deviceID,
+			})
+		}
+		translator.SetSyncFns(syncStatusFn, vault.TriggerSync)
+		log.Printf("[Omega] Sync IPC bridge active (device=%s)", deviceID)
+	}
+
+	// ── 9g. Audit log IPC ─────────────────────────────────────────────────────
+	// Expose the security audit log over IPC so the frontend can display real events.
+	translator.SetAuditLog(secMod.Audit())
 
 	// ── 10. IPC server (Unix socket / named pipe) ─────────────────────────────
 	var ipcServer *apiipc.Server
@@ -287,7 +369,40 @@ func main() {
 
 	// ipcMux was pre-created and passed to startTierListener; add routes now.
 	ipcMux.HandleFunc("/ws", bridge.HandleWebSocket)
-	ipcMux.Handle("/api/v1", api.NewHandler(reg.Bus()))
+	apiV1Handler := api.NewHandler(reg.Bus())
+	apiV1Handler.SetWorkspaceManager(workspaceMgr)
+	apiV1Handler.SetBlockStore(blockStore)
+	apiV1Handler.SetIngestEngine(ingestEngine)
+	apiV1Handler.SetMVKResolver(func() []byte {
+		handle := sessionCtx.ActiveHandle()
+		if handle == "" {
+			return nil
+		}
+		k, _ := secMod.RetrieveMVK(handle)
+		return k
+	})
+	apiV1Handler.SetAuditLog(secMod.Audit())
+	// Inject sync functions for the REST API if sync is available.
+	// Sync is initialized above; only active when the vault is unlocked.
+	if vault.DeviceID() != "" {
+		apiV1Handler.SetSyncFns(
+			func() ([]byte, error) {
+				peers := vault.SyncPeers()
+				lastSync := vault.LastSyncAt()
+				var lastSyncMs int64
+				if !lastSync.IsZero() {
+					lastSyncMs = lastSync.UnixMilli()
+				}
+				return json.Marshal(map[string]interface{}{
+					"peers":        peers,
+					"last_sync_at": lastSyncMs,
+					"device_id":    vault.DeviceID(),
+				})
+			},
+			vault.TriggerSync,
+		)
+	}
+	ipcMux.Handle("/api/v1", apiV1Handler)
 
 	// /shutdown — graceful shutdown endpoint for Tauri (and ops tooling).
 	// Tauri calls POST /shutdown instead of SIGKILL so the daemon can clean up.
@@ -341,17 +456,6 @@ func main() {
 
 	ipcMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-<<<<<<< HEAD
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":         "ready",
-			"tier":           vault.Tier(),
-			"version":        daemonVersion,
-			"ipc_port":       ipcPort,
-			"ui_port":        uiPort,
-			"pid":            os.Getpid(),
-			"vault_unlocked": sessionCtx.IsUnlocked(),
-		})
-=======
 		healthInfo := map[string]interface{}{
 			"status": "ready",
 			"tier":   vault.Tier(),
@@ -365,7 +469,6 @@ func main() {
 			healthInfo["vault_unlocked"] = sessionCtx.IsUnlocked()
 		}
 		_ = json.NewEncoder(w).Encode(healthInfo)
->>>>>>> ccc431c2ec1ac0b28a026e71df64f82a1c4497e9
 	})
 
 	uiMux := http.NewServeMux()
@@ -424,6 +527,9 @@ func main() {
 
 	// Step 3: Lock session — revokes MVK handle from security module.
 	sessionCtx.Lock()
+
+	// Step 3b: Shut down Local Network Sync.
+	vault.ShutdownSync()
 
 	// Step 4: Destroy Rust enclave session key handle if one was created.
 	if skh := translator.SessionKeyHandle(); skh != "" {

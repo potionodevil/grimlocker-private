@@ -499,6 +499,138 @@ Server → Client:  MSG_ACK (0x08)
 
 ---
 
+### `0x0F` — `MSG_INITIALIZE_VAULT` through `0x40` — `MSG_AUTH_LOGOUT_ACK`
+
+For the complete listing of message types `0x0F`–`0x40`, see [`grimdb/docs/IPC_MESSAGE_TYPES.md`](../grimdb/docs/IPC_MESSAGE_TYPES.md).
+
+---
+
+### `0x41` — `MSG_FILE_DOWNLOAD_REQUEST`
+
+| Property | Value |
+|---|---|
+| Direction | Client → Server |
+| Payload | JSON object |
+| Purpose | Begin streaming download of an encrypted vault file |
+
+```json
+{ "manifest_block_id": "abc123..." }
+```
+
+Server streams `MSG_FILE_CHUNK_DATA` (0x42) frames then sends `MSG_FILE_DOWNLOAD_END` (0x43).
+
+---
+
+### `0x42` — `MSG_FILE_CHUNK_DATA`
+
+| Property | Value |
+|---|---|
+| Direction | Server → Client |
+| Payload | Binary (decrypted + decompressed) |
+| Purpose | One chunk of the downloaded file |
+
+Raw binary frames. Collect all chunks until `0x43` arrives, then verify SHA-256.
+
+---
+
+### `0x43` — `MSG_FILE_DOWNLOAD_END`
+
+| Property | Value |
+|---|---|
+| Direction | Server → Client |
+| Payload | JSON object |
+| Purpose | Download complete — integrity metadata |
+
+```json
+{
+  "sha256": "e3b0c44298fc1c...",
+  "total_size": 204800,
+  "file_name": "report.pdf",
+  "mime_type": "application/pdf"
+}
+```
+
+Verify the assembled bytes match `sha256` before opening the file.
+
+---
+
+### `0x44` — `MSG_WORKSPACE_RENAME`
+
+| Property | Value |
+|---|---|
+| Direction | Client → Server |
+| Payload | JSON object |
+| Purpose | Rename a workspace |
+
+```json
+{ "id": "abc-123", "name": "Work Projects" }
+```
+
+Server responds with `MSG_ACK` (0x08) or `MSG_ERROR` (0x09).
+
+---
+
+### `0x45` — `MSG_PANIC_BUTTON`
+
+| Property | Value |
+|---|---|
+| Direction | Client → Server |
+| Payload | JSON object |
+| Purpose | Admin-only: initiate account-compromise vault destruction |
+
+```json
+{ "passphrase": "<admin passphrase>" }
+```
+
+Passphrase verified in Rust enclave. On success: noise-overwrites all vault data, invalidates all sessions, responds with fake success, exits. See `docs/MODERN_SECURITY_ARCHITECTURE.md`.
+
+---
+
+### `0x50` — `MSG_DISCOVER_SERVERS`
+
+| Property | Value |
+|---|---|
+| Direction | Client → Server |
+| Payload | `{}` |
+| Purpose | Scan local network for Enterprise vault servers (mDNS) |
+
+Server responds with `MSG_SERVER_LIST` (0x51).
+
+---
+
+### `0x51` — `MSG_SERVER_LIST`
+
+| Property | Value |
+|---|---|
+| Direction | Server → Client |
+| Payload | JSON array |
+| Purpose | List of discovered Enterprise servers |
+
+```json
+[
+  { "name": "vault-primary", "address": "10.8.0.10", "port": 9443, "tls_required": true },
+  { "name": "vault-replica", "address": "10.8.0.11", "port": 9443, "tls_required": true }
+]
+```
+
+---
+
+### `0x52`–`0x56` — Enterprise User Management
+
+Admin-only operations. All require `roles: ["admin"]` in the session.
+
+| Code | Name | Payload |
+|---|---|---|
+| `0x52` | `MSG_ENTERPRISE_USER_CREATE` | `{username, roles[]}` → daemon returns one-time password |
+| `0x53` | `MSG_ENTERPRISE_USER_LIST` | `{}` → server returns user list via 0x56 |
+| `0x54` | `MSG_ENTERPRISE_USER_REVOKE` | `{user_id}` → soft-delete, sessions invalidated |
+| `0x55` | `MSG_ENTERPRISE_USER_RESTORE` | `{user_id}` → re-enable, new one-time password issued |
+| `0x56` | `MSG_ENTERPRISE_USER_RESULT` | Server response — user object or array |
+
+See [`grimdb/docs/ENTERPRISE_FEATURES.md`](../grimdb/docs/ENTERPRISE_FEATURES.md) for the full user lifecycle.
+
+---
+
 ## Error Handling
 
 ### Client Error Handling

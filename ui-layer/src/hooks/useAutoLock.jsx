@@ -2,23 +2,21 @@ import { useEffect, useRef, useCallback } from 'react'
 import { useGrimStore } from '../store/useGrimStore'
 import { tauriBridge } from '../services/tauriBridge'
 
-const AUTO_LOCK_MINUTES = 15
-
 export function useAutoLock(isUnlocked) {
+  const autoLockMinutes = useGrimStore((s) => s.preferences.autoLockMinutes ?? 15)
   const timerRef = useRef(null)
 
   const resetTimer = useCallback(() => {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current)
-    }
+    if (timerRef.current) clearTimeout(timerRef.current)
     if (!isUnlocked) return
+    if (autoLockMinutes === 0) return  // 0 = never lock
 
     timerRef.current = setTimeout(() => {
       console.log('[AutoLock] Inactivity timeout — clearing session key')
       tauriBridge.clearSessionKey()
       useGrimStore.getState().lockAllEntries()
-    }, AUTO_LOCK_MINUTES * 60 * 1000)
-  }, [isUnlocked])
+    }, autoLockMinutes * 60 * 1000)
+  }, [isUnlocked, autoLockMinutes])
 
   useEffect(() => {
     if (!isUnlocked) {

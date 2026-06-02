@@ -1,5 +1,8 @@
 @import './tokens.css';
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+/* Inter bundled locally — eliminates Google Fonts external network request */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
 
 @tailwind base;
 @tailwind components;

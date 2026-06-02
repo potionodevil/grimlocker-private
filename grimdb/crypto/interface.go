@@ -9,10 +9,12 @@ type KDFOptions struct {
 	Salt    []byte
 }
 
-// DefaultKDFOptions matches the parameters used in the existing GrimDB format.
+// DefaultKDFOptions provides hardened Argon2id parameters.
+// 128 MB memory and 4 iterations exceed OWASP 2023 recommendations,
+// providing robust resistance against GPU-accelerated cracking.
 var DefaultKDFOptions = KDFOptions{
-	Time:    3,
-	Memory:  65536,
+	Time:    4,
+	Memory:  131072, // 128 MB
 	Threads: 2,
 	KeyLen:  32,
 }

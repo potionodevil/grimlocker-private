@@ -56,6 +56,54 @@ const (
 	OpDeleteEntry Operation = "delete_entry"
 )
 
+// Search operations.
+const (
+	OpSearchEntries Operation = "search_entries"
+)
+
+// File Vault operations.
+const (
+	OpFileListFolder   Operation = "file.list_folder"
+	OpFileCreateFolder Operation = "file.create_folder"
+	OpFileRenameFolder Operation = "file.rename_folder"
+	OpFileDeleteFolder Operation = "file.delete_folder"
+	OpFileMove         Operation = "file.move"
+	OpFileIngest       Operation = "file.ingest"
+	OpFileDownload     Operation = "file.download"
+	OpFileUploadStatus Operation = "file.upload_progress"
+)
+
+// Workspace operations.
+const (
+	OpWorkspaceList   Operation = "workspace.list"
+	OpWorkspaceCreate Operation = "workspace.create"
+	OpWorkspaceSwitch Operation = "workspace.switch"
+	OpWorkspaceRename Operation = "workspace.rename"
+	OpWorkspaceDelete Operation = "workspace.delete"
+)
+
+// Sync operations.
+const (
+	OpSyncListPeers Operation = "sync.list_peers"
+	OpSyncTrigger   Operation = "sync.trigger"
+)
+
+// Audit operations.
+const (
+	OpAuditList Operation = "audit.list"
+)
+
+// Tool operations.
+const (
+	OpToolSSHGen         Operation = "tool.ssh_gen"
+	OpToolRecoveryPhrase Operation = "tool.recovery_phrase"
+)
+
+// Health operations.
+const (
+	OpSystemHealth Operation = "system.health"
+)
+
 // isValidOpcode returns true if the opcode is a known value.
 func isValidOpcode(o Opcode) bool {
 	switch o {
@@ -70,7 +118,17 @@ func isValidOpcode(o Opcode) bool {
 func isValidOperation(op Operation) bool {
 	switch op {
 	case OpListEntries, OpGetEntry, OpQueryEntries,
-		OpCreateEntry, OpUpdateEntry, OpDeleteEntry:
+		OpCreateEntry, OpUpdateEntry, OpDeleteEntry,
+		OpSearchEntries,
+		OpFileListFolder, OpFileCreateFolder, OpFileRenameFolder,
+		OpFileDeleteFolder, OpFileMove, OpFileIngest, OpFileDownload,
+		OpFileUploadStatus,
+		OpWorkspaceList, OpWorkspaceCreate, OpWorkspaceSwitch,
+		OpWorkspaceRename, OpWorkspaceDelete,
+		OpSyncListPeers, OpSyncTrigger,
+		OpAuditList,
+		OpToolSSHGen, OpToolRecoveryPhrase,
+		OpSystemHealth:
 		return true
 	default:
 		return false
@@ -80,7 +138,14 @@ func isValidOperation(op Operation) bool {
 // isReadOperation returns true if the operation is read-only.
 func isReadOperation(op Operation) bool {
 	switch op {
-	case OpListEntries, OpGetEntry, OpQueryEntries:
+	case OpListEntries, OpGetEntry, OpQueryEntries,
+		OpSearchEntries,
+		OpFileListFolder, OpFileDownload, OpFileUploadStatus,
+		OpWorkspaceList,
+		OpSyncListPeers,
+		OpAuditList,
+		OpToolRecoveryPhrase,
+		OpSystemHealth:
 		return true
 	}
 	return false
@@ -89,7 +154,13 @@ func isReadOperation(op Operation) bool {
 // isWriteOperation returns true if the operation mutates data.
 func isWriteOperation(op Operation) bool {
 	switch op {
-	case OpCreateEntry, OpUpdateEntry, OpDeleteEntry:
+	case OpCreateEntry, OpUpdateEntry, OpDeleteEntry,
+		OpFileCreateFolder, OpFileRenameFolder, OpFileDeleteFolder,
+		OpFileMove, OpFileIngest,
+		OpWorkspaceCreate, OpWorkspaceSwitch, OpWorkspaceRename,
+		OpWorkspaceDelete,
+		OpSyncTrigger,
+		OpToolSSHGen:
 		return true
 	}
 	return false

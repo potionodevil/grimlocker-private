@@ -82,6 +82,51 @@ const (
 	MsgGQLQuery  byte = 0x3D // client → server: GQL binary frame (injection-immune)
 	MsgGQLResult byte = 0x3E // server → client: GQLResult JSON
 
+	// Auth lifecycle
+	MsgAuthLogout    byte = 0x3F // client → server: request vault lock (frontend auto-lock / user logout)
+	MsgAuthLogoutAck byte = 0x40 // server → client: ack that vault has been locked
+
+	// FileVault download (Phase 1 — streaming decrypted file retrieval)
+	MsgFileDownloadRequest byte = 0x41 // client → server: JSON {manifest_block_id: string}
+	MsgFileChunkData       byte = 0x42 // server → client: binary chunk (decrypted + decompressed)
+	MsgFileDownloadEnd     byte = 0x43 // server → client: JSON {sha256: hex, total_size: int, file_name, mime_type}
+
+	// Workspace rename
+	MsgWorkspaceRename byte = 0x44 // client → server: JSON {id: string, name: string}
+
+	// Enterprise security
+	MsgPanicButton byte = 0x45 // client → server: JSON {passphrase: string} (Admin-only)
+
+	// Enterprise server discovery (mDNS)
+	MsgDiscoverServers byte = 0x50 // client → server: {} — scan local network
+	MsgServerList      byte = 0x51 // server → client: JSON [{name, address, port, tls_required}]
+
+	// FileVault folder system
+	MsgFolderCreate byte = 0x60 // client → server: JSON {name, parent_id}
+	MsgFolderList   byte = 0x61 // client → server: JSON {parent_id}
+	MsgFolderRename byte = 0x62 // client → server: JSON {id, name}
+	MsgFolderDelete byte = 0x63 // client → server: JSON {id}
+	MsgFolderResult byte = 0x64 // server → client: JSON folder or folder contents
+
+	// FileVault file move
+	MsgFileMoveToFolder byte = 0x65 // client → server: JSON {manifest_block_id, folder_id}
+
+	// Enterprise user management (Admin-only operations)
+	MsgEnterpriseUserCreate  byte = 0x52 // client → server: JSON {username, roles[]}
+	MsgEnterpriseUserList    byte = 0x53 // client → server: {}
+	MsgEnterpriseUserRevoke  byte = 0x54 // client → server: JSON {user_id}
+	MsgEnterpriseUserRestore byte = 0x55 // client → server: JSON {user_id}
+	MsgEnterpriseUserResult  byte = 0x56 // server → client: JSON (user or list)
+
+	// LAN Sync IPC (Single-User tier)
+	MsgSyncListPeers byte = 0x70 // client → server: {} — list discovered peers + sync metadata
+	MsgSyncTrigger   byte = 0x71 // client → server: {} — trigger immediate sync cycle
+	MsgSyncResult    byte = 0x72 // server → client: SKE-encrypted JSON sync state
+
+	// Audit log IPC
+	MsgAuditList   byte = 0x73 // client → server: [2-byte big-endian n] — request last n audit entries
+	MsgAuditResult byte = 0x74 // server → client: SKE-encrypted JSON []SecurityEvent
+
 	CookieSize   = 32
 	UnixSockPath = "/tmp/grimlocker.sock"
 	WinPipePath  = `\\.\\pipe\\grimlocker`

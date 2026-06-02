@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for the main window","local":true,"windows":["main"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Default capabilities for the main window.","local":true,"windows":["main"],"permissions":["core:default","core:tray:allow-new","core:tray:allow-set-icon","core:tray:allow-set-tooltip","core:tray:allow-set-visible","core:menu:allow-new","core:menu:allow-append","core:menu:allow-popup"]}}

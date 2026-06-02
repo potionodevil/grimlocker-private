@@ -148,6 +148,7 @@ export function AuthProvider({ children }) {
   const logout = useCallback(() => {
     setIsUnlocked(false)
     setAuthState(AUTH_STATE.LOGIN)
+    tauriBridge.sendAuthLogout()
     tauriBridge.clearSessionKey()
     useGrimStore.getState().lockAllEntries()
   }, [])

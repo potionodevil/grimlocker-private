@@ -103,7 +103,7 @@ func (a *LocalAuth) HandleUnlockEvent(
 			log.Printf("[unlock:FAIL:2/7] StoreMVK: %v", err)
 			return replyAuthFail(bus, e, "failed to store key material")
 		}
-		log.Printf("[unlock:2/7] StoreMVK OK (handle=%s)", handle)
+		log.Printf("[unlock:2/7] StoreMVK OK (handle=<redacted>)")
 
 		// Step 3/7 — Wire MVK into blockstore.
 		log.Printf("[unlock:3/7] SetMVKFunc starting")
@@ -150,7 +150,7 @@ func (a *LocalAuth) HandleUnlockEvent(
 		} else {
 			sessionKey = ska[:]
 			sessionKeyHandle = skh
-			log.Printf("[unlock:7/7] Session key created via Rust enclave (handle=%s)", skh)
+			log.Printf("[unlock:7/7] Session key created via Rust enclave (handle=<redacted>)")
 		}
 
 		// Encode session key for the response BEFORE zeroing the local copy.

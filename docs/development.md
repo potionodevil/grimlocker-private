@@ -68,9 +68,18 @@ grimlocker-private/
 │   ├── kernel/               # Event bus, dispatcher, registry, watchdog
 │   ├── crypto/               # Go crypto engine
 │   ├── security/             # Security module (lockdown, audit, memlock)
+│   │   ├── secret_guard.go   # mlock + guard pages + auto-zeroize wrapper
+│   │   ├── rate_limiter.go   # Auth attempt rate limiting (5/10/15/20 failures)
+│   │   ├── intrusion_detector.go  # Brute-force + credential stuffing detection
+│   │   └── enterprise/       # Enterprise-tier security (RBAC, user mgmt)
 │   ├── storage/              # Storage layer (block, compression, ingest)
 │   ├── api/                  # IPC, WebSocket, mTLS, handlers
-│   ├── sdk/                  # Plugin SDK
+│   ├── sdk/                  # Plugin SDK + language SDKs
+│   │   ├── gql_client.go    # Go GQL client (high-level)
+│   │   ├── operations.go    # Typed helpers: PasswordEntry, SSHKeyEntry
+│   │   ├── example/         # Runnable SDK usage example
+│   │   ├── java/            # Java Maven SDK (com.grimlocker:grimlocker-sdk)
+│   │   └── python/          # Python pip package (grimlocker)
 │   ├── config/               # Tier configuration (single / enterprise)
 │   ├── cgo/                  # Go-Rust FFI bridge
 │   ├── cmd/                  # Entry points (daemon, client, healthcheck)

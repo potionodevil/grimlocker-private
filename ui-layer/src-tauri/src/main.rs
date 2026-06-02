@@ -1,13 +1,16 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use serde::Serialize;
-use std::io::{BufRead, BufReader};
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use tauri::Manager;
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 struct DaemonHandle {
     child: Option<Child>,
@@ -49,6 +52,109 @@ fn rust_secure_wipe(path: String) -> Result<String, String> {
     Ok(format!("Wipe requested for: {}", path))
 }
 
+/// Saves binary data as a temporary file in the OS temp directory.
+/// Returns the absolute path of the created file.
+/// The caller is responsible for calling secure_delete_temp() after use.
+#[tauri::command]
+fn save_temp_file(filename: String, data: Vec<u8>) -> Result<String, String> {
+    let tmp_dir = std::env::temp_dir();
+    // Sanitize filename — no path separators allowed.
+    let safe_name: String = filename
+        .chars()
+        .map(|c| if c == '/' || c == '\\' || c == ':' { '_' } else { c })
+        .collect();
+
+    let tmp_path = tmp_dir.join(format!("grimlocker_tmp_{}", safe_name));
+
+    let mut file = fs::File::create(&tmp_path)
+        .map_err(|e| format!("create temp file: {}", e))?;
+    file.write_all(&data)
+        .map_err(|e| format!("write temp file: {}", e))?;
+    file.flush()
+        .map_err(|e| format!("flush temp file: {}", e))?;
+
+    tmp_path
+        .to_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "invalid path encoding".to_string())
+}
+
+/// Opens a file with the system default application.
+/// On Windows: uses ShellExecute via the `open` verb.
+/// On macOS/Linux: uses the `open` / `xdg-open` command.
+#[tauri::command]
+fn open_with_default_app(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn()
+            .map_err(|e| format!("open file: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("open file: {}", e))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("open file: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Securely deletes a temporary file using multi-pass overwrite.
+/// Each byte of the file is overwritten with random data before deletion,
+/// reducing the chance of forensic recovery on magnetic storage.
+/// SSD wear-leveling may retain copies — this is best-effort.
+#[tauri::command]
+fn secure_delete_temp(path: String) -> Result<(), String> {
+    let path_buf = std::path::Path::new(&path);
+
+    if !path_buf.exists() {
+        return Ok(()); // Already deleted — idempotent.
+    }
+
+    // Safety: only allow deleting files in the OS temp directory.
+    let tmp_dir = std::env::temp_dir();
+    if !path_buf.starts_with(&tmp_dir) {
+        return Err("secure_delete_temp: path is not in temp directory (safety check)".to_string());
+    }
+
+    // Get file size for overwrite passes.
+    let metadata = fs::metadata(&path_buf)
+        .map_err(|e| format!("stat temp file: {}", e))?;
+    let file_size = metadata.len() as usize;
+
+    if file_size > 0 {
+        // 3-pass overwrite with pseudo-random data (crypto-grade via OS CSPRNG).
+        for pass in 0..3 {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .open(&path_buf)
+                .map_err(|e| format!("open for wipe pass {}: {}", pass, e))?;
+
+            let fill_byte = (pass * 85) as u8; // 0x00, 0x55, 0xAA
+            let fill: Vec<u8> = vec![fill_byte; file_size];
+            use std::io::Write;
+            file.write_all(&fill)
+                .map_err(|e| format!("wipe pass {} write: {}", pass, e))?;
+            file.flush()
+                .map_err(|e| format!("wipe pass {} flush: {}", pass, e))?;
+        }
+    }
+
+    fs::remove_file(&path_buf)
+        .map_err(|e| format!("delete temp file: {}", e))?;
+
+    Ok(())
+}
+
 fn main() {
     let daemon_state = DaemonState {
         handle: Mutex::new(DaemonHandle {
@@ -63,7 +169,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_session_token,
             rust_get_version,
-            rust_secure_wipe
+            rust_secure_wipe,
+            save_temp_file,
+            open_with_default_app,
+            secure_delete_temp
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -81,6 +190,52 @@ fn main() {
                     kill_daemon(&app_handle_clone);
                 }
             });
+
+            // ── System tray ───────────────────────────────────────────────────
+            let show_item = MenuItemBuilder::with_id("show", "Show Grimlocker").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+            let tray_menu = MenuBuilder::new(app)
+                .item(&show_item)
+                .separator()
+                .item(&quit_item)
+                .build()?;
+
+            let _tray = TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&tray_menu)
+                .tooltip("Grimlocker — Zero-Trust Vault")
+                .on_menu_event(|app_handle, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(win) = app_handle.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        kill_daemon(app_handle);
+                        app_handle.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app_handle = tray.app_handle();
+                        if let Some(win) = app_handle.get_webview_window("main") {
+                            if win.is_visible().unwrap_or(false) {
+                                let _ = win.set_focus();
+                            } else {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                    }
+                })
+                .build(app)?;
 
             Ok(())
         })

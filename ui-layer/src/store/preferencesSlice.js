@@ -13,10 +13,7 @@ const STORAGE_KEY = 'grimlocker_prefs'
 function loadSavedPreferences() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      return parsed
-    }
+    if (raw) return JSON.parse(raw)
   } catch (e) {
     console.warn('[preferences] Failed to load saved preferences:', e)
   }
@@ -50,69 +47,82 @@ function applyTokens({ theme, density, fontSize, accentKey }) {
 export const createPreferencesSlice = (set, get) => {
   const saved = loadSavedPreferences()
   const defaults = {
-    theme:        'light',
-    density:      'cozy',
-    fontSize:     14,
-    accentKey:    'blue',
-    reduceMotion: false,
-    highContrast: false,
+    // Appearance
+    theme:                'light',
+    density:              'cozy',
+    fontSize:             14,
+    accentKey:            'blue',
+    reduceMotion:         false,
+    highContrast:         false,
+    sidebarWidth:         224,   // px
+    // Security
+    autoLockMinutes:      15,
+    clipboardClearSeconds: 30,
+    showPasswordStrength: true,
+    lockdownThreshold:    3,
+    // Behavior
+    closeBehavior:        'quit', // 'quit' | 'minimize'
+    startupView:          'all',  // 'all' | 'passwords' | 'FILE_VAULT' | 'dashboard'
+    confirmDelete:        true,
+    // Vault groups — stored as array of { id, label, color, type }
+    passwordGroups:       [],
   }
 
   const initialPreferences = { ...defaults, ...saved }
+
+  const update = (key, val) => {
+    set((s) => {
+      const next = { ...s.preferences, [key]: val }
+      savePreferencesToStorage(next)
+      return { preferences: next }
+    })
+  }
 
   return {
     preferences: initialPreferences,
 
     setTheme: (theme) => {
-      set((s) => {
-        const next = { ...s.preferences, theme }
-        savePreferencesToStorage(next)
-        return { preferences: next }
-      })
+      update('theme', theme)
       applyTokens({ ...get().preferences, theme })
     },
 
     setDensity: (density) => {
-      set((s) => {
-        const next = { ...s.preferences, density }
-        savePreferencesToStorage(next)
-        return { preferences: next }
-      })
+      update('density', density)
       applyTokens({ ...get().preferences, density })
     },
 
     setFontSize: (fontSize) => {
-      set((s) => {
-        const next = { ...s.preferences, fontSize }
-        savePreferencesToStorage(next)
-        return { preferences: next }
-      })
+      update('fontSize', fontSize)
       applyTokens({ ...get().preferences, fontSize })
     },
 
     setAccentKey: (accentKey) => {
-      set((s) => {
-        const next = { ...s.preferences, accentKey }
-        savePreferencesToStorage(next)
-        return { preferences: next }
-      })
+      update('accentKey', accentKey)
       applyTokens({ ...get().preferences, accentKey })
     },
 
-    setReduceMotion: (reduceMotion) => {
-      set((s) => {
-        const next = { ...s.preferences, reduceMotion }
-        savePreferencesToStorage(next)
-        return { preferences: next }
-      })
-    },
+    setReduceMotion: (v) => update('reduceMotion', v),
+    setHighContrast: (v) => update('highContrast', v),
+    setSidebarWidth: (v) => update('sidebarWidth', v),
+    setAutoLockMinutes: (v) => update('autoLockMinutes', v),
+    setClipboardClearSeconds: (v) => update('clipboardClearSeconds', v),
+    setShowPasswordStrength: (v) => update('showPasswordStrength', v),
+    setLockdownThreshold: (v) => update('lockdownThreshold', v),
+    setCloseBehavior: (v) => update('closeBehavior', v),
+    setStartupView: (v) => update('startupView', v),
+    setConfirmDelete: (v) => update('confirmDelete', v),
 
-    setHighContrast: (highContrast) => {
-      set((s) => {
-        const next = { ...s.preferences, highContrast }
-        savePreferencesToStorage(next)
-        return { preferences: next }
-      })
+    addPasswordGroup: (group) => {
+      const groups = [...get().preferences.passwordGroups, group]
+      update('passwordGroups', groups)
+    },
+    removePasswordGroup: (id) => {
+      const groups = get().preferences.passwordGroups.filter(g => g.id !== id)
+      update('passwordGroups', groups)
+    },
+    renamePasswordGroup: (id, label) => {
+      const groups = get().preferences.passwordGroups.map(g => g.id === id ? { ...g, label } : g)
+      update('passwordGroups', groups)
     },
 
     resetPreferences: () => {

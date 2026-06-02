@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	gorillaws "github.com/gorilla/websocket"
@@ -48,6 +49,17 @@ type Translator struct {
 
 	// tokenValidator is injected by the daemon to validate AUTH.TOKEN_SUBMIT payloads.
 	tokenValidator func(string) bool
+
+	// syncPeersFn returns JSON-encoded sync state (peers + last_sync_at + device_id).
+	// Injected by main.go when Local Network Sync is available.
+	syncPeersFn func() ([]byte, error)
+
+	// syncTriggerFn fires an immediate sync cycle. Non-blocking.
+	syncTriggerFn func()
+
+	// auditLog is the security audit log, injected by main.go.
+	// When set, MsgAuditList returns the last n SecurityEvents.
+	auditLog security.AuditLog
 
 	// mvkResolver returns the current master-vault key from locked memory.
 	// Provided by the daemon; wraps security.Module.RetrieveMVK.
@@ -252,6 +264,19 @@ func generateID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// SetSyncFns injects the callbacks used for LAN Sync IPC (MsgSyncListPeers, MsgSyncTrigger).
+// peersFn must return JSON-encoded sync state; triggerFn fires an immediate sync cycle.
+// Both are optional; if nil the corresponding messages return "sync unavailable".
+func (t *Translator) SetSyncFns(peersFn func() ([]byte, error), triggerFn func()) {
+	t.syncPeersFn = peersFn
+	t.syncTriggerFn = triggerFn
+}
+
+// SetAuditLog injects the security AuditLog used to serve MsgAuditList requests.
+func (t *Translator) SetAuditLog(al security.AuditLog) {
+	t.auditLog = al
+}
+
 // SetTokenValidator injects the function used to validate the one-time token
 // sent by the UI during the three-way WebSocket handshake (MsgAuthTokenSubmit).
 // The token is generated at daemon startup via GenerateSecureToken() and
@@ -386,6 +411,42 @@ func (t *Translator) HandleWS(msgType byte, payload []byte, conn *gorillaws.Conn
 	case ipc.MsgWorkspaceDelete:
 		return t.wsDeleteWorkspace(conn, payload)
 
+	case ipc.MsgWorkspaceRename:
+		return t.wsRenameWorkspace(conn, payload)
+
+	case ipc.MsgFileDownloadRequest:
+		return t.wsFileDownload(conn, payload)
+
+	// FileVault folder operations
+	case ipc.MsgFolderCreate:
+		if t.entryHandler != nil {
+			return t.entryHandler.HandleFolderCreate(conn, payload)
+		}
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("entry handler unavailable"))
+	case ipc.MsgFolderList:
+		if t.entryHandler != nil {
+			return t.entryHandler.HandleFolderList(conn, payload, t.skeEncrypt)
+		}
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("entry handler unavailable"))
+	case ipc.MsgFolderRename:
+		if t.entryHandler != nil {
+			return t.entryHandler.HandleFolderRename(conn, payload)
+		}
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("entry handler unavailable"))
+	case ipc.MsgFolderDelete:
+		if t.entryHandler != nil {
+			return t.entryHandler.HandleFolderDelete(conn, payload)
+		}
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("entry handler unavailable"))
+	case ipc.MsgFileMoveToFolder:
+		if t.entryHandler != nil {
+			return t.entryHandler.HandleFileMoveToFolder(conn, payload)
+		}
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("entry handler unavailable"))
+
+	case ipc.MsgPanicButton:
+		return t.wsPanicButton(conn, payload)
+
 	case ipc.MsgAuthTokenSubmit:
 		return t.wsAuthTokenSubmit(conn, payload)
 
@@ -404,6 +465,65 @@ func (t *Translator) HandleWS(msgType byte, payload []byte, conn *gorillaws.Conn
 	case ipc.MsgSystemHeartbeat:
 		// Client acknowledged heartbeat — no action needed.
 		return nil
+
+	// ── LAN Sync IPC ─────────────────────────────────────────────────────────
+	case ipc.MsgSyncListPeers:
+		if t.syncPeersFn == nil {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte(`{"error":"sync unavailable"}`))
+		}
+		data, err := t.syncPeersFn()
+		if err != nil {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte(err.Error()))
+		}
+		enc, err := t.skeEncrypt(data)
+		if err != nil {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte(err.Error()))
+		}
+		return ws.WriteMessage(conn, ipc.MsgSyncResult, []byte(enc))
+
+	case ipc.MsgSyncTrigger:
+		if t.syncTriggerFn == nil {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte(`{"error":"sync unavailable"}`))
+		}
+		t.syncTriggerFn()
+		return ws.WriteMessage(conn, ipc.MsgSyncResult, []byte(`{"ok":true}`))
+
+	// ── Audit Log IPC ─────────────────────────────────────────────────────────
+	case ipc.MsgAuditList:
+		if t.auditLog == nil {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte(`{"error":"audit unavailable"}`))
+		}
+		n := 50
+		if len(payload) >= 2 {
+			n = int(binary.BigEndian.Uint16(payload))
+		}
+		if n <= 0 || n > 500 {
+			n = 50
+		}
+		events := t.auditLog.Recent(n)
+		data, _ := json.Marshal(events)
+		enc, err := t.skeEncrypt(data)
+		if err != nil {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte(err.Error()))
+		}
+		return ws.WriteMessage(conn, ipc.MsgAuditResult, []byte(enc))
+
+	case ipc.MsgAuthLogout:
+		if t.sessionCtx != nil {
+			t.sessionCtx.Lock()
+			// Zero the session key backing array before releasing the reference.
+			// Setting to nil alone does not zero the underlying memory; the GC
+			// may not collect it immediately, leaving the key accessible in a dump.
+			if len(t.sessionKey) > 0 {
+				for i := range t.sessionKey {
+					t.sessionKey[i] = 0
+				}
+			}
+			t.sessionKey = nil
+			t.sessionKeySet = false
+			t.sessionKeyHandle = ""
+		}
+		return ws.WriteMessage(conn, ipc.MsgAuthLogoutAck, nil)
 
 	default:
 		return fmt.Errorf("unknown message type 0x%02x", msgType)
@@ -496,6 +616,12 @@ func (t *Translator) wsInitializeVault(conn *gorillaws.Conn, payload []byte) err
 	// first STORAGE.WRITE (e.g. initial entry save) would be dropped.
 	log.Printf("[translator] auto-unlocking after vault init")
 	evPayload, _ := json.Marshal(map[string]string{"password": password, "app_dir": t.appDir})
+	// Zero the JSON payload after the request completes — it contains the password.
+	defer func() {
+		for i := range evPayload {
+			evPayload[i] = 0
+		}
+	}()
 	unlockEv := kernel.NewEvent("api", kernel.EvAuthUnlock, evPayload)
 	log.Printf("[translator:unlock] RequestID=%s PayloadLen=%d", unlockEv.ID, len(evPayload))
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
@@ -532,9 +658,24 @@ func (t *Translator) wsInitializeVault(conn *gorillaws.Conn, payload []byte) err
 }
 
 func (t *Translator) wsUnlockVault(conn *gorillaws.Conn, payload []byte) error {
-	password := string(payload)
+	// Copy password to a local slice so we can zero it after use.
+	// Go strings are immutable and cannot be zeroed, but []byte can.
+	passwordBytes := make([]byte, len(payload))
+	copy(passwordBytes, payload)
+	defer func() {
+		for i := range passwordBytes {
+			passwordBytes[i] = 0
+		}
+	}()
 
-	evPayload, _ := json.Marshal(map[string]string{"password": password, "app_dir": t.appDir})
+	evPayload, _ := json.Marshal(map[string]string{"password": string(passwordBytes), "app_dir": t.appDir})
+	// Zero the JSON payload after use — it contains the password in plaintext.
+	defer func() {
+		for i := range evPayload {
+			evPayload[i] = 0
+		}
+	}()
+
 	ev := kernel.NewEvent("api", kernel.EvAuthUnlock, evPayload)
 
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
@@ -581,20 +722,29 @@ func (t *Translator) wsUnlockVault(conn *gorillaws.Conn, payload []byte) error {
 // --- Entry operations (dispatch STORAGE events) ---
 
 func (t *Translator) wsSaveEntry(conn *gorillaws.Conn, payload []byte) error {
-	// Frontend sends {type, data} — transform into encrypted Block.
+	// Frontend sends {type, category, data} — transform into encrypted Block.
 	var raw struct {
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
+		Type     string          `json:"type"`
+		Category string          `json:"category"`
+		Data     json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &raw); err != nil {
 		return wsError(conn, gerrors.NewProtocolError("save_entry_unmarshal", err))
 	}
 
 	entryID := generateID()
+
+	// Resolve category: explicit category > type-based fallback
+	cat := raw.Category
+	if cat == "" {
+		cat = strings.ToUpper(raw.Type)
+	}
+
 	entry := map[string]interface{}{
-		"id":   entryID,
-		"type": raw.Type,
-		"data": raw.Data,
+		"id":       entryID,
+		"type":     raw.Type,
+		"category": cat,
+		"data":     raw.Data,
 	}
 	entryJSON, err := json.Marshal(entry)
 	if err != nil {
@@ -688,6 +838,13 @@ func (t *Translator) wsListEntries(conn *gorillaws.Conn) error {
 	}
 
 	for _, meta := range stored.Metas {
+		// Skip raw chunk blocks — they contain encrypted binary, not entry data.
+		// File vault manifests use format "blob-UUID-manifest", chunks use "blob-UUID-chunk-N".
+		// We skip chunks here; manifests are parsed in Path 3 below.
+		if strings.Contains(meta.ID, "-chunk-") {
+			continue
+		}
+
 		sum := entrySummary{
 			ID:        meta.ID,
 			Category:  string(meta.Category), // always available from the block index
@@ -740,6 +897,17 @@ func (t *Translator) wsListEntries(conn *gorillaws.Conn) error {
 							}
 							sum.Category = string(ve.Category)
 							sum.Title = ve.Title
+						}
+					}
+
+					// ── Path 3: File vault manifest (BlobManifest JSON) ──
+					if !decoded && strings.Contains(meta.ID, "-manifest") {
+						var manifest storage.BlobManifest
+						if json.Unmarshal(data, &manifest) == nil && manifest.ID != "" {
+							sum.Type = "file_vault"
+							sum.Category = string(storage.CategoryFileVault)
+							sum.Title = manifest.FileName
+							decoded = true
 						}
 					}
 				}
@@ -830,32 +998,54 @@ func (t *Translator) wsGetEntry(conn *gorillaws.Conn, payload []byte) error {
 
 	// ── Path 2: plain VaultEntry JSON (SSH gen, entry module) ──
 	if metadata == nil {
-		// storedEntry embeds VaultEntry + optional PrivateKeyPEM for SSH keys.
 		var se struct {
 			storage.VaultEntry
 			PrivateKeyPEM string `json:"privateKeyPEM"`
 		}
-		if jsonErr := json.Unmarshal(blob, &se); jsonErr != nil || se.ID == "" {
-			log.Printf("[translator:GET] decode FAIL entryID=%s", string(payload))
-			return ws.WriteMessage(conn, ipc.MsgError, []byte("decryption failed"))
+		if json.Unmarshal(blob, &se) == nil && se.ID != "" {
+			metadata = map[string]interface{}{
+				"id":         se.ID,
+				"type":       se.Type,
+				"category":   string(se.Category),
+				"title":      se.Title,
+				"created_at": stored.Block.CreatedAt,
+				"updated_at": stored.Block.UpdatedAt,
+			}
+			if pk, ok := se.Fields["publicKey"]; ok && pk != "" {
+				metadata["publicKey"] = pk
+			}
+			if fp, ok := se.Fields["fingerprint"]; ok && fp != "" {
+				metadata["fingerprint"] = fp
+			}
 		}
-		metadata = map[string]interface{}{
-			"id":         se.ID,
-			"type":       se.Type,
-			"category":   string(se.Category),
-			"title":      se.Title,
-			"created_at": stored.Block.CreatedAt,
-			"updated_at": stored.Block.UpdatedAt,
+	}
+
+	// ── Path 3: File vault manifest (BlobManifest JSON) ──
+	if metadata == nil {
+		var manifest storage.BlobManifest
+		if json.Unmarshal(blob, &manifest) == nil && manifest.ID != "" {
+			manifestBlockID := manifest.ManifestBlockID
+			if manifestBlockID == "" {
+				manifestBlockID = stored.Block.ID
+			}
+			metadata = map[string]interface{}{
+				"id":                stored.Block.ID,
+				"type":              "file_vault",
+				"category":          string(storage.CategoryFileVault),
+				"title":             manifest.FileName,
+				"file_name":         manifest.FileName,
+				"mime_type":         manifest.MIMEType,
+				"total_size":        manifest.TotalSize,
+				"manifest_block_id": manifestBlockID,
+				"created_at":        stored.Block.CreatedAt,
+				"updated_at":        stored.Block.UpdatedAt,
+			}
 		}
-		// Expose non-sensitive fields directly in metadata so the frontend can
-		// display them without requiring an explicit "Reveal" (decrypt) action.
-		// Public key and fingerprint are not sensitive — they are meant to be shared.
-		if pk, ok := se.Fields["publicKey"]; ok && pk != "" {
-			metadata["publicKey"] = pk
-		}
-		if fp, ok := se.Fields["fingerprint"]; ok && fp != "" {
-			metadata["fingerprint"] = fp
-		}
+	}
+
+	if metadata == nil {
+		log.Printf("[translator:GET] decode FAIL entryID=%s", string(payload))
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("decryption failed"))
 	}
 
 	metaJSON, _ := json.Marshal(metadata)
@@ -945,7 +1135,7 @@ func (t *Translator) wsDecryptEntry(conn *gorillaws.Conn, payload []byte) error 
 	if decryptedResult == nil {
 		var se struct {
 			storage.VaultEntry
-			PrivateKeyPEM string `json:"private_key_pem"`
+			PrivateKeyPEM string `json:"privateKeyPEM"`
 		}
 		if jsonErr := json.Unmarshal(blob, &se); jsonErr != nil || se.ID == "" {
 			return ws.WriteMessage(conn, ipc.MsgError, []byte("decryption failed"))
@@ -970,6 +1160,36 @@ func (t *Translator) wsDecryptEntry(conn *gorillaws.Conn, payload []byte) error 
 			"updated_at": se.UpdatedAt,
 		}
 		log.Printf("[translator:DECRYPT] VaultEntry path entryID=%s category=%s", se.ID, se.Category)
+	}
+
+	// ── Path 3: File vault manifest (BlobManifest JSON) ──
+	if decryptedResult == nil {
+		var manifest storage.BlobManifest
+		if json.Unmarshal(blob, &manifest) == nil && manifest.ID != "" {
+			// Use manifest_block_id from the manifest if available; fall back to block ID.
+			manifestBlockID := manifest.ManifestBlockID
+			if manifestBlockID == "" {
+				manifestBlockID = stored.Block.ID
+			}
+			manifestData := map[string]interface{}{
+				"title":             manifest.FileName,
+				"file_name":         manifest.FileName,
+				"mime_type":         manifest.MIMEType,
+				"total_size":        manifest.TotalSize,
+				"sha256":            fmt.Sprintf("%x", manifest.SHA256),
+				"manifest_block_id": manifestBlockID,
+			}
+			dataJSON, _ := json.Marshal(manifestData)
+			decryptedResult = map[string]interface{}{
+				"id":         stored.Block.ID,
+				"type":       "file_vault",
+				"category":   string(storage.CategoryFileVault),
+				"data":       json.RawMessage(dataJSON),
+				"created_at": stored.Block.CreatedAt,
+				"updated_at": stored.Block.UpdatedAt,
+			}
+			log.Printf("[translator:DECRYPT] BlobManifest path entryID=%s file=%s", manifest.ID, manifest.FileName)
+		}
 	}
 
 	if decryptedResult == nil {
@@ -1035,7 +1255,15 @@ func (t *Translator) wsGenerateMatrix(conn *gorillaws.Conn, payload []byte) erro
 
 	entropyPath := filepath.Join(t.appDir, "entropy.bin")
 	if req.EntropyPath != "" {
-		entropyPath = req.EntropyPath
+		// Security: only allow paths within the app directory
+		clean := filepath.Clean(req.EntropyPath)
+		if filepath.IsAbs(clean) {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte("entropy path must be relative"))
+		}
+		if strings.Contains(clean, "..") {
+			return ws.WriteMessage(conn, ipc.MsgError, []byte("entropy path must not traverse directories"))
+		}
+		entropyPath = filepath.Join(t.appDir, clean)
 	}
 
 	// Generate entropy file with progress streaming.
@@ -1083,19 +1311,19 @@ func (t *Translator) wsGetRecoveryPhrase(conn *gorillaws.Conn, payload []byte) e
 		return ws.WriteMessage(conn, ipc.MsgError, []byte(err.Error()))
 	}
 
-	// If a session key is available, SKE-encrypt the recovery phrase before
-	// sending it over the wire. Otherwise, the connection is localhost-only
-	// (Tauri sidecar), so plaintext is acceptable but logged as a warning.
-	if t.sessionKeySet {
-		encData, encErr := t.skeEncrypt([]byte(phrase))
-		if encErr == nil {
-			resp, _ := json.Marshal(map[string]string{"encrypted": encData})
-			return ws.WriteMessage(conn, ipc.MsgRecoveryPhraseData, resp)
-		}
-		log.Printf("[translator:RECOVERY] SKE encrypt failed, sending plaintext: %v", encErr)
+	// Recovery phrase must always be SKE-encrypted before transmission.
+	if !t.sessionKeySet {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("session key not available — unlock vault first"))
 	}
 
-	return ws.WriteMessage(conn, ipc.MsgRecoveryPhraseData, []byte(phrase))
+	encData, encErr := t.skeEncrypt([]byte(phrase))
+	if encErr != nil {
+		log.Printf("[translator:RECOVERY] SKE encrypt failed: %v", encErr)
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("encryption failed"))
+	}
+
+	resp, _ := json.Marshal(map[string]string{"encrypted": encData})
+	return ws.WriteMessage(conn, ipc.MsgRecoveryPhraseData, resp)
 }
 
 func (t *Translator) wsPanicWipe(conn *gorillaws.Conn, payload []byte) error {
@@ -1156,6 +1384,10 @@ func (t *Translator) wsCreateWorkspace(conn *gorillaws.Conn, payload []byte) err
 		return ws.WriteMessage(conn, ipc.MsgError, []byte("invalid request"))
 	}
 
+	if req.Name == "" || len(req.Name) > 128 {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("workspace name must be 1-128 characters"))
+	}
+
 	workspace, err := t.workspaceMgr.Create(req.Name)
 	if err != nil {
 		return ws.WriteMessage(conn, ipc.MsgError, []byte(err.Error()))
@@ -1186,10 +1418,6 @@ func (t *Translator) wsSwitchWorkspace(conn *gorillaws.Conn, payload []byte) err
 	ev := kernel.NewEvent("api", kernel.EvWorkspaceSwitch, []byte(fmt.Sprintf(`{"workspace_id":"%s"}`, workspace.ID)))
 	_ = t.bus.Dispatch(ev)
 
-	// Also dispatch AUTH.LOGOUT to trigger re-login for the new workspace
-	logoutEv := kernel.NewEvent("api", kernel.EvAuthLogout, []byte(`{"reason":"workspace_switched"}`))
-	_ = t.bus.Dispatch(logoutEv)
-
 	respPayload, _ := json.Marshal(workspace)
 	return ws.WriteMessage(conn, ipc.MsgWorkspacesResult, respPayload)
 }
@@ -1211,6 +1439,102 @@ func (t *Translator) wsDeleteWorkspace(conn *gorillaws.Conn, payload []byte) err
 	}
 
 	return ws.WriteMessage(conn, ipc.MsgAck, nil)
+}
+
+// wsRenameWorkspace renames a workspace by its ID.
+func (t *Translator) wsRenameWorkspace(conn *gorillaws.Conn, payload []byte) error {
+	if t.workspaceMgr == nil {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("workspace manager unavailable"))
+	}
+
+	var req struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("invalid request"))
+	}
+
+	if err := t.workspaceMgr.Rename(req.ID, req.Name); err != nil {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte(err.Error()))
+	}
+
+	workspaces := t.workspaceMgr.List()
+	respPayload, _ := json.Marshal(workspaces)
+	return ws.WriteMessage(conn, ipc.MsgWorkspacesResult, respPayload)
+}
+
+// wsFileDownload handles MsgFileDownloadRequest: decrypts and streams a file from the vault.
+// The manifest_block_id must reference a BlobManifest block (CategoryFileVault).
+// Chunks are streamed as MsgFileChunkData binary frames, followed by MsgFileDownloadEnd.
+func (t *Translator) wsFileDownload(conn *gorillaws.Conn, payload []byte) error {
+	var req struct {
+		ManifestBlockID string `json:"manifest_block_id"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return wsError(conn, gerrors.NewProtocolError("file_download_unmarshal", err))
+	}
+	if req.ManifestBlockID == "" {
+		return wsError(conn, gerrors.NewProtocolError("file_download_missing_id", nil))
+	}
+
+	if t.entryHandler == nil {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("entry handler unavailable"))
+	}
+
+	// Retrieve MVK from locked memory.
+	if t.mvkResolver == nil {
+		return wsError(conn, gerrors.NewSecurityMVKMissingError("file_download"))
+	}
+	mvk := t.mvkResolver()
+	if len(mvk) == 0 {
+		return wsError(conn, gerrors.NewSecurityMVKMissingError("file_download"))
+	}
+
+	// Normalise the manifest block ID: if the frontend sent a bare UUID (legacy entries
+	// before ManifestBlockID was added to BlobManifest), reconstruct the full block key.
+	manifestBlockID := req.ManifestBlockID
+	if !strings.HasPrefix(manifestBlockID, "blob-") {
+		manifestBlockID = fmt.Sprintf("blob-%s-manifest", manifestBlockID)
+		log.Printf("[translator:DOWNLOAD] Normalised bare UUID → %s", manifestBlockID)
+	}
+
+	// Delegate to the entry handler which has access to IngestEngine and bridge.
+	return t.entryHandler.HandleFileDownload(conn, manifestBlockID, mvk, t.bridge)
+}
+
+// wsPanicButton handles MsgPanicButton: triggers hard lockdown (Admin-only).
+// Requires passphrase confirmation before executing the lockdown.
+// The passphrase must be non-empty and may be validated against a stored admin
+// credential in future releases.
+func (t *Translator) wsPanicButton(conn *gorillaws.Conn, payload []byte) error {
+	var req struct {
+		Passphrase string `json:"passphrase"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return wsError(conn, gerrors.NewProtocolError("panic_button_unmarshal", err))
+	}
+
+	// Require a non-empty passphrase. In a future multi-user tier this should
+	// be validated against an admin credential store.
+	if req.Passphrase == "" {
+		return wsError(conn, gerrors.NewAuthInvalidError("panic_button", nil).
+			WithDetails("reason", "passphrase required for panic button"))
+	}
+
+	// Log the panic button activation attempt (without the passphrase).
+	log.Printf("[PanicButton] PANIC BUTTON activated — triggering hard lockdown")
+
+	// Dispatch SECURITY.PANIC to trigger the hard lockdown handler.
+	panicPayload, _ := json.Marshal(map[string]string{
+		"reason":   "panic_button_activated",
+		"operator": "admin",
+	})
+	_ = t.bus.Dispatch(kernel.NewEvent("api", kernel.EvSecPanic, panicPayload))
+
+	// Send acknowledgment before the connection is terminated.
+	ackPayload, _ := json.Marshal(map[string]bool{"lockdown_initiated": true})
+	return ws.WriteMessage(conn, ipc.MsgAck, ackPayload)
 }
 
 // wsGQLQuery handles MsgGQLQuery: binary GQL frames that go through the

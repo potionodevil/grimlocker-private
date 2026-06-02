@@ -1,0 +1,31 @@
+[package]
+name        = "grimlocker-sdk"
+version     = "1.0.0"
+edition     = "2021"
+description = "Rust SDK for the Grimlocker Zero-Trust Vault daemon"
+license     = "UNLICENSED"
+repository  = "https://github.com/grimlocker/grimdb"
+
+[dependencies]
+tokio          = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = [] }
+tungstenite    = "0.24"
+serde          = { version = "1", features = ["derive"] }
+serde_json     = "1"
+base64         = "0.22"
+bytes          = "1"
+thiserror      = "1"
+futures-util   = "0.3"
+url            = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util", "net"] }
+serde_json = "1"
+
+[[example]]
+name = "basic"
+path = "src/examples/basic.rs"
+
+[[example]]
+name = "file_vault"
+path = "src/examples/file_vault.rs"

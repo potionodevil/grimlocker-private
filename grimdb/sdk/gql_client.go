@@ -89,7 +89,8 @@ func (c *GQLClient) Execute(ctx context.Context, query *gql.GQLQuery) (*gql.GQLR
 	if respFrame.Opcode == gql.OpcodeError {
 		var errResult gql.GQLResult
 		if json.Unmarshal(respFrame.Payload, &errResult) == nil {
-			return &errResult, fmt.Errorf("sdk: GQL error %d: %s", errResult.ErrorCode, errResult.ErrorMsg)
+			return &errResult, fmt.Errorf("sdk: GQL error %s (%d): %s",
+				gql.ErrorCodeName(errResult.ErrorCode), errResult.ErrorCode, errResult.ErrorMsg)
 		}
 		return nil, fmt.Errorf("sdk: GQL error (unparseable)")
 	}

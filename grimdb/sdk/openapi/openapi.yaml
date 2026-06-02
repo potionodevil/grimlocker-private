@@ -1,0 +1,1036 @@
+openapi: 3.0.3
+info:
+  title: Grimlocker HTTP API
+  description: |
+    Grimlocker local daemon HTTP API for vault, entry, file, workspace,
+    sync, audit, and tool management. All operations are dispatched via
+    POST on `/api/v1` with a `{action, payload}` envelope.
+  version: 1.0.0
+  contact:
+    name: Grimlocker Team
+    url: https://github.com/grimlocker
+
+servers:
+  - url: http://localhost:9707
+    description: Grimlocker local daemon
+
+security:
+  - TokenAuth: []
+
+paths:
+  /api/v1:
+    post:
+      summary: Dispatch an action
+      description: |
+        Send a JSON body containing an `action` string and an optional
+        `payload` object. The response contains the result or an error.
+      operationId: dispatch
+      tags:
+        - API
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DispatchRequest'
+            examples:
+              vaultUnlock:
+                summary: Unlock a vault
+                value:
+                  action: vault.unlock
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    passphrase: "correct horse battery staple"
+              vaultLock:
+                summary: Lock a vault
+                value:
+                  action: vault.lock
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+              vaultStatus:
+                summary: Get vault status
+                value:
+                  action: vault.status
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+              vaultRecoveryPhrase:
+                summary: Retrieve recovery phrase
+                value:
+                  action: vault.recovery_phrase
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+              entryList:
+                summary: List entries
+                value:
+                  action: entry.list
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    limit: 20
+                    offset: 0
+              entryRead:
+                summary: Read an entry
+                value:
+                  action: entry.read
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    entry_id: "550e8400-e29b-41d4-a716-446655440001"
+              entryCreate:
+                summary: Create an entry
+                value:
+                  action: entry.create
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    title: "My Login"
+                    url: "https://example.com"
+                    username: "user@example.com"
+                    password: "s3cret"
+                    tags: ["web", "prod"]
+                    notes: "main account"
+              entryUpdate:
+                summary: Update an entry
+                value:
+                  action: entry.update
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    entry_id: "550e8400-e29b-41d4-a716-446655440001"
+                    title: "My Updated Login"
+                    url: "https://updated.example.com"
+              entryDelete:
+                summary: Delete an entry
+                value:
+                  action: entry.delete
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    entry_id: "550e8400-e29b-41d4-a716-446655440001"
+              entryQuery:
+                summary: Query entries
+                value:
+                  action: entry.query
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    filter:
+                      field: "title"
+                      operator: "contains"
+                      value: "login"
+                    limit: 20
+              entrySearch:
+                summary: Full-text search
+                value:
+                  action: entry.search
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    query: "bank account"
+                    limit: 10
+              fileListFolder:
+                summary: List folder contents
+                value:
+                  action: file.list_folder
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    path: "/documents"
+              fileCreateFolder:
+                summary: Create a folder
+                value:
+                  action: file.create_folder
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    path: "/documents/invoices"
+              fileRenameFolder:
+                summary: Rename a folder
+                value:
+                  action: file.rename_folder
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    path: "/documents/invoices"
+                    new_name: "invoices_2026"
+              fileDeleteFolder:
+                summary: Delete a folder
+                value:
+                  action: file.delete_folder
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    path: "/documents/invoices"
+                    recursive: false
+              fileMove:
+                summary: Move a file or folder
+                value:
+                  action: file.move
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    source: "/documents/report.pdf"
+                    destination: "/archive/report.pdf"
+              fileIngest:
+                summary: Ingest (upload) a file
+                value:
+                  action: file.ingest
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    path: "/documents/report.pdf"
+                    content: "<base64-encoded-bytes>"
+                    mime_type: "application/pdf"
+              fileDownload:
+                summary: Download a file
+                value:
+                  action: file.download
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    path: "/documents/report.pdf"
+              workspaceList:
+                summary: List workspaces
+                value:
+                  action: workspace.list
+                  payload: {}
+              workspaceCreate:
+                summary: Create a workspace
+                value:
+                  action: workspace.create
+                  payload:
+                    name: "my-workspace"
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+              workspaceSwitch:
+                summary: Switch active workspace
+                value:
+                  action: workspace.switch
+                  payload:
+                    workspace_id: "550e8400-e29b-41d4-a716-446655440002"
+              workspaceRename:
+                summary: Rename a workspace
+                value:
+                  action: workspace.rename
+                  payload:
+                    workspace_id: "550e8400-e29b-41d4-a716-446655440002"
+                    name: "renamed-workspace"
+              workspaceDelete:
+                summary: Delete a workspace
+                value:
+                  action: workspace.delete
+                  payload:
+                    workspace_id: "550e8400-e29b-41d4-a716-446655440002"
+              syncListPeers:
+                summary: List sync peers
+                value:
+                  action: sync.list_peers
+                  payload: {}
+              syncTrigger:
+                summary: Trigger sync
+                value:
+                  action: sync.trigger
+                  payload:
+                    peer_id: "550e8400-e29b-41d4-a716-446655440003"
+              auditList:
+                summary: List audit log entries
+                value:
+                  action: audit.list
+                  payload:
+                    vault_id: "550e8400-e29b-41d4-a716-446655440000"
+                    limit: 50
+                    offset: 0
+              toolSshKeygen:
+                summary: Generate an SSH key pair
+                value:
+                  action: tool.ssh_keygen
+                  payload:
+                    algorithm: "ed25519"
+                    comment: "user@host"
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DispatchResponse'
+        '400':
+          description: Bad request (invalid payload)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "INVALID_PAYLOAD"
+                error: "missing required field: vault_id"
+        '401':
+          description: Unauthorized (missing or invalid token)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "UNAUTHORIZED"
+                error: "invalid or missing X-Grimlocker-Token header"
+        '403':
+          description: Forbidden (insufficient permissions)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "FORBIDDEN"
+                error: "this token does not have permission to delete entries"
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "NOT_FOUND"
+                error: "vault not found"
+        '409':
+          description: Conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "CONFLICT"
+                error: "a folder with this name already exists"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "INTERNAL_ERROR"
+                error: "unexpected daemon failure"
+
+components:
+  securitySchemes:
+    TokenAuth:
+      type: apiKey
+      in: header
+      name: X-Grimlocker-Token
+      description: Grimlocker daemon authentication token
+
+  schemas:
+    # ── Envelope ──────────────────────────────────────────────────────
+    DispatchRequest:
+      type: object
+      required:
+        - action
+      properties:
+        action:
+          type: string
+          description: Action identifier
+          enum:
+            - vault.unlock
+            - vault.lock
+            - vault.status
+            - vault.recovery_phrase
+            - entry.list
+            - entry.read
+            - entry.create
+            - entry.update
+            - entry.delete
+            - entry.query
+            - entry.search
+            - file.list_folder
+            - file.create_folder
+            - file.rename_folder
+            - file.delete_folder
+            - file.move
+            - file.ingest
+            - file.download
+            - workspace.list
+            - workspace.create
+            - workspace.switch
+            - workspace.rename
+            - workspace.delete
+            - sync.list_peers
+            - sync.trigger
+            - audit.list
+            - tool.ssh_keygen
+        payload:
+          type: object
+          description: Action-specific payload (varies by action)
+
+    DispatchResponse:
+      type: object
+      properties:
+        result:
+          description: Action-specific result data
+
+    ErrorResponse:
+      type: object
+      required:
+        - error_code
+        - error
+      properties:
+        error_code:
+          type: string
+          description: Machine-readable error code
+          enum:
+            - INVALID_PAYLOAD
+            - UNAUTHORIZED
+            - FORBIDDEN
+            - NOT_FOUND
+            - CONFLICT
+            - INTERNAL_ERROR
+            - VAULT_LOCKED
+            - VAULT_ALREADY_UNLOCKED
+            - INSUFFICIENT_STORAGE
+            - RATE_LIMITED
+            - SYNC_CONFLICT
+            - BAD_FILE_PATH
+        error:
+          type: string
+          description: Human-readable error message
+
+    # ── Common ────────────────────────────────────────────────────────
+    UUID:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    VaultId:
+      $ref: '#/components/schemas/UUID'
+
+    EntryId:
+      $ref: '#/components/schemas/UUID'
+
+    WorkspaceId:
+      $ref: '#/components/schemas/UUID'
+
+    PeerId:
+      $ref: '#/components/schemas/UUID'
+
+    FilePath:
+      type: string
+      minLength: 1
+      pattern: '^/'
+      example: "/documents/report.pdf"
+
+    LimitParam:
+      type: integer
+      minimum: 1
+      maximum: 500
+      default: 50
+
+    OffsetParam:
+      type: integer
+      minimum: 0
+      default: 0
+
+    Timestamp:
+      type: string
+      format: date-time
+
+    # ── Vault ─────────────────────────────────────────────────────────
+    VaultUnlockPayload:
+      type: object
+      required:
+        - vault_id
+        - passphrase
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        passphrase:
+          type: string
+          minLength: 1
+
+    VaultLockPayload:
+      type: object
+      required:
+        - vault_id
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+
+    VaultStatusPayload:
+      type: object
+      required:
+        - vault_id
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+
+    VaultRecoveryPhrasePayload:
+      type: object
+      required:
+        - vault_id
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+
+    VaultStatusResult:
+      type: object
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/UUID'
+        unlocked:
+          type: boolean
+        entry_count:
+          type: integer
+        file_count:
+          type: integer
+        storage_used_bytes:
+          type: integer
+          format: int64
+        storage_capacity_bytes:
+          type: integer
+          format: int64
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    VaultRecoveryPhraseResult:
+      type: object
+      properties:
+        recovery_phrase:
+          type: string
+          description: BIP39 mnemonic phrase
+
+    # ── Entry ─────────────────────────────────────────────────────────
+    Entry:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        vault_id:
+          $ref: '#/components/schemas/UUID'
+        title:
+          type: string
+        url:
+          type: string
+          format: uri
+        username:
+          type: string
+        password:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    EntryListPayload:
+      type: object
+      required:
+        - vault_id
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        limit:
+          $ref: '#/components/schemas/LimitParam'
+        offset:
+          $ref: '#/components/schemas/OffsetParam'
+
+    EntryListResult:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntrySummary'
+        total:
+          type: integer
+
+    EntrySummary:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        title:
+          type: string
+        url:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    EntryReadPayload:
+      type: object
+      required:
+        - vault_id
+        - entry_id
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        entry_id:
+          $ref: '#/components/schemas/EntryId'
+
+    EntryReadResult:
+      $ref: '#/components/schemas/Entry'
+
+    EntryCreatePayload:
+      type: object
+      required:
+        - vault_id
+        - title
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        title:
+          type: string
+          minLength: 1
+        url:
+          type: string
+          format: uri
+        username:
+          type: string
+        password:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+
+    EntryCreateResult:
+      $ref: '#/components/schemas/Entry'
+
+    EntryUpdatePayload:
+      type: object
+      required:
+        - vault_id
+        - entry_id
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        entry_id:
+          $ref: '#/components/schemas/EntryId'
+        title:
+          type: string
+        url:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        notes:
+          type: string
+
+    EntryUpdateResult:
+      $ref: '#/components/schemas/Entry'
+
+    EntryDeletePayload:
+      type: object
+      required:
+        - vault_id
+        - entry_id
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        entry_id:
+          $ref: '#/components/schemas/EntryId'
+
+    EntryQueryFilter:
+      type: object
+      required:
+        - field
+        - operator
+        - value
+      properties:
+        field:
+          type: string
+          enum:
+            - title
+            - url
+            - username
+            - tags
+            - notes
+        operator:
+          type: string
+          enum:
+            - eq
+            - neq
+            - contains
+            - starts_with
+            - ends_with
+            - regex
+        value:
+          type: string
+
+    EntryQueryPayload:
+      type: object
+      required:
+        - vault_id
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        filter:
+          $ref: '#/components/schemas/EntryQueryFilter'
+        limit:
+          $ref: '#/components/schemas/LimitParam'
+        offset:
+          $ref: '#/components/schemas/OffsetParam'
+
+    EntryQueryResult:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entry'
+        total:
+          type: integer
+
+    EntrySearchPayload:
+      type: object
+      required:
+        - vault_id
+        - query
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        query:
+          type: string
+          minLength: 1
+        limit:
+          $ref: '#/components/schemas/LimitParam'
+
+    EntrySearchResult:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entry'
+        total:
+          type: integer
+
+    # ── File ──────────────────────────────────────────────────────────
+    FileItem:
+      type: object
+      properties:
+        name:
+          type: string
+        path:
+          $ref: '#/components/schemas/FilePath'
+        is_folder:
+          type: boolean
+        size_bytes:
+          type: integer
+          format: int64
+        mime_type:
+          type: string
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    FileListFolderPayload:
+      type: object
+      required:
+        - vault_id
+        - path
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        path:
+          $ref: '#/components/schemas/FilePath'
+
+    FileListFolderResult:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/FilePath'
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileItem'
+
+    FileCreateFolderPayload:
+      type: object
+      required:
+        - vault_id
+        - path
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        path:
+          $ref: '#/components/schemas/FilePath'
+
+    FileRenameFolderPayload:
+      type: object
+      required:
+        - vault_id
+        - path
+        - new_name
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        path:
+          $ref: '#/components/schemas/FilePath'
+        new_name:
+          type: string
+          minLength: 1
+          pattern: '^[^/\\]+$'
+
+    FileDeleteFolderPayload:
+      type: object
+      required:
+        - vault_id
+        - path
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        path:
+          $ref: '#/components/schemas/FilePath'
+        recursive:
+          type: boolean
+          default: false
+
+    FileMovePayload:
+      type: object
+      required:
+        - vault_id
+        - source
+        - destination
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        source:
+          $ref: '#/components/schemas/FilePath'
+        destination:
+          $ref: '#/components/schemas/FilePath'
+
+    FileIngestPayload:
+      type: object
+      required:
+        - vault_id
+        - path
+        - content
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        path:
+          $ref: '#/components/schemas/FilePath'
+        content:
+          type: string
+          description: Base64-encoded file bytes
+          format: byte
+        mime_type:
+          type: string
+
+    FileDownloadPayload:
+      type: object
+      required:
+        - vault_id
+        - path
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        path:
+          $ref: '#/components/schemas/FilePath'
+
+    FileDownloadResult:
+      type: object
+      properties:
+        path:
+          $ref: '#/components/schemas/FilePath'
+        content:
+          type: string
+          description: Base64-encoded file bytes
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+
+    # ── Workspace ─────────────────────────────────────────────────────
+    Workspace:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        name:
+          type: string
+        vault_id:
+          $ref: '#/components/schemas/UUID'
+        is_active:
+          type: boolean
+        created_at:
+          $ref: '#/components/schemas/Timestamp'
+        updated_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    WorkspaceListResult:
+      type: object
+      properties:
+        workspaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/Workspace'
+
+    WorkspaceCreatePayload:
+      type: object
+      required:
+        - name
+        - vault_id
+      properties:
+        name:
+          type: string
+          minLength: 1
+          pattern: '^[a-zA-Z0-9_-]+$'
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+
+    WorkspaceSwitchPayload:
+      type: object
+      required:
+        - workspace_id
+      properties:
+        workspace_id:
+          $ref: '#/components/schemas/WorkspaceId'
+
+    WorkspaceRenamePayload:
+      type: object
+      required:
+        - workspace_id
+        - name
+      properties:
+        workspace_id:
+          $ref: '#/components/schemas/WorkspaceId'
+        name:
+          type: string
+          minLength: 1
+          pattern: '^[a-zA-Z0-9_-]+$'
+
+    WorkspaceDeletePayload:
+      type: object
+      required:
+        - workspace_id
+      properties:
+        workspace_id:
+          $ref: '#/components/schemas/WorkspaceId'
+
+    # ── Sync ──────────────────────────────────────────────────────────
+    SyncPeer:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        name:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+        status:
+          type: string
+          enum:
+            - online
+            - offline
+            - syncing
+        last_sync_at:
+          $ref: '#/components/schemas/Timestamp'
+
+    SyncListPeersResult:
+      type: object
+      properties:
+        peers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SyncPeer'
+
+    SyncTriggerPayload:
+      type: object
+      required:
+        - peer_id
+      properties:
+        peer_id:
+          $ref: '#/components/schemas/PeerId'
+
+    SyncTriggerResult:
+      type: object
+      properties:
+        sync_id:
+          $ref: '#/components/schemas/UUID'
+        status:
+          type: string
+          enum:
+            - queued
+            - in_progress
+
+    # ── Audit ─────────────────────────────────────────────────────────
+    AuditEntry:
+      type: object
+      properties:
+        id:
+          $ref: '#/components/schemas/UUID'
+        vault_id:
+          $ref: '#/components/schemas/UUID'
+        action:
+          type: string
+        actor:
+          type: string
+          description: Client identifier or token fingerprint
+        details:
+          type: string
+        timestamp:
+          $ref: '#/components/schemas/Timestamp'
+
+    AuditListPayload:
+      type: object
+      required:
+        - vault_id
+      properties:
+        vault_id:
+          $ref: '#/components/schemas/VaultId'
+        limit:
+          $ref: '#/components/schemas/LimitParam'
+        offset:
+          $ref: '#/components/schemas/OffsetParam'
+
+    AuditListResult:
+      type: object
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntry'
+        total:
+          type: integer
+
+    # ── Tools ─────────────────────────────────────────────────────────
+    SshAlgorithm:
+      type: string
+      enum:
+        - ed25519
+        - rsa
+        - ecdsa
+
+    ToolSshKeygenPayload:
+      type: object
+      required:
+        - algorithm
+      properties:
+        algorithm:
+          $ref: '#/components/schemas/SshAlgorithm'
+        bits:
+          type: integer
+          description: Key size (only applies to rsa; default 4096)
+          enum: [2048, 4096]
+        comment:
+          type: string
+        passphrase:
+          type: string
+          description: Optional passphrase to encrypt the private key
+
+    ToolSshKeygenResult:
+      type: object
+      properties:
+        public_key:
+          type: string
+          description: SSH public key in OpenSSH format
+        fingerprint_sha256:
+          type: string
+          description: SHA256 fingerprint of the public key
+
+tags:
+  - name: API
+    description: Core dispatch endpoint

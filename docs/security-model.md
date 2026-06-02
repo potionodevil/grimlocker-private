@@ -1,6 +1,6 @@
 # Security Model
 
-This document describes the complete security model of the Grimlocker system — every mechanism, assumption, and countermeasure.
+This document describes the complete security model of the Grimlocker system — every mechanism, assumption, and countermeasure. For the formal threat analysis, see [threat-model.md](threat-model.md). For Phase 6+ advanced security subsystems (SecretGuard, PQC, ZKP), see [MODERN_SECURITY_ARCHITECTURE.md](MODERN_SECURITY_ARCHITECTURE.md).
 
 ---
 
@@ -388,6 +388,132 @@ Decoy vaults that:
 
 ---
 
+## Local Network Sync (Single User)
+
+The Local Network Sync feature allows two devices running Grimlocker (Single User tier) on the same LAN to automatically synchronize vault entries. This section covers the security properties of the sync subsystem.
+
+### Design Principle
+
+**Sync operates only between mutually authenticated devices, using the same ChaCha20-Poly1305 primitives as the vault. Plaintext never crosses the network — only encrypted blocks are transferred.**
+
+### Device Identity
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      DEVICE IDENTITY LIFECYCLE                       │
+│                                                                     │
+│  First Run                                                          │
+│  ├── Generate Ed25519 keypair → ~/.grimlocker/device.key (0600)     │
+│  └── Derive Device ID = BLAKE3(public_key)[:16]                     │
+│                                                                     │
+│  Pairing (first connection between two devices)                     │
+│  ├── Both devices display a 6-digit PIN                             │
+│  │   PIN = HMAC-SHA256(device_A_pub || device_B_pub || nonce)[:6]   │
+│  ├── User confirms PINs match on both devices                       │
+│  ├── Public keys exchanged and pinned as trusted                    │
+│  └── Trusted peers stored in ~/.grimlocker/peers.json (0600)        │
+│                                                                     │
+│  Reconnection                                                        │
+│  ├── Ed25519 challenge/response verifies peer identity              │
+│  ├── Session key = ChaCha20-Poly1305 via X25519 ECDH               │
+│  └── All subsequent sync traffic encrypted with session key         │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Key properties:**
+- PIN is 6 digits (1,000,000 combinations) — secure against passive MITM when combined with user verification
+- PIN is derived deterministically from both public keys + a nonce, so both peers compute the same value independently
+- Ed25519 keypair never leaves the device; only public keys are exchanged
+- Trust-on-first-use: after PIN verification, the peer's public key is pinned permanently
+
+### Discovery
+
+```
+Device A                              Device B
+    │                                     │
+    ├─ mDNS: _grimlocker._tcp            ├─ mDNS: _grimlocker._tcp
+    │  deviceID=abc123, v={e1:3,e2:5}    │  deviceID=def456, v={e1:2,e2:6}
+    │                                     │
+    ▼                                     ▼
+   Both devices discover each other via mDNS on port 5353 (standard Zeroconf).
+   Discovery only happens when the vault is unlocked.
+```
+
+**Security:**
+- mDNS is local-network only (TTL=1, not routed)
+- Device ID is a truncated hash of the public key, not the key itself
+- Version vectors reveal only entry IDs and version numbers — not content
+
+### Sync Protocol
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                      SYNC SESSION                                    │
+│                                                                     │
+│  1. TCP connect to peer :9735 (configurable)                        │
+│  2. Ed25519 challenge/response (identity verification)              │
+│  3. X25519 ECDH → session key (32 bytes)                            │
+│  4. Exchange version vectors: {entry_id → (version, updated_at)}   │
+│  5. Determine diff: entries where peer.version > local.version      │
+│  6. Request encrypted blocks for newer entries                      │
+│  7. Receive blocks → verify Poly1305 tag → write to local vault     │
+│  8. Update sync state                                               │
+│  9. Disconnect                                                      │
+│                                                                     │
+│  All data in steps 4-7 is encrypted with the session key.           │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Encryption:**
+- Session key derived via X25519 ECDH from both Ed25519 keypairs (converted to X25519 form)
+- Nonce management: strict monotonic counter per session direction, reset on disconnect
+- Poly1305 tag verified on every received block before writing to local vault
+- Session keys zeroized after disconnect
+
+### Version Tracking & Conflict Resolution
+
+- Each entry has a monotonically increasing `version` (uint32) and `updated_at` (int64 nanosecond timestamp)
+- Sync state persisted in `~/.grimlocker/sync_state.json`: `{entry_id → (version, peer_device_id)}`
+- **Conflict resolution: "last write wins"** — the entry with the higher `version` wins. If versions are equal, the higher `updated_at` timestamp wins
+- No merge conflicts: entries are atomic units, not mergeable documents
+- Sync provenance: only the last-synced version per entry is tracked (no full history)
+
+### Sync Roadmap / Scheduler
+
+- Passive auto-pull: background goroutine polls every 60 seconds (configurable via `GRIMLOCKER_SYNC_INTERVAL`)
+- Only active when vault is unlocked (gated by session context)
+- If no peer is discovered within 5 poll cycles, scheduler backs off to 300s intervals
+- Entropy file, panic-key settings, and lockdown state are **never** synced — they remain device-local
+
+### Sync Audit Trail
+
+All sync operations are logged to the immutable audit chain:
+
+| Event | Level | Trigger |
+|---|---|---|
+| Device paired | INFO | PIN verified, peer key pinned |
+| Sync session started | INFO | TCP connection to peer established |
+| Entry synced (incoming) | INFO | New or updated entry received from peer |
+| Entry synced (outgoing) | INFO | Entry sent to peer |
+| Sync session completed | INFO | Successful sync cycle |
+| Sync version conflict | WARNING | Same version, different content detected |
+| Sync auth failure | WARNING | Peer identity verification failed |
+| Sync connection lost | WARNING | Peer disconnected mid-sync |
+
+### Threat Considerations
+
+| Threat | Mitigation |
+|---|---|
+| Rogue device on LAN impersonating a trusted peer | Ed25519 challenge/response; public key pinned after PIN pairing |
+| Eavesdropper on LAN reading sync traffic | ChaCha20-Poly1305 encrypted session; only ciphertext on wire |
+| Replay attack (resend old sync data) | Monotonic nonce per session direction; replayed frames fail Poly1305 tag check |
+| Version downgrade attack | Version number only increases; lower version from peer is ignored |
+| Sync flood (DoS) | Rate limiting: max 1 sync session per 60s per peer; connection timeout 30s |
+| Stolen device key file | Device key is 0600; compromise requires root access (T2 adversary) |
+
+---
+
 ## Platform-Specific Considerations
 
 ### Linux
@@ -419,3 +545,5 @@ Decoy vaults that:
 4. **Rust compiler optimizations respect `zeroize` crate barriers.** Verified via `cargo-asm` on critical functions.
 5. **Go CGO boundary crossing does not leak stack/heap data.** Go's runtime does not copy CGO buffers unexpectedly.
 6. **File system honors `fsync`.** On some configurations, `fsync` may be a no-op (documented as a risk).
+7. **LAN is an untrusted network.** Sync traffic is encrypted end-to-end; the local network is assumed hostile (eavesdroppers, active MITM). Device pairing via PIN verification prevents rogue device impersonation.
+8. **Device clock is reasonably accurate.** Sync conflict resolution relies on `updated_at` timestamps. Clock skew >30s between peers may cause version ordering issues (mitigated by monotonic version numbers as primary comparator).

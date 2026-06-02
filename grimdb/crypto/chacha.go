@@ -11,10 +11,10 @@ import (
 // key must be 32 bytes. nonce must be 12 bytes.
 func (p *provider) Encrypt(key, nonce, plaintext, aad []byte) ([]byte, error) {
 	if len(key) != 32 {
-		return nil, fmt.Errorf("chacha: key must be 32 bytes, got %d", len(key))
+		return nil, fmt.Errorf("chacha: invalid key")
 	}
 	if len(nonce) != 12 {
-		return nil, fmt.Errorf("chacha: nonce must be 12 bytes, got %d", len(nonce))
+		return nil, fmt.Errorf("chacha: invalid nonce")
 	}
 
 	cipher, err := chacha20poly1305.New(key)
@@ -28,10 +28,10 @@ func (p *provider) Encrypt(key, nonce, plaintext, aad []byte) ([]byte, error) {
 // Decrypt verifies the authentication tag and returns plaintext.
 func (p *provider) Decrypt(key, nonce, ciphertext, aad []byte) ([]byte, error) {
 	if len(key) != 32 {
-		return nil, fmt.Errorf("chacha: key must be 32 bytes, got %d", len(key))
+		return nil, fmt.Errorf("chacha: invalid key")
 	}
 	if len(nonce) != 12 {
-		return nil, fmt.Errorf("chacha: nonce must be 12 bytes, got %d", len(nonce))
+		return nil, fmt.Errorf("chacha: invalid nonce")
 	}
 
 	cipher, err := chacha20poly1305.New(key)

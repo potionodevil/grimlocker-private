@@ -23,6 +23,86 @@ import (
 	"strings"
 )
 
+// ErrorLevel classifies the severity of a GrimlockError for terminal display.
+type ErrorLevel int
+
+const (
+	LevelInfo     ErrorLevel = iota // Informational — no action required
+	LevelWarn                       // Warning — degraded operation
+	LevelError                      // Error — operation failed
+	LevelCritical                   // Critical — system stability at risk
+	LevelSecurity                   // Security event — auth/policy/lockdown
+)
+
+// levelLabel returns the terminal label for an error level.
+func levelLabel(level ErrorLevel) string {
+	switch level {
+	case LevelInfo:
+		return "INFO"
+	case LevelWarn:
+		return "WARN"
+	case LevelError:
+		return "ERROR"
+	case LevelCritical:
+		return "CRITICAL"
+	case LevelSecurity:
+		return "SECURITY"
+	default:
+		return "ERROR"
+	}
+}
+
+// ErrorRemediation maps error codes to a brief recovery hint shown in the
+// terminal output. Operators use this to diagnose issues without reading source.
+var ErrorRemediation = map[int]string{
+	ErrCodeVaultLocked:         "Unlock the vault first (send AUTH.UNLOCK)",
+	ErrCodeVaultNotInitialized: "Run vault setup (send VAULT.INIT)",
+	ErrCodeAuthInvalid:         "Check your password and try again",
+	ErrCodeAuthLockdown:        "Too many failed attempts — wait for lockout to expire",
+	ErrCodeStorageIO:           "Check vault file permissions and available disk space",
+	ErrCodeStorageCorruption:   "Vault data may be corrupted — check HMAC and backup",
+	ErrCodeStorageNotFound:     "Block does not exist — it may have been deleted",
+	ErrCodeStorageIndexFailed:  "Index persist failed — check disk space and permissions",
+	ErrCodeCryptoDecryption:    "Decryption failed — wrong key or tampered data",
+	ErrCodeCryptoInvalidKey:    "Key material is nil or wrong length (need 32 bytes)",
+	ErrCodeSecurityMemlock:     "Cannot lock memory — check OS limits (ulimit -l)",
+	ErrCodeSecurityLockdown:    "Hard lockdown — restart daemon and re-enter password",
+	ErrCodeSecurityMVKMissing:  "Vault is locked — unlock before this operation",
+	ErrCodeBusTimeout:          "Request timed out — daemon may be overloaded",
+	ErrCodeProtocolInvalid:     "Binary frame is malformed — check client version",
+}
+
+// Remediation returns a human-readable recovery hint for this error.
+// Returns a generic message if no specific hint is registered.
+func (e *GrimlockError) Remediation() string {
+	if hint, ok := ErrorRemediation[e.Code]; ok {
+		return hint
+	}
+	return "Check daemon logs for details"
+}
+
+// ConsoleFormat formats the error for readable terminal output.
+// Shows code, message, operation, cause, and remediation hint.
+// Does NOT include stacktrace (use Log for that).
+func (e *GrimlockError) ConsoleFormat() string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("[Code %d] %s", e.Code, e.Message))
+	if e.Ctx.Operation != "" {
+		b.WriteString(fmt.Sprintf("\n        Operation:   %s", e.Ctx.Operation))
+	}
+	if e.Ctx.BlockID != "" {
+		b.WriteString(fmt.Sprintf("\n        BlockID:     %s", e.Ctx.BlockID))
+	}
+	if e.Cause != nil {
+		b.WriteString(fmt.Sprintf("\n        Cause:       %s", e.Cause.Error()))
+	}
+	for k, v := range e.Ctx.Details {
+		b.WriteString(fmt.Sprintf("\n        %s: %s", k, v))
+	}
+	b.WriteString(fmt.Sprintf("\n        Remediation: %s", e.Remediation()))
+	return b.String()
+}
+
 // ─── StructuredLogger interface ───────────────────────────────────────────────
 
 // StructuredLogger is the logging interface used across all Grimlocker modules.
@@ -110,7 +190,12 @@ func (l *StdLogger) Error(msg string, err error, fields map[string]any) {
 		if fields == nil {
 			fields = make(map[string]any)
 		}
-		fields["error"] = err.Error()
+		// If the error is a GrimlockError, use ConsoleFormat for richer output.
+		if ge, ok := err.(*GrimlockError); ok {
+			fields["grimlock_error"] = ge.ConsoleFormat()
+		} else {
+			fields["error"] = err.Error()
+		}
 	}
 	log.Print(l.format("ERROR", msg, fields))
 }

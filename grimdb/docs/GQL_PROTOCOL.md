@@ -257,3 +257,101 @@ go run ./gql/cli/ --verbose --fuzz 10000
 | ACL enforcement     | External  | External   | External   | **Built-in**|
 | Parse complexity    | O(n²)     | O(n)       | O(n)       | **O(1)**    |
 | Zero-copy possible  | No        | No         | No         | **Yes**     |
+
+---
+
+## 8. Extended Operations (File Vault, Workspace, Sync, Audit, Tools)
+
+The following operations were added in Grimlocker Omega v2. They use the same
+binary frame format and two-stage validation pipeline as the core operations.
+
+### File Vault Operations
+
+| Operation          | Opcode | Description                              |
+|-------------------|--------|------------------------------------------|
+| `file.list_folder`   | Query   | List contents of a FileVault folder       |
+| `file.create_folder` | Mutate  | Create a new folder                      |
+| `file.rename_folder` | Mutate  | Rename a folder                          |
+| `file.delete_folder` | Mutate  | Delete a folder (must be empty)          |
+| `file.move`          | Mutate  | Move a file between folders             |
+| `file.ingest`        | Mutate  | Upload a file (base64-encoded)          |
+| `file.download`      | Query   | Download a file (returns base64 data)   |
+
+### Workspace Operations
+
+| Operation             | Opcode | Description                           |
+|-----------------------|--------|---------------------------------------|
+| `workspace.list`      | Query   | List all workspaces                  |
+| `workspace.create`    | Mutate  | Create a new workspace               |
+| `workspace.switch`    | Mutate  | Switch to a different workspace      |
+| `workspace.rename`    | Mutate  | Rename a workspace                   |
+| `workspace.delete`    | Mutate  | Delete a workspace                   |
+
+### Sync Operations
+
+| Operation            | Opcode | Description                           |
+|----------------------|--------|---------------------------------------|
+| `sync.list_peers`    | Query   | List discovered LAN sync peers        |
+| `sync.trigger`       | Mutate  | Trigger an immediate sync cycle       |
+
+### Audit Operations
+
+| Operation            | Opcode | Description                           |
+|----------------------|--------|---------------------------------------|
+| `audit.list`         | Query   | Fetch recent security audit events    |
+
+### Tool Operations
+
+| Operation            | Opcode | Description                           |
+|----------------------|--------|---------------------------------------|
+| `tool.ssh_keygen`    | Mutate  | Generate an Ed25519 SSH key pair       |
+| `vault.recovery_phrase` | Query | Retrieve recovery phrase (requires password) |
+| `vault.status`       | Query   | Health check (initialized, unlocked)  |
+
+### Search Operation
+
+| Operation            | Opcode | Description                           |
+|----------------------|--------|---------------------------------------|
+| `search_entries`     | Query   | Full-text search across entry titles  |
+
+---
+
+## 9. IPC Message Type Extensions (0x60–0x74)
+
+These IPC message types were added to support FileVault folders, LAN Sync,
+and the Security Audit Log:
+
+| Type    | Name                  | Direction        | Description                    |
+|---------|-----------------------|------------------|--------------------------------|
+| `0x60`  | MsgFolderCreate       | Client → Server  | Create FileVault folder        |
+| `0x61`  | MsgFolderList         | Client → Server  | List folder contents           |
+| `0x62`  | MsgFolderRename       | Client → Server  | Rename folder                  |
+| `0x63`  | MsgFolderDelete       | Client → Server  | Delete folder                  |
+| `0x64`  | MsgFileMoveToFolder   | Client → Server  | Move file between folders      |
+| `0x65`  | MsgFolderResult       | Server → Client  | Folder operation result        |
+| `0x70`  | MsgSyncListPeers      | Client → Server  | Request sync peer list         |
+| `0x71`  | MsgSyncTrigger        | Client → Server  | Trigger immediate sync         |
+| `0x72`  | MsgSyncResult         | Server → Client  | Sync operation result          |
+| `0x73`  | MsgAuditList          | Client → Server  | Request audit log entries      |
+| `0x74`  | MsgAuditResult        | Server → Client  | Audit log entries (SKE)        |
+
+---
+
+## Changelog
+
+### v1.1 (Omega v2)
+- Added File Vault operations (upload, download, folder CRUD, move)
+- Added Workspace operations (list, create, switch, rename, delete)
+- Added Sync operations (list peers, trigger)
+- Added Audit operations (list events with SKE encryption)
+- Added SSH key generation tool operation
+- Added recovery phrase retrieval
+- Added full-text entry search
+- Extended IPC message types 0x60–0x74
+- SDK coverage expanded to 12 languages (Go, Python, Java, TypeScript, Rust, C#, C++, Ruby, PHP, Swift, Kotlin, Dart)
+- Argon2id parameters hardened to 128MB/4 iterations (OWASP 2023+ compliant)
+- Sync protocol encryption upgraded from custom XOR to ChaCha20-Poly1305
+- Session auto-lock timer added (default 15-minute inactivity timeout)
+- Panic button requires non-empty passphrase confirmation
+- Cryptographic error messages no longer leak key/nonce length information
+- MVK handles redacted from all log output

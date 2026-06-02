@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useGrimStore } from './store/useGrimStore'
 import { tauriBridge } from './services/tauriBridge'
-import { BentoGrid } from './components/dashboard/BentoGrid'
 import { VaultDashboard } from './components/dashboard/VaultDashboard'
 import { TerminalError } from './components/shared/TerminalError'
 import { SetupScreen } from './components/auth/SetupScreen'
 import { LoginScreen } from './components/auth/LoginScreen'
 import { AuthProvider, useAuth, AUTH_STATE } from './context/AuthContext'
+import { useWindowClose } from './hooks/useWindowClose'
 
 const pageVariants = {
   initial: { opacity: 0, scale: 0.98, filter: 'blur(4px)' },
@@ -62,22 +62,10 @@ function AuthErrorScreen({ error, retryCount, onRetry }) {
 
 function AppContent() {
   const { authState, error: authError, retryCheck, retryCount } = useAuth()
-  const { error, setError, setConnected, initPreferences, setWorkspaces, setActiveWorkspace } = useGrimStore()
+  const { error, setError, setConnected, initPreferences, loadWorkspaces } = useGrimStore()
+  useWindowClose()
 
   useEffect(() => { initPreferences() }, [initPreferences])
-
-  const loadWorkspaces = useCallback(async () => {
-    try {
-      const workspaces = await tauriBridge.listWorkspaces()
-      setWorkspaces(workspaces)
-      if (workspaces.length > 0) {
-        const active = workspaces.find(ws => ws.id === (workspaces[0].id))
-        setActiveWorkspace(active || workspaces[0])
-      }
-    } catch (err) {
-      console.warn('[App] Failed to load workspaces:', err.message)
-    }
-  }, [setWorkspaces, setActiveWorkspace])
 
   const attemptConnect = useCallback(async () => {
     try {
@@ -142,7 +130,7 @@ function AppContent() {
 
   return (
     <div className="w-full h-full">
-      <TerminalError message={error} />
+      <TerminalError message={error} onDismiss={() => setError(null)} />
       <AnimatePresence mode="wait">
         <motion.div
           key={authState}

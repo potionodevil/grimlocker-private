@@ -65,9 +65,14 @@ const (
 	EvSecPanic    EventType = "SECURITY.PANIC"
 	EvSecLockdown EventType = "SECURITY.LOCKDOWN"
 
-	// SYNC channel — available to SDK plugins
+	// SYNC channel — available to SDK plugins + Local Network Sync
 	EvSyncBegin    EventType = "SYNC.BEGIN"
 	EvSyncComplete EventType = "SYNC.COMPLETE"
+	EvSyncDiscover EventType = "SYNC.DISCOVER"     // mDNS peer discovered
+	EvSyncPair     EventType = "SYNC.PAIR"         // PIN pairing request/response
+	EvSyncPull     EventType = "SYNC.PULL"         // pull entries from peer
+	EvSyncPushVer  EventType = "SYNC.PUSH_VERSION" // push version vector to peer
+	EvSyncConflict EventType = "SYNC.CONFLICT"     // version conflict detected
 
 	// BIOMETRIC channel — used by hardware sensor plugins
 	EvBiometricAuthenticate EventType = "BIOMETRIC.AUTHENTICATE"

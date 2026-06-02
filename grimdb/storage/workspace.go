@@ -195,6 +195,32 @@ func (wm *WorkspaceManager) Delete(id string) error {
 	return nil
 }
 
+// Rename updates the display name of a workspace. The ID and directory remain
+// unchanged — only the human-readable name is modified.
+func (wm *WorkspaceManager) Rename(id, newName string) error {
+	if newName == "" || len(newName) > 128 {
+		return fmt.Errorf("workspace name must be 1-128 characters")
+	}
+
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	ws, ok := wm.workspaces[id]
+	if !ok {
+		return fmt.Errorf("workspace not found: %s", id)
+	}
+
+	oldName := ws.Name
+	ws.Name = newName
+
+	if err := wm.saveLocked(); err != nil {
+		ws.Name = oldName // rollback
+		return fmt.Errorf("save workspace registry: %w", err)
+	}
+
+	return nil
+}
+
 // GetWorkspaceDir returns the directory path for a given workspace.
 func (wm *WorkspaceManager) GetWorkspaceDir(id string) (string, error) {
 	wm.mu.RLock()

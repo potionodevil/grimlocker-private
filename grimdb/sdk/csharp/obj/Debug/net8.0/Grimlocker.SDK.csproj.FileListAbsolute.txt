@@ -1,0 +1,14 @@
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\bin\Debug\net8.0\Grimlocker.SDK.deps.json
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\bin\Debug\net8.0\Grimlocker.SDK.dll
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\bin\Debug\net8.0\Grimlocker.SDK.pdb
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\bin\Debug\net8.0\Grimlocker.SDK.xml
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\Grimlocker.SDK.GeneratedMSBuildEditorConfig.editorconfig
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\Grimlocker.SDK.AssemblyInfoInputs.cache
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\Grimlocker.SDK.AssemblyInfo.cs
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\Grimlocker.SDK.csproj.CoreCompileInputs.cache
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\Grimlocker.SDK.sourcelink.json
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\Grimlocker.SDK.dll
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\refint\Grimlocker.SDK.dll
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\Grimlocker.SDK.xml
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\Grimlocker.SDK.pdb
+E:\Blackforest digital\Grimlocker\grimlocker-workspace\grimlocker-private\grimdb\sdk\csharp\obj\Debug\net8.0\ref\Grimlocker.SDK.dll

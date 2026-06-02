@@ -11,7 +11,7 @@ import { tauriBridge } from '../../services/tauriBridge'
  *   onSuccess(manifest) — called when the daemon confirms the upload.
  *   onCancel()          — called when the user dismisses without uploading.
  */
-export function FileVaultUpload({ onSuccess, onCancel }) {
+export function FileVaultUpload({ onSuccess, onCancel, folderId = '' }) {
   const [dragging, setDragging]     = useState(false)
   const [file, setFile]             = useState(null)
   const [progress, setProgress]     = useState(0)     // 0..1
@@ -55,6 +55,12 @@ export function FileVaultUpload({ onSuccess, onCancel }) {
   const handleUpload = useCallback(async () => {
     if (!file || uploading) return
 
+    const MAX_SIZE = 100 * 1024 * 1024 // 100 MB
+    if (file.size > MAX_SIZE) {
+      setError('Datei zu gross — Maximum: 100 MB')
+      return
+    }
+
     setUploading(true)
     setError(null)
     setProgress(0)
@@ -62,8 +68,10 @@ export function FileVaultUpload({ onSuccess, onCancel }) {
     try {
       const manifest = await tauriBridge.ingestFile(file, (pct) => {
         setProgress(pct)
-      })
+      }, folderId)
       setProgress(1)
+      // manifest.manifest_block_id is the full "blob-{uuid}-manifest" key for downloads.
+      // Ensure the caller receives it with the correct field name.
       onSuccess?.(manifest)
     } catch (err) {
       console.error('[FileVaultUpload] Ingest failed:', err)

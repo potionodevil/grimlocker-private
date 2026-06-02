@@ -1,4 +1,5 @@
 import { useState, useCallback, useMemo } from 'react'
+import { useCopyToClipboard } from '../../hooks/useClipboard'
 
 const CHARSETS = {
   lowercase: 'abcdefghijklmnopqrstuvwxyz',
@@ -18,6 +19,7 @@ export function CryptoGenerator() {
   })
   const [generated, setGenerated] = useState('')
   const [copied, setCopied] = useState(false)
+  const copy = useCopyToClipboard()
 
   const charset = useMemo(() => {
     let chars = ''
@@ -41,21 +43,9 @@ export function CryptoGenerator() {
 
   const copyToClipboard = async () => {
     if (!generated) return
-    try {
-      await navigator.clipboard.writeText(generated)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Fallback for older browsers
-      const textarea = document.createElement('textarea')
-      textarea.value = generated
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
+    await copy(generated)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   const entropy = Math.floor(length * Math.log2(charset.length))

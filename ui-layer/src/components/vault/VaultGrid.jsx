@@ -1,45 +1,67 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { useGrimStore } from '../../store/useGrimStore'
+import { tauriBridge } from '../../services/tauriBridge'
 import { EntryCard } from './EntryCard'
 import { EntryContextMenu } from './EntryContextMenu'
 import { FileVaultUpload } from './FileVaultUpload'
+import { FileVaultViewer } from './FileVaultViewer'
+import { EditEntryModal } from './EditEntryModal'
 
-// Filter definitions. `category` maps to the formal Category enum on the backend.
-// Empty string means "all".
+// Filter definitions. FILE_VAULT is handled by its own dedicated FileVaultBrowser.
 const FILTERS = [
   { id: 'all',        label: 'All',          category: '' },
   { id: 'passwords',  label: 'Passwords',    category: 'PASSWORD' },
   { id: 'ssh',        label: 'SSH Keys',     category: 'SSH_KEY' },
   { id: 'certs',      label: 'Certificates', category: 'CERTIFICATE' },
-  { id: 'FILE_VAULT', label: 'Files',        category: 'FILE_VAULT' },
 ]
+
+const LEGACY_MAP = {
+  password: 'PASSWORD',
+  ssh: 'SSH_KEY',
+  certs: 'CERTIFICATE',
+  certificate: 'CERTIFICATE',
+  file_vault: 'FILE_VAULT',
+}
 
 /**
  * Checks whether an entry matches a given filter.
- * Supports both the legacy `type` field and the formal `category` field.
+ * "All Items" (category='') excludes FILE_VAULT — files live in FileVaultBrowser.
  */
 function entryMatchesFilter(entry, filter) {
-  if (filter.category === '') return true
+  const cat = entry.category || LEGACY_MAP[entry.type] || entry.type?.toUpperCase()
+  if (filter.category === '') return cat !== 'FILE_VAULT'
   if (entry.category === filter.category) return true
-  // Legacy compatibility: map old type strings to categories
-  const legacyMap = {
-    password: 'PASSWORD',
-    ssh: 'SSH_KEY',
-    certs: 'CERTIFICATE',
-    certificate: 'CERTIFICATE',
-    file_vault: 'FILE_VAULT',
-  }
-  const mappedCategory = legacyMap[entry.type] || entry.type?.toUpperCase()
-  return mappedCategory === filter.category
+  return cat === filter.category
 }
 
-export function VaultGrid({ filter = 'all' }) {
+export function VaultGrid({ filter = 'all', group = null }) {
   const entries = useGrimStore((s) => s.entries)
   const fetchEntries = useGrimStore((s) => s.fetchEntries)
+  const connected = useGrimStore((s) => s.daemonStatus)
   const [listView, setListView]       = useState(false)
   const [activeFilterId, setFilterId] = useState(filter)
-  const [contextMenu, setContextMenu] = useState(null)
-  const [showUpload, setShowUpload]   = useState(false)
+  const [contextMenu, setContextMenu]     = useState(null)
+  const [showUpload, setShowUpload]       = useState(false)
+  const [editEntry, setEditEntry]         = useState(null)
+  const [viewingFile, setViewingFile]     = useState(null) // entry being viewed in FileVaultViewer
+  const [overwriteEntry, setOverwriteEntry] = useState(null) // file entry being overwritten
+  const fetchedOnce = useRef(false)
+
+  useEffect(() => {
+    if (connected === 'online' && !fetchedOnce.current) {
+      fetchedOnce.current = true
+      fetchEntries()
+    }
+  }, [connected, fetchEntries])
+
+  // Re-fetch entries on reconnect
+  useEffect(() => {
+    const unsub = tauriBridge.on('connected', () => {
+      fetchedOnce.current = true
+      fetchEntries()
+    })
+    return unsub
+  }, [fetchEntries])
 
   // Sync with the `filter` prop so sidebar navigation updates the active tab.
   useEffect(() => {
@@ -49,7 +71,14 @@ export function VaultGrid({ filter = 'all' }) {
 
   const activeFilter = FILTERS.find((f) => f.id === activeFilterId) || FILTERS[0]
 
-  const visible = entries.filter((e) => entryMatchesFilter(e, activeFilter))
+  const visible = entries.filter((e) => {
+    if (!entryMatchesFilter(e, activeFilter)) return false
+    if (group) {
+      const entryGroup = e.group || e.fields?.group || ''
+      return entryGroup === group
+    }
+    return true
+  })
 
   const handleContextMenu = useCallback((e, entry) => {
     e.preventDefault()
@@ -157,7 +186,56 @@ export function VaultGrid({ filter = 'all' }) {
           x={contextMenu.x}
           y={contextMenu.y}
           onClose={handleCloseContextMenu}
+          onEdit={(entry) => setEditEntry(entry)}
+          onOpenFile={(entry) => { setViewingFile(entry); handleCloseContextMenu() }}
+          onOverwrite={(entry) => { setOverwriteEntry(entry); handleCloseContextMenu() }}
         />
+      )}
+
+      {editEntry && (
+        <EditEntryModal
+          entry={editEntry}
+          open={!!editEntry}
+          onClose={() => setEditEntry(null)}
+          onSaved={() => { fetchEntries(); setEditEntry(null) }}
+        />
+      )}
+
+      {/* FileVaultViewer — opens when user right-clicks a file entry and picks "Open" */}
+      {viewingFile && (
+        <FileVaultViewer
+          entry={viewingFile}
+          isOpen={true}
+          onClose={() => setViewingFile(null)}
+        />
+      )}
+
+      {/* Overwrite modal — re-uses FileVaultUpload, updates the entry fields with new manifest */}
+      {overwriteEntry && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-surface-base border border-border rounded-lg shadow-lg p-6 w-full max-w-md">
+            <h3 className="text-sm font-semibold text-text-primary mb-1">Datei ueberschreiben</h3>
+            <p className="text-xs text-text-tertiary mb-4 truncate">{overwriteEntry.fields?.file_name || overwriteEntry.title}</p>
+            <FileVaultUpload
+              onSuccess={async (newManifest) => {
+                try {
+                  await tauriBridge.updateEntry(overwriteEntry.id, {
+                    ...overwriteEntry.fields,
+                    manifest_block_id: newManifest.manifest_block_id || newManifest.id,
+                    file_name:         newManifest.file_name,
+                    mime_type:         newManifest.mime_type,
+                    total_size:        String(newManifest.total_size),
+                  })
+                } catch (err) {
+                  console.warn('[VaultGrid] overwrite updateEntry failed:', err.message)
+                }
+                fetchEntries()
+                setOverwriteEntry(null)
+              }}
+              onCancel={() => setOverwriteEntry(null)}
+            />
+          </div>
+        </div>
       )}
     </div>
   )

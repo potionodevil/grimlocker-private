@@ -183,7 +183,10 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 
 	b2, err := bs.strategy.OnWrite(b)
 	if err != nil {
-		return err
+		if _, ok := err.(*gerrors.GrimlockError); ok {
+			return err
+		}
+		return gerrors.NewStorageIOError("block_strategy_write", b.ID, err)
 	}
 	b = b2
 
@@ -219,15 +222,15 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 
 	if _, err := f.Write(b.Nonce); err != nil {
 		f.Close()
-		return err
+		return gerrors.NewStorageIOError("write_block_nonce", b.ID, err)
 	}
 	if _, err := f.Write(b.HMAC); err != nil {
 		f.Close()
-		return err
+		return gerrors.NewStorageIOError("write_block_hmac", b.ID, err)
 	}
 	if _, err := f.Write(b.Data); err != nil {
 		f.Close()
-		return err
+		return gerrors.NewStorageIOError("write_block_data", b.ID, err)
 	}
 
 	if err := f.Close(); err != nil {
@@ -455,7 +458,7 @@ func (bs *BlockStoreImpl) persistIndexLocked() error {
 	tmpPath := bs.indexPath + ".tmp"
 	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
-		return err
+		return gerrors.NewStorageIOError("create_index_tmpfile", "", err)
 	}
 
 	lenBuf := make([]byte, 4)
@@ -464,30 +467,30 @@ func (bs *BlockStoreImpl) persistIndexLocked() error {
 	if _, err := f.Write(lenBuf); err != nil {
 		f.Close()
 		_ = os.Remove(tmpPath)
-		return err
+		return gerrors.NewStorageIOError("write_index_length", "", err)
 	}
 	if _, err := f.Write(nonce); err != nil {
 		f.Close()
 		_ = os.Remove(tmpPath)
-		return err
+		return gerrors.NewStorageIOError("write_index_nonce", "", err)
 	}
 	if _, err := f.Write(ct); err != nil {
 		f.Close()
 		_ = os.Remove(tmpPath)
-		return err
+		return gerrors.NewStorageIOError("write_index_ciphertext", "", err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
 		_ = os.Remove(tmpPath)
-		return err
+		return gerrors.NewStorageIOError("fsync_index", "", err)
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(tmpPath)
-		return err
+		return gerrors.NewStorageIOError("close_index_tmpfile", "", err)
 	}
 	if err := os.Rename(tmpPath, bs.indexPath); err != nil {
 		_ = os.Remove(tmpPath)
-		return err
+		return gerrors.NewStorageIOError("rename_index_tmpfile", "", err)
 	}
 	log.Printf("[blockstore] Index persisted — %d blocks, %d bytes", len(bs.index), len(ct))
 	return nil

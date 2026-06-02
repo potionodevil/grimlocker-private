@@ -1,14 +1,68 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useGrimStore } from '../../store/useGrimStore'
+import { tauriBridge } from '../../services/tauriBridge'
 import { WorkspaceSwitcher } from '../workspace/WorkspaceSwitcher'
 
-export function Topbar({ onSearchOpen, onAddEntry }) {
-  const { daemonStatus } = useGrimStore()
+/** Shows a fading lock countdown when < 2 min remain before auto-lock. */
+function AutoLockBadge() {
+  const autoLockMinutes = useGrimStore((s) => s.preferences.autoLockMinutes ?? 15)
+  const [secondsLeft, setSecondsLeft] = useState(null)
 
-  const handleWorkspaceSwitch = () => {
-    // When workspace switches, the daemon will dispatch AUTH.LOGOUT
-    // which will redirect to login screen in the main app flow
-  }
+  useEffect(() => {
+    if (autoLockMinutes === 0) return  // disabled
+    const totalMs = autoLockMinutes * 60 * 1000
+    let deadline = Date.now() + totalMs
+
+    const update = () => {
+      const left = Math.max(0, Math.round((deadline - Date.now()) / 1000))
+      // Only show badge when ≤ 120 seconds remain
+      setSecondsLeft(left <= 120 ? left : null)
+    }
+
+    // Listen for any user activity — reset the deadline
+    const resetDeadline = () => { deadline = Date.now() + totalMs; setSecondsLeft(null) }
+    const events = ['mousedown', 'keydown', 'scroll', 'touchstart']
+    for (const e of events) window.addEventListener(e, resetDeadline, { passive: true })
+
+    const interval = setInterval(update, 1000)
+    return () => {
+      clearInterval(interval)
+      for (const e of events) window.removeEventListener(e, resetDeadline)
+    }
+  }, [autoLockMinutes])
+
+  if (secondsLeft == null) return null
+
+  const mins = Math.floor(secondsLeft / 60)
+  const secs = secondsLeft % 60
+  const label = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`
+
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 rounded-md px-2 h-7 tabular-nums">
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+      {label}
+    </div>
+  )
+}
+
+export function Topbar({ onSearchOpen, onAddEntry }) {
+  const { daemonStatus, setWorkspaces, setActiveWorkspace } = useGrimStore()
+
+  const handleWorkspaceSwitch = useCallback(async (switchedWorkspace) => {
+    try {
+      const workspaces = await tauriBridge.listWorkspaces()
+      setWorkspaces(workspaces)
+      const active = switchedWorkspace
+        ? workspaces.find(ws => ws.id === switchedWorkspace.id)
+        : workspaces.find(ws => ws.is_default) || workspaces[0]
+      if (active) setActiveWorkspace(active)
+    } catch (err) {
+      console.warn('[Topbar] Failed to refresh workspaces:', err.message)
+    }
+  }, [setWorkspaces, setActiveWorkspace])
 
   // Cmd+K / Ctrl+K shortcut
   useEffect(() => {
@@ -39,6 +93,7 @@ export function Topbar({ onSearchOpen, onAddEntry }) {
       </button>
 
       <div className="ml-auto flex items-center gap-3">
+        <AutoLockBadge />
         <button
           onClick={onAddEntry}
           className="h-8 px-3 rounded-md text-sm font-medium text-white bg-accent hover:bg-accent-hover transition-fast flex items-center gap-1.5"

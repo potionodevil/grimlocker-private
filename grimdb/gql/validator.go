@@ -299,7 +299,7 @@ func validateIdentifier(name, value string) error {
 			return &SyntacticError{
 				Field:   name,
 				Reason:  "invalid character in identifier",
-				Details: fmt.Sprintf("position %d: 0x%02x (%q)", i, c, c),
+				Details: fmt.Sprintf("position %d: character %q not allowed — only alphanumeric, _, -, . permitted", i, string(c)),
 			}
 		}
 	}

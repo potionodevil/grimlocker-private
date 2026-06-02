@@ -1,0 +1,8 @@
+com\grimlocker\sdk\GrimlockerException.class
+com\grimlocker\sdk\GrimlockerClient$InternalWSClient.class
+com\grimlocker\sdk\GrimlockerClient.class
+com\grimlocker\sdk\Entry.class
+com\grimlocker\sdk\GrimlockerClient$GQLResultRaw.class
+com\grimlocker\sdk\internal\ErrorCode.class
+com\grimlocker\sdk\internal\GQLFrame.class
+com\grimlocker\sdk\QueryBuilder.class

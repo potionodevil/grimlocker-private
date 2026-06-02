@@ -1,8 +1,15 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for the main window",
+  "description": "Default capabilities for the main window.",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:tray:allow-new",
+    "core:tray:allow-set-icon",
+    "core:tray:allow-set-tooltip",
+    "core:tray:allow-set-visible",
+    "core:menu:allow-new",
+    "core:menu:allow-append",
+    "core:menu:allow-popup"
   ]
 }

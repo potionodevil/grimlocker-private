@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,10 +19,16 @@ var upgrader = gorillaws.Upgrader{
 	WriteBufferSize: 4096,
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
+		// Reject empty Origin — a missing Origin header can indicate a
+		// non-browser client or a spoofed request from the local network.
+		// Tauri always sends a valid Origin; legitimate browser clients do too.
 		if origin == "" {
-			return true
+			log.Printf("[WS] Connection rejected: missing Origin header from %s", r.RemoteAddr)
+			return false
 		}
-		// Only allow connections from localhost or the Tauri app scheme.
+		// Allow only exact-match origins for localhost and the Tauri app scheme.
+		// HasPrefix is intentionally NOT used to prevent subdomain spoofing
+		// (e.g. http://localhost.evil.com would match a HasPrefix on "http://localhost").
 		allowed := []string{
 			"http://localhost",
 			"http://127.0.0.1",
@@ -30,10 +37,15 @@ var upgrader = gorillaws.Upgrader{
 			"http://tauri.localhost",
 		}
 		for _, a := range allowed {
-			if len(origin) >= len(a) && origin[:len(a)] == a {
+			if origin == a {
+				return true
+			}
+			// Allow port variants: http://localhost:1234
+			if strings.HasPrefix(origin, a+":") {
 				return true
 			}
 		}
+		log.Printf("[WS] Connection rejected: untrusted Origin=%q from %s", origin, r.RemoteAddr)
 		return false
 	},
 }
@@ -53,6 +65,10 @@ type bufferedAuth struct {
 // SessionClearer is called when all clients disconnect to protect the vault.
 type SessionClearer func()
 
+// DisconnectHook is called on every individual connection close with the conn that closed.
+// Used to clean up per-connection state (e.g. abort active file ingests).
+type DisconnectHook func(conn *gorillaws.Conn)
+
 // Bridge authenticates WebSocket clients (token or cookie) and delegates
 // messages to the registered MessageHandler.
 type Bridge struct {
@@ -61,9 +77,10 @@ type Bridge struct {
 	handler   MessageHandler
 	handshake HandshakeHandler
 
-	mu        sync.Mutex
-	clients   map[*gorillaws.Conn]bool
-	connMutex map[*gorillaws.Conn]*sync.Mutex
+	mu         sync.Mutex
+	clients    map[*gorillaws.Conn]bool
+	connMutex  map[*gorillaws.Conn]*sync.Mutex
+	connAuthed map[*gorillaws.Conn]bool
 
 	// Boot-up readiness
 	readyMu    sync.RWMutex
@@ -77,6 +94,9 @@ type Bridge struct {
 
 	// Session clearing on disconnect
 	sessionClearer SessionClearer
+
+	// Per-connection disconnect hook (e.g. ingest cleanup)
+	disconnectHook DisconnectHook
 }
 
 // NewBridge creates a Bridge.
@@ -87,6 +107,7 @@ func NewBridge(token string, cookie [ipc.CookieSize]byte, handler MessageHandler
 		handler:    handler,
 		clients:    make(map[*gorillaws.Conn]bool),
 		connMutex:  make(map[*gorillaws.Conn]*sync.Mutex),
+		connAuthed: make(map[*gorillaws.Conn]bool),
 		authBuffer: make([]bufferedAuth, 0, 4),
 	}
 }
@@ -100,6 +121,12 @@ func (b *Bridge) SetHandshakeHandler(h HandshakeHandler) {
 // the last client disconnects (point #13 of the restoration plan).
 func (b *Bridge) SetSessionClearer(fn SessionClearer) {
 	b.sessionClearer = fn
+}
+
+// SetDisconnectHook registers a callback called on every connection close.
+// Use this to clean up per-connection resources (e.g. abort active file ingests).
+func (b *Bridge) SetDisconnectHook(fn DisconnectHook) {
+	b.disconnectHook = fn
 }
 
 // SetReady marks the bridge as ready and drains any buffered auth requests.
@@ -154,10 +181,15 @@ func (b *Bridge) CloseConnection(conn *gorillaws.Conn) {
 		delete(b.clients, conn)
 	}
 	delete(b.connMutex, conn)
+	delete(b.connAuthed, conn)
 	remaining := len(b.clients)
 	b.mu.Unlock()
 	conn.Close()
 	log.Printf("[bridge] Connection closed and cleaned up (%d remaining)", remaining)
+
+	if b.disconnectHook != nil {
+		b.disconnectHook(conn)
+	}
 
 	_ = remaining
 }
@@ -203,6 +235,7 @@ func (b *Bridge) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	b.mu.Lock()
 	b.clients[conn] = true
 	b.connMutex[conn] = connMu
+	b.connAuthed[conn] = true
 	b.mu.Unlock()
 
 	log.Printf("[WS] Client authenticated from %s", r.RemoteAddr)
@@ -335,6 +368,18 @@ func (b *Bridge) readLoop(conn *gorillaws.Conn) {
 			}
 		}
 
+		// Auth gate: only AUTH.TOKEN_SUBMIT is allowed before authentication.
+		// All other messages require the connection to be authenticated first.
+		if msgType != ipc.MsgAuthTokenSubmit {
+			b.mu.Lock()
+			authed := b.connAuthed[conn]
+			b.mu.Unlock()
+			if !authed {
+				_ = b.safeWrite(conn, ipc.MsgError, []byte("not authenticated — send AUTH.TOKEN_SUBMIT first"))
+				continue
+			}
+		}
+
 		// Hold connMu for the entire handler invocation.
 		// The handler (translator) calls ws.WriteMessage directly — safe
 		// because we hold connMu here. Broadcast goroutines call safeWrite
@@ -393,6 +438,10 @@ func (b *Bridge) SafeWrite(conn *gorillaws.Conn, msgType byte, payload []byte) e
 }
 
 // Broadcast sends a message to all connected clients.
+// Uses TryLock to avoid blocking if a connection is busy (e.g. during file upload).
+// If the connection mutex is held by the readLoop (HandleChunk in progress), the
+// broadcast for that connection is skipped — this prevents heartbeat writes from
+// blocking indefinitely and causing the connection to be killed mid-upload.
 func (b *Bridge) Broadcast(msgType byte, payload []byte) {
 	b.mu.Lock()
 	clients := make([]*gorillaws.Conn, 0, len(b.clients))
@@ -403,9 +452,36 @@ func (b *Bridge) Broadcast(msgType byte, payload []byte) {
 
 	for _, conn := range clients {
 		go func(c *gorillaws.Conn) {
-			if err := b.safeWrite(c, msgType, payload); err != nil {
-				log.Printf("[websocket] Broadcast write error: %v", err)
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[websocket] Broadcast goroutine PANIC: %v — cleaning up connection", r)
+					b.CloseConnection(c)
+				}
+			}()
+			b.mu.Lock()
+			connMu := b.connMutex[c]
+			b.mu.Unlock()
+			if connMu != nil {
+				if !connMu.TryLock() {
+					// Connection is busy (readLoop holds connMu during chunk processing).
+					// Skip this broadcast to avoid blocking and killing the upload.
+					return
+				}
+				defer connMu.Unlock()
 			}
+			// Set a write deadline so a slow/frozen client cannot block the goroutine.
+			c.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := WriteMessage(c, msgType, payload); err != nil {
+				log.Printf("[websocket] Broadcast write error: %v — removing stale connection", err)
+				b.mu.Lock()
+				delete(b.clients, c)
+				delete(b.connMutex, c)
+				b.mu.Unlock()
+				c.Close()
+				return
+			}
+			// Clear the deadline after a successful write.
+			c.SetWriteDeadline(time.Time{})
 		}(conn)
 	}
 }

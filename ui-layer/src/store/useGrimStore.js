@@ -63,6 +63,16 @@ export const useGrimStore = create((set, get) => ({
     }
   },
 
+  loadWorkspaces: async () => {
+    try {
+      const workspaces = await tauriBridge.listWorkspaces()
+      const active = workspaces.find(ws => ws.is_default) || workspaces[0] || null
+      set({ workspaces, activeWorkspace: active })
+    } catch (err) {
+      console.error('[store] loadWorkspaces failed:', err.message)
+    }
+  },
+
   fetchEntry: async (id) => {
     try {
       const entry = await tauriBridge.getEntry(id)
@@ -79,6 +89,16 @@ export const useGrimStore = create((set, get) => ({
       set({ entries: entries.filter((e) => e.id !== id) })
     } catch (err) {
       console.error('[store] deleteEntry failed:', err.message)
+    }
+  },
+
+  updateEntryInStore: async (id, updates) => {
+    try {
+      await tauriBridge.updateEntry(id, updates)
+      const { entries } = get()
+      set({ entries: entries.map((e) => e.id === id ? { ...e, ...updates, updated_at: Date.now() * 1e6 } : e) })
+    } catch (err) {
+      console.error('[store] updateEntry failed:', err.message)
     }
   },
 
@@ -152,10 +172,28 @@ export const useGrimStore = create((set, get) => ({
     set({ activeSecret: null, zeroizeProgress: 0 })
   },
 
-  addSecret: (secret) => {
-    const { secrets } = get()
-    const updated = [...secrets, { ...secret, id: Date.now().toString(36) }]
-    set({ secrets: updated })
+  addSecret: async (secret) => {
+    try {
+      const entry = {
+        type: secret.type || secret.category?.toLowerCase() || 'password',
+        category: secret.category || 'PASSWORD',
+        title: secret.title || secret.name || 'Untitled',
+        username: secret.fields?.username || secret.username || '',
+        password: secret.fields?.secret || secret.password || '',
+        url: secret.fields?.url || secret.url || '',
+        notes: secret.fields?.notes || secret.notes || '',
+      }
+      await tauriBridge.saveEntry(entry)
+      const entries = await tauriBridge.listEntries()
+      set(state => ({
+        secrets: [...state.secrets, { ...secret, id: secret.id || Date.now().toString(36) }],
+        entries,
+      }))
+    } catch (err) {
+      console.error('[store] addSecret failed:', err.message)
+      const { secrets } = get()
+      set({ secrets: [...secrets, { ...secret, id: Date.now().toString(36) }] })
+    }
   },
 
   addThroughputPoint: (bytes) => {

@@ -1,0 +1,14 @@
+name: grimlocker_sdk
+version: 1.0.0
+description: Dart SDK for the Grimlocker Zero-Trust Vault daemon
+repository: https://github.com/anomalyco/grimlocker
+
+environment:
+  sdk: ^3.0.0
+
+dependencies:
+  http: ^1.2.0
+
+dev_dependencies:
+  test: ^1.24.0
+  mockito: ^5.4.0

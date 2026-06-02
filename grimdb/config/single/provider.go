@@ -3,7 +3,9 @@
 package single
 
 import (
+	"log"
 	"path/filepath"
+	"time"
 
 	"github.com/grimlocker/grimdb/crypto"
 	"github.com/grimlocker/grimdb/kernel"
@@ -14,15 +16,24 @@ import (
 )
 
 // Provider is the Single-User VaultProvider.
-// It wires together LocalAuth, LocalStorage, and the crypto.Provider,
-// and exposes them through the provider.VaultProvider interface so the
-// daemon never imports config/single directly.
+// It wires together LocalAuth, LocalStorage, the crypto.Provider,
+// and the Local Network Sync subsystem, exposing them through the
+// provider.VaultProvider interface so the daemon never imports
+// config/single directly.
 type Provider struct {
-	secMod    *security.Module
-	cryptoMod *crypto.Module
-	auth      *LocalAuth
-	storage   *LocalStorage
-	cryptoPrv crypto.Provider
+	secMod     *security.Module
+	cryptoMod  *crypto.Module
+	auth       *LocalAuth
+	storage    *LocalStorage
+	cryptoPrv  crypto.Provider
+	appDir     string
+
+	// Local Network Sync
+	deviceID   *DeviceIdentity
+	peerStore  *PeerStore
+	syncState  *SyncState
+	discovery  *Discovery
+	scheduler  *SyncScheduler
 }
 
 // NewProvider constructs the full Single-User provider.
@@ -48,13 +59,154 @@ func NewProvider(db *grimdb.GrimDB, appDir string, entropyPath string) *Provider
 	// Crypto kernel module
 	cryptoMod := crypto.NewModule(cryptoPrv, secMod.RetrieveMVK)
 
-	return &Provider{
+	// Device identity for Local Network Sync
+	deviceID, err := LoadOrCreateIdentity(appDir)
+	if err != nil {
+		log.Printf("[single:provider] device identity: %v (sync disabled)", err)
+		deviceID = nil
+	} else {
+		log.Printf("[single:provider] device identity loaded: %s", deviceID.DeviceID)
+	}
+
+	// Peer store for sync
+	peerStore, err := NewPeerStore(appDir)
+	if err != nil {
+		log.Printf("[single:provider] peer store: %v (sync disabled)", err)
+		peerStore = nil
+	}
+
+	// Sync state
+	syncState, err := LoadSyncState(appDir)
+	if err != nil {
+		log.Printf("[single:provider] sync state: %v (sync disabled)", err)
+		syncState = nil
+	}
+
+	p := &Provider{
 		secMod:    secMod,
 		cryptoMod: cryptoMod,
 		auth:      auth,
 		storage:   stor,
 		cryptoPrv: cryptoPrv,
+		appDir:    appDir,
+		deviceID:  deviceID,
+		peerStore: peerStore,
+		syncState: syncState,
 	}
+
+	// Discovery (mDNS) — created but not started until daemon calls StartSync
+	if deviceID != nil && syncState != nil {
+		p.discovery = NewDiscovery(deviceID.DeviceID, syncPort, p.getVersionVector)
+	}
+
+	return p
+}
+
+// InitSync initializes and starts the Local Network Sync subsystem.
+// Must be called after the bus, sessionCtx, and blockStore are available.
+func (p *Provider) InitSync(bus kernel.Dispatcher, sessionCtx *security.SessionContext, blockStore storage.BlockStore) error {
+	if p.deviceID == nil || p.peerStore == nil || p.syncState == nil {
+		return nil
+	}
+	if p.discovery == nil {
+		return nil
+	}
+
+	// Start mDNS discovery
+	if err := p.discovery.Start(); err != nil {
+		log.Printf("[single:provider] discovery start: %v", err)
+		return err
+	}
+
+	// Create and start sync scheduler
+	interval := defaultSyncInterval
+	p.scheduler = NewSyncScheduler(
+		p.deviceID,
+		p.peerStore,
+		p.syncState,
+		blockStore,
+		p.secMod.Audit(),
+		sessionCtx,
+		p.discovery,
+		bus,
+		interval,
+	)
+	p.scheduler.Start()
+
+	log.Printf("[single:provider] Local Network Sync initialized (device=%s)", p.deviceID.DeviceID)
+	return nil
+}
+
+// ShutdownSync stops the sync subsystem.
+func (p *Provider) ShutdownSync() {
+	if p.scheduler != nil {
+		p.scheduler.Stop()
+	}
+	if p.discovery != nil {
+		p.discovery.Stop()
+	}
+	log.Printf("[single:provider] Local Network Sync shut down")
+}
+
+// getVersionVector returns the current version vector for mDNS advertisements.
+func (p *Provider) getVersionVector() map[string]EntryVersion {
+	if p.syncState == nil {
+		return nil
+	}
+	return p.syncState.GetAllVersions()
+}
+
+// DeviceID returns the local device ID, or empty string if sync is unavailable.
+func (p *Provider) DeviceID() string {
+	if p.deviceID == nil {
+		return ""
+	}
+	return p.deviceID.DeviceID
+}
+
+// SyncPort returns the TCP port used for sync connections.
+func (p *Provider) SyncPort() int {
+	return syncPort
+}
+
+// SyncIdentity returns the device identity for the sync listener's handshake.
+func (p *Provider) SyncIdentity() *DeviceIdentity {
+	return p.deviceID
+}
+
+// SyncPeerStore returns the peer store for verifying incoming connections.
+func (p *Provider) SyncPeerStore() *PeerStore {
+	return p.peerStore
+}
+
+// SyncState returns the sync state tracker.
+func (p *Provider) SyncState() *SyncState {
+	return p.syncState
+}
+
+// SyncPeers returns the current list of discovered peers from the mDNS cache.
+// Returns nil if sync is not initialized.
+func (p *Provider) SyncPeers() []DiscoveredPeer {
+	if p.discovery == nil {
+		return nil
+	}
+	return p.discovery.GetPeers()
+}
+
+// TriggerSync fires an immediate sync cycle outside the regular schedule.
+// Non-blocking. Does nothing if sync is not initialized.
+func (p *Provider) TriggerSync() {
+	if p.scheduler != nil {
+		p.scheduler.TriggerNow()
+	}
+}
+
+// LastSyncAt returns the most recent sync timestamp across all known peers.
+func (p *Provider) LastSyncAt() time.Time {
+	if p.scheduler == nil {
+		return time.Time{}
+	}
+	return p.scheduler.LastSyncAt()
 }
 
 // SetSession links the security module and storage adapter to the session context.

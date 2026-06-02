@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Grimlocker.SDK</name>
+    </assembly>
+    <members>
+        <member name="T:Grimlocker.GrimlockerClient">
+            <summary>
+            Async HTTP client for the Grimlocker vault daemon.
+            Uses the /api/v1 JSON endpoint — no external dependencies.
+            </summary>
+            <example>
+            <code>
+            await using var client = new GrimlockerClient("http://127.0.0.1:36353", token);
+            await client.UnlockVaultAsync("master-password");
+            var passwords = await client.ListPasswordsAsync();
+            </code>
+            </example>
+        </member>
+        <member name="M:Grimlocker.GrimlockerClient.#ctor(System.String,System.String)">
+            <param name="baseUrl">Daemon base URL, e.g. "http://127.0.0.1:36353"</param>
+            <param name="token">GRIMLOCKER_TOKEN from daemon stdout</param>
+        </member>
+    </members>
+</doc>

@@ -1,0 +1,27 @@
+{
+  "name": "@grimlocker/sdk",
+  "version": "1.0.0",
+  "description": "TypeScript/JavaScript SDK for the Grimlocker Zero-Trust Vault daemon",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": ["grimlocker", "vault", "password-manager", "security"],
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  },
+  "files": ["dist", "src"]
+}

@@ -79,7 +79,39 @@ const MSG_KERNEL_STATE_READY    = 0x2E
 const MSG_SYSTEM_HEARTBEAT      = 0x2F
 const MSG_SYSTEM_ERROR          = 0x30
 const MSG_SYSTEM_LOG            = 0x31
+
+// Auth lifecycle
+const MSG_AUTH_LOGOUT           = 0x3F
+const MSG_AUTH_LOGOUT_ACK       = 0x40
+
+// FileVault download (Phase 1)
+const MSG_FILE_DOWNLOAD_REQUEST = 0x41
+const MSG_FILE_CHUNK_DATA       = 0x42
+const MSG_FILE_DOWNLOAD_END     = 0x43
+
+// Workspace rename
+const MSG_WORKSPACE_RENAME      = 0x44
+
+// Enterprise panic button
+const MSG_PANIC_BUTTON          = 0x45
 const MSG_SYSTEM_HEALTH_CHECK   = 0x32
+
+// FileVault folder system (Phase 2)
+const MSG_FOLDER_CREATE         = 0x60 // {name, parent_id}
+const MSG_FOLDER_LIST           = 0x61 // {parent_id}
+const MSG_FOLDER_RENAME         = 0x62 // {id, name}
+const MSG_FOLDER_DELETE         = 0x63 // {id}
+const MSG_FOLDER_RESULT         = 0x64 // server response
+const MSG_FILE_MOVE_TO_FOLDER   = 0x65 // {manifest_block_id, folder_id}
+
+// LAN Sync IPC
+const MSG_SYNC_LIST_PEERS       = 0x70 // {} — list discovered peers + sync metadata
+const MSG_SYNC_TRIGGER          = 0x71 // {} — trigger immediate sync cycle
+const MSG_SYNC_RESULT           = 0x72 // SKE-encrypted JSON sync state
+
+// Audit log IPC
+const MSG_AUDIT_LIST            = 0x73 // [2-byte big-endian n] — request last n audit entries
+const MSG_AUDIT_RESULT          = 0x74 // SKE-encrypted JSON []SecurityEvent
 
 /** Human-readable names for each message type, used in throughput logging. */
 const OP_NAMES = {
@@ -171,6 +203,15 @@ class TauriBridge {
     window.addEventListener('beforeunload', () => {
       this.disconnect()
     })
+
+    // When the window becomes visible again (e.g. after being minimized),
+    // reset the heartbeat watchdog so the accumulated pause doesn't trigger
+    // a false disconnect. WebView2 throttles JS timers when the window is hidden.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && this.connected) {
+        this._resetHeartbeatWatchdog()
+      }
+    })
   }
 
   // ─── Connection & Handshake ──────────────────────────────────────────────
@@ -181,7 +222,7 @@ class TauriBridge {
    * @returns {Promise<string|null>} The discovered token, or null if not yet available.
    */
   async discoverToken() {
-    if (typeof window !== 'undefined' && window.__TAURI__) {
+    if (typeof window !== 'undefined' && (window.__TAURI_INTERNALS__ || window.__TAURI__)) {
       const { invoke } = await import('@tauri-apps/api/core')
       try {
         const config = await invoke('get_session_token')
@@ -417,8 +458,10 @@ class TauriBridge {
    * Gives up after maxReconnectAttempts (15).
    */
   _attemptReconnect() {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      this._emit('reconnect_failed')
+    if (this.isConnecting || this.handshakeState === 'READY' || this.reconnectAttempts >= this.maxReconnectAttempts) {
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        this._emit('reconnect_failed')
+      }
       return
     }
 
@@ -438,13 +481,17 @@ class TauriBridge {
     }, delay)
   }
 
-  /** Reset the 5s heartbeat watchdog. Called on every incoming message. */
+  /** Reset the heartbeat watchdog. Called on every incoming message.
+   * Timeout is 30s to survive:
+   *   - File uploads (server skips heartbeats via TryLock while busy)
+   *   - Brief WebView2 throttling when window is minimized
+   */
   _resetHeartbeatWatchdog() {
     if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer)
     this.heartbeatTimer = setTimeout(() => {
-      console.warn('[TauriBridge] Heartbeat timeout (5s), triggering soft-reconnect')
+      console.warn('[TauriBridge] Heartbeat timeout (30s), triggering soft-reconnect')
       this._softReconnect()
-    }, 5000)
+    }, 30000)
   }
 
   /** Clear the heartbeat watchdog timer. */
@@ -465,17 +512,19 @@ class TauriBridge {
     this.handshakeState = 'DISCONNECTED'
     useGrimStore.getState().setDaemonStatus('offline')
     this._emit('disconnected', { reason: 'heartbeat_timeout' })
-    this._attemptReconnect()
   }
 
   /** Bind the WebSocket onmessage handler to _processMessage. */
   _attachMessageHandler() {
+    if (this._sessionKeyFallback) {
+      this._sessionKeyFallback()
+      this._sessionKeyFallback = null
+    }
+
     this.socket.onmessage = (event) => {
       this._processMessage(event.data)
     }
 
-    // Always capture session key from MSG_UNLOCK_RESULT, even if no explicit
-    // listener is registered (e.g. after initializeVault's auto-unlock).
     this._sessionKeyFallback = this.on(MSG_UNLOCK_RESULT, (payload) => {
       try {
         const text = new TextDecoder().decode(payload)
@@ -650,6 +699,10 @@ class TauriBridge {
    */
   clearSessionKey() {
     if (this.sessionKey) {
+      // Two-pass zeroization prevents V8 dead-store elimination of a single fill(0).
+      // First overwrite with random data, then zero — both passes are observable
+      // as side effects (the second depends on the first), so neither is elided.
+      crypto.getRandomValues(this.sessionKey)
       this.sessionKey.fill(0)
       this.sessionKey = null
     }
@@ -789,10 +842,10 @@ class TauriBridge {
         return
       }
 
-      const { type, ...entryData } = entry
+      const { type, category, ...entryData } = entry
       delete entryData.id
 
-      const payload = JSON.stringify({ type, data: entryData })
+      const payload = JSON.stringify({ type, category: category || type?.toUpperCase(), data: entryData })
 
       const handler = this.on(MSG_ACK, () => {
         handler()
@@ -808,6 +861,40 @@ class TauriBridge {
       })
 
       this._send(MSG_SAVE_ENTRY, new TextEncoder().encode(payload))
+    })
+  }
+
+  /**
+    * Update an existing vault entry.
+    * Sends the full entry object (with id, type, category, and changed fields)
+    * via MSG_ENTRY_UPDATE. The daemon merges the fields into the existing entry.
+    * @param {string} id — The entry's unique identifier.
+    * @param {Object} updates — Fields to update { title, username, password, url, notes, ... }.
+    * @returns {Promise<void>} Resolves on ENTRY_RESULT ACK from the daemon.
+    */
+  updateEntry(id, updates) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) {
+        reject(new Error('Not connected to daemon'))
+        return
+      }
+
+      const payload = JSON.stringify({ id, ...updates })
+
+      const handler = this.on(MSG_ENTRY_RESULT, () => {
+        handler()
+        errHandler()
+        resolve()
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler()
+        errHandler()
+        const error = new TextDecoder().decode(payload)
+        reject(new Error(error))
+      })
+
+      this._send(MSG_ENTRY_UPDATE, new TextEncoder().encode(payload))
     })
   }
 
@@ -1237,6 +1324,58 @@ class TauriBridge {
     }
   }
 
+  /**
+   * Signal the daemon to lock the vault immediately.
+   * Used by the frontend auto-lock timer and manual logout.
+   * @returns {Promise<void>}
+   */
+  sendAuthLogout() {
+    return new Promise((resolve) => {
+      if (!this.connected) {
+        resolve()
+        return
+      }
+      const handler = this.on(MSG_AUTH_LOGOUT_ACK, () => {
+        handler()
+        resolve()
+      })
+      this._send(MSG_AUTH_LOGOUT)
+    })
+  }
+
+  /**
+   * Activates the PANIC BUTTON — triggers immediate hard lockdown.
+   * Requires admin passphrase as confirmation. Admin-only.
+   * @param {string} passphrase — Admin's passphrase for verification
+   * @returns {Promise<void>}
+   */
+  activatePanicButton(passphrase) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) {
+        reject(new Error('Not connected to daemon'))
+        return
+      }
+
+      // Listen for either ACK (lockdown initiated) or ERROR.
+      const ackHandler = this.on(MSG_ACK, () => {
+        ackHandler()
+        errHandler()
+        resolve()
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        ackHandler()
+        errHandler()
+        let msg = 'Panic activation failed'
+        try { msg = JSON.parse(new TextDecoder().decode(payload)).message || msg } catch { /* ignore */ }
+        reject(new Error(msg))
+      })
+
+      const payloadBytes = new TextEncoder().encode(JSON.stringify({ passphrase }))
+      this._send(MSG_PANIC_BUTTON, payloadBytes)
+    })
+  }
+
   // ─── Workspace Management ─────────────────────────────────────────────────
 
   /**
@@ -1322,10 +1461,15 @@ class TauriBridge {
         return
       }
 
-      const handler = this.on(MSG_ACK, () => {
+      const handler = this.on(MSG_WORKSPACES_RESULT, (payload) => {
         handler()
         errHandler()
-        resolve()
+        try {
+          const ws = JSON.parse(new TextDecoder().decode(payload))
+          resolve(ws)
+        } catch (_) {
+          resolve(null)
+        }
       })
 
       const errHandler = this.on(MSG_ERROR, (payload) => {
@@ -1368,6 +1512,135 @@ class TauriBridge {
       const payload = new TextEncoder().encode(JSON.stringify({ id }))
       this._send(MSG_WORKSPACE_DELETE, payload)
     })
+  }
+
+  /**
+   * Rename a workspace.
+   * @param {string} id      — UUID of the workspace to rename.
+   * @param {string} name    — New display name.
+   * @returns {Promise<Array>} Updated workspace list.
+   */
+  renameWorkspace(id, name) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) {
+        reject(new Error('Not connected to daemon'))
+        return
+      }
+
+      const handler = this.on(MSG_WORKSPACES_RESULT, (payload) => {
+        handler()
+        errHandler()
+        try {
+          const text = new TextDecoder().decode(payload)
+          resolve(JSON.parse(text))
+        } catch {
+          resolve([])
+        }
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler()
+        errHandler()
+        const error = new TextDecoder().decode(payload)
+        reject(new Error(error))
+      })
+
+      const payloadBytes = new TextEncoder().encode(JSON.stringify({ id, name }))
+      this._send(MSG_WORKSPACE_RENAME, payloadBytes)
+    })
+  }
+
+  /**
+   * Download a file from the FileVault by its manifest block ID.
+   * Streams decrypted chunks and assembles them into an ArrayBuffer.
+   * @param {string} manifestBlockId — e.g. "blob-{uuid}-manifest"
+   * @returns {Promise<{data: ArrayBuffer, fileName: string, mimeType: string, sha256: string}>}
+   */
+  downloadFile(manifestBlockId) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) {
+        reject(new Error('Not connected to daemon'))
+        return
+      }
+
+      const chunks = []
+
+      const chunkHandler = this.on(MSG_FILE_CHUNK_DATA, (payload) => {
+        // Each chunk is raw binary — accumulate in order.
+        chunks.push(new Uint8Array(payload))
+      })
+
+      const endHandler = this.on(MSG_FILE_DOWNLOAD_END, (payload) => {
+        chunkHandler()
+        endHandler()
+        errHandler()
+        try {
+          const meta = JSON.parse(new TextDecoder().decode(payload))
+          // Assemble all chunks into a single ArrayBuffer.
+          const totalLen = chunks.reduce((sum, c) => sum + c.length, 0)
+          const combined = new Uint8Array(totalLen)
+          let offset = 0
+          for (const chunk of chunks) {
+            combined.set(chunk, offset)
+            offset += chunk.length
+          }
+          resolve({
+            data: combined.buffer,
+            fileName: meta.file_name || 'download',
+            mimeType: meta.mime_type || 'application/octet-stream',
+            sha256: meta.sha256 || '',
+          })
+        } catch (e) {
+          reject(new Error('Failed to parse download metadata: ' + e.message))
+        }
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        chunkHandler()
+        endHandler()
+        errHandler()
+        let msg = 'Download failed'
+        try {
+          const parsed = JSON.parse(new TextDecoder().decode(payload))
+          msg = parsed.message || parsed.error || msg
+        } catch {
+          msg = new TextDecoder().decode(payload)
+        }
+        reject(new Error(msg))
+      })
+
+      const payloadBytes = new TextEncoder().encode(
+        JSON.stringify({ manifest_block_id: manifestBlockId })
+      )
+      this._send(MSG_FILE_DOWNLOAD_REQUEST, payloadBytes)
+    })
+  }
+
+  /**
+   * Opens a file externally using the system default application.
+   * Writes data to a temporary file, opens it, then schedules secure deletion.
+   * @param {ArrayBuffer} data      — file contents
+   * @param {string}      filename  — suggested filename
+   * @param {string}      mimeType  — MIME type (unused on OS level, for reference)
+   * @returns {Promise<void>}
+   */
+  async openFileExternally(data, filename, mimeType) {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const bytes = Array.from(new Uint8Array(data))
+    const tmpPath = await invoke('save_temp_file', { filename, data: bytes })
+    await invoke('open_with_default_app', { path: tmpPath })
+
+    // Schedule secure deletion after 30 seconds.
+    // The user has had time to open the file in the default app.
+    setTimeout(async () => {
+      try {
+        await invoke('secure_delete_temp', { path: tmpPath })
+      } catch (e) {
+        console.warn('[tauriBridge] secure_delete_temp failed:', e)
+      }
+    }, 30_000)
+
+    return tmpPath
   }
 
   // ─── Omega+ Operations ───────────────────────────────────────────────────
@@ -1468,7 +1741,7 @@ class TauriBridge {
    * @param {Function} [onProgress] — Called with 0..1 progress fraction.
    * @returns {Promise<Object>} The BlobManifest returned by the daemon.
    */
-  ingestFile(file, onProgress = null) {
+  ingestFile(file, onProgress = null, folderId = '') {
     return new Promise((resolve, reject) => {
       if (!this.connected) {
         reject(new Error('Not connected to daemon'))
@@ -1476,26 +1749,45 @@ class TauriBridge {
       }
 
       const CHUNK_SIZE = 64 * 1024 // 64KB WebSocket chunks
+      const INGEST_TIMEOUT = 120000 // 2 minutes
+
+      // Timeout guard
+      let cancelled = false
+      const timeoutId = setTimeout(() => {
+        cancelled = true
+        cleanup()
+        reject(new Error('File upload timed out'))
+      }, INGEST_TIMEOUT)
+
+      const cleanup = () => {
+        clearTimeout(timeoutId)
+        if (progressUnsub) progressUnsub()
+      }
 
       // Step 1: Send BEGIN
       const beginPayload = JSON.stringify({
         file_name: file.name,
         mime_type: file.type || 'application/octet-stream',
         total_size: file.size,
+        folder_id: folderId || '',
       })
+
+      let progressUnsub = null
 
       const ackHandler = this.on(MSG_ACK, () => {
         ackHandler()
+        errHandler()
         // Step 2: Stream chunks
         const reader = new FileReader()
         let offset = 0
 
         const sendNextChunk = () => {
+          if (cancelled) return
           if (offset >= file.size) {
             // Step 3: Send END
             const endHandler = this.on(MSG_ENTRY_RESULT, (payload) => {
               endHandler()
-              errHandler()
+              cleanup()
               try {
                 const text = new TextDecoder().decode(payload)
                 const manifest = JSON.parse(text)
@@ -1517,7 +1809,10 @@ class TauriBridge {
             if (onProgress) onProgress(offset / file.size)
             sendNextChunk()
           }
-          reader.onerror = () => reject(new Error('Failed to read file chunk'))
+          reader.onerror = () => {
+            cleanup()
+            reject(new Error('Failed to read file chunk'))
+          }
         }
 
         sendNextChunk()
@@ -1526,19 +1821,20 @@ class TauriBridge {
       const errHandler = this.on(MSG_ERROR, (payload) => {
         ackHandler()
         errHandler()
+        cleanup()
         const error = new TextDecoder().decode(payload)
         reject(new Error(error))
       })
 
-      const onProgressHandler = onProgress
-        ? this.on(MSG_INGEST_PROGRESS, (payload) => {
-            try {
-              const text = new TextDecoder().decode(payload)
-              const prog = JSON.parse(text)
-              if (onProgressHandler) onProgress(prog.progress || 0)
-            } catch (_) {}
-          })
-        : null
+      if (onProgress) {
+        progressUnsub = this.on(MSG_INGEST_PROGRESS, (payload) => {
+          try {
+            const text = new TextDecoder().decode(payload)
+            const prog = JSON.parse(text)
+            if (onProgress) onProgress(prog.progress || 0)
+          } catch (_) {}
+        })
+      }
 
       this._send(MSG_FILE_INGEST_BEGIN, new TextEncoder().encode(beginPayload))
     })
@@ -1571,6 +1867,233 @@ class TauriBridge {
       this.socket.close()
       this.socket = null
       this.connected = false
+    }
+  }
+
+  // ── FileVault Folder API ──────────────────────────────────────────────────
+
+  /**
+   * Create a folder in the FileVault hierarchy.
+   * @param {string} name
+   * @param {string} parentId  — "" for root
+   * @returns {Promise<object>} FolderEntry
+   */
+  createFolder(name, parentId = '') {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_FOLDER_RESULT, (payload) => {
+        handler(); errHandler()
+        const folder = this._decodeFolderResult(payload)
+        if (folder.error) { reject(new Error(folder.error)); return }
+        resolve(folder)
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_FOLDER_CREATE, new TextEncoder().encode(JSON.stringify({ name, parent_id: parentId })))
+    })
+  }
+
+  /**
+   * List contents (folders + files) of a folder.
+   * @param {string} parentId  — "" for root
+   * @returns {Promise<{parent_id, folders: [], files: []}>}
+   */
+  listFolder(parentId = '') {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_FOLDER_RESULT, (payload) => {
+        handler(); errHandler()
+        const result = this._decodeFolderResult(payload)
+        resolve(result)
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_FOLDER_LIST, new TextEncoder().encode(JSON.stringify({ parent_id: parentId })))
+    })
+  }
+
+  /**
+   * Rename a folder.
+   * @param {string} id
+   * @param {string} name
+   */
+  renameFolder(id, name) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_FOLDER_RESULT, (payload) => {
+        handler(); errHandler()
+        resolve(this._decodeFolderResult(payload))
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_FOLDER_RENAME, new TextEncoder().encode(JSON.stringify({ id, name })))
+    })
+  }
+
+  /**
+   * Delete a folder. Files in the folder are moved to its parent.
+   * @param {string} id
+   */
+  deleteFolder(id) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_FOLDER_RESULT, (payload) => {
+        handler(); errHandler()
+        resolve(this._decodeFolderResult(payload))
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_FOLDER_DELETE, new TextEncoder().encode(JSON.stringify({ id })))
+    })
+  }
+
+  /**
+   * Move a file to a different folder.
+   * @param {string} manifestBlockId
+   * @param {string} folderId  — "" for root
+   */
+  moveFileToFolder(manifestBlockId, folderId = '') {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_FOLDER_RESULT, (payload) => {
+        handler(); errHandler()
+        resolve(this._decodeFolderResult(payload))
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_FILE_MOVE_TO_FOLDER, new TextEncoder().encode(
+        JSON.stringify({ manifest_block_id: manifestBlockId, folder_id: folderId })
+      ))
+    })
+  }
+
+  /**
+   * List discovered LAN sync peers and sync metadata (last_sync_at, device_id).
+   * Returns SKE-decrypted { peers: DiscoveredPeer[], last_sync_at: number, device_id: string }.
+   * Resolves with empty peers array if sync is not available on the daemon.
+   */
+  listSyncPeers() {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_SYNC_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const text = new TextDecoder().decode(payload)
+          // Plain-text trigger ack ({"ok":true}) — not the peers response, ignore
+          const raw = JSON.parse(text)
+          if (raw.ok) return  // trigger ack on same channel — wait for next
+          if (raw.encrypted && this.sessionKey) {
+            resolve(JSON.parse(decryptSKE(raw.encrypted, this.sessionKey)))
+          } else {
+            resolve(raw)
+          }
+        } catch (e) {
+          reject(e)
+        }
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        const msg = new TextDecoder().decode(payload)
+        // "sync unavailable" is not a fatal error — resolve with empty state
+        if (msg.includes('sync unavailable')) {
+          resolve({ peers: [], last_sync_at: 0, device_id: '' })
+        } else {
+          reject(new Error(msg))
+        }
+      })
+
+      this._send(MSG_SYNC_LIST_PEERS)
+    })
+  }
+
+  /**
+   * Trigger an immediate LAN sync cycle.
+   * Non-blocking on the daemon side; resolves once the daemon ACKs the trigger.
+   */
+  triggerSync() {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_SYNC_RESULT, (payload) => {
+        handler(); errHandler()
+        resolve()
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        const msg = new TextDecoder().decode(payload)
+        if (msg.includes('sync unavailable')) resolve()  // non-fatal
+        else reject(new Error(msg))
+      })
+
+      this._send(MSG_SYNC_TRIGGER)
+    })
+  }
+
+  /**
+   * Fetch the last n entries from the security audit log.
+   * Returns SKE-decrypted SecurityEvent[] sorted oldest-first.
+   * @param {number} n — Number of entries to fetch (default 50, max 500).
+   */
+  listAuditEntries(n = 50) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_AUDIT_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const text = new TextDecoder().decode(payload)
+          const raw = JSON.parse(text)
+          if (raw.encrypted && this.sessionKey) {
+            resolve(JSON.parse(decryptSKE(raw.encrypted, this.sessionKey)))
+          } else {
+            resolve(Array.isArray(raw) ? raw : [])
+          }
+        } catch (e) {
+          reject(e)
+        }
+      })
+
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        const msg = new TextDecoder().decode(payload)
+        if (msg.includes('audit unavailable')) resolve([])
+        else reject(new Error(msg))
+      })
+
+      // Encode n as 2-byte big-endian
+      const buf = new Uint8Array(2)
+      new DataView(buf.buffer).setUint16(0, Math.min(Math.max(n, 1), 500), false)
+      this._send(MSG_AUDIT_LIST, buf)
+    })
+  }
+
+  /** Decode a MsgFolderResult payload — handles SKE-encrypted and plain JSON. */
+  _decodeFolderResult(payload) {
+    try {
+      const text = new TextDecoder().decode(payload)
+      const parsed = JSON.parse(text)
+      // SKE-encrypted response (same pattern as listEntries / fetchEntry)
+      if (parsed.encrypted && this.sessionKey) {
+        const plaintext = decryptSKE(parsed.encrypted, this.sessionKey)
+        return JSON.parse(plaintext)
+      }
+      return parsed
+    } catch (e) {
+      console.error('[TauriBridge] _decodeFolderResult failed:', e)
+      return {}
     }
   }
 }

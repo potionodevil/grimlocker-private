@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v8.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v8.0": {
+      "Grimlocker.SDK/1.0.0": {
+        "runtime": {
+          "Grimlocker.SDK.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "Grimlocker.SDK/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

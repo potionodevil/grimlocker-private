@@ -229,6 +229,12 @@ func (h *EntryHandler) handleDelete(e kernel.Event, dispatcher kernel.Dispatcher
 		return
 	}
 
+	// Cascade-delete: if this is a FileVault manifest, delete all chunk blocks first.
+	if err := h.deleteFileVaultIfManifest(req.ID); err != nil {
+		replyErr(dispatcher, e, err)
+		return
+	}
+
 	if err := h.bs.DeleteBlock(req.ID); err != nil {
 		replyErr(dispatcher, e, err)
 		return
@@ -236,6 +242,35 @@ func (h *EntryHandler) handleDelete(e kernel.Event, dispatcher kernel.Dispatcher
 
 	respPayload, _ := json.Marshal(map[string]string{"status": "deleted"})
 	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload)) //nolint:errcheck
+}
+
+// deleteFileVaultIfManifest checks if the block is a FileVault manifest and deletes
+// all associated chunk blocks before the manifest itself is deleted.
+func (h *EntryHandler) deleteFileVaultIfManifest(id string) error {
+	block, err := h.bs.ReadBlock(id)
+	if err != nil {
+		// Not found — caller will handle the error on the manifest deletion attempt.
+		return nil
+	}
+
+	if block.Category != CategoryFileVault {
+		return nil
+	}
+
+	var manifest BlobManifest
+	if err := json.Unmarshal(block.Data, &manifest); err != nil || manifest.ID == "" {
+		// Not a manifest (could be a chunk block or legacy format). Continue.
+		return nil
+	}
+
+	for _, chunkID := range manifest.ChunkIDs {
+		if delErr := h.bs.DeleteBlock(chunkID); delErr != nil {
+			log.Printf("[entry:DELETE:CASCADE] failed to delete chunk %s: %v", chunkID, delErr)
+		}
+	}
+
+	log.Printf("[entry:DELETE:CASCADE] removed %d chunks for manifest %s", len(manifest.ChunkIDs), id)
+	return nil
 }
 
 // handleQuery handles ENTRY.QUERY events.
