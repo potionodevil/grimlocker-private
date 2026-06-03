@@ -1,6 +1,29 @@
+```
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣤⠞⠛⠛⠶⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀      _____    _       __         __          
+⠀⠀⠀⣠⢤⠀⠀⠀⣴⠟⠁⠀⠀⠀⠀⠈⢧⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀    / ___/___(_)_ _  / /__  ____/ /_____ ____
+⠀⢠⠞⢁⡞⢀⣰⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠻⣄⠀⠀⠀⠀⠀⠀⠀⠀    / (_ / __/ /  ' \/ / _ \/ __/  '_/ -_) __/
+⡰⢷⠆⠸⠶⠋⠁⠀⢠⡴⠄⠀⠀⠀⠀⠀⠀⠀⠙⣆⠀⠀⠀⠀⠀⠀⠀    \___/_/ /_/_/_/_/_/\___/\__/_/\_\\__/_/   
+⠀⣼⠀⠀⠀⣠⠴⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠚⢧⡀⠀⠀⠀⠀⠀                                              
+⠀⠹⡤⠖⣻⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣄⠀⠀⠀⠀                                              
+⠀⠀⠀⢰⠇⠀⠀⠀⠀⠀⠀⠀⣠⢶⡀⠀⠀⠀⠀⠀⠀⠀⢹⡄⠀⠀⠀                                              
+⠀⠀⢀⡏⠀⠀⠀⠀⠀⠀⣠⠞⠁⠀⠙⢦⡀⠀⠀⠀⠀⠀⠀⢳⡀⠀⠀                                              
+⠀⢀⡞⠀⠀⠀⠀⠀⣠⠞⠁⠀⠀⠀⠀⠀⠙⠳⣄⠀⠀⠀⠀⠈⢧⠀⠀                                              
+⠀⡞⠀⠀⠀⢀⣤⢞⡁⠀⠀⠀⠀⠀⠀⠀⠀⠀⣈⡷⣄⠀⠀⠀⠈⢧⠀                                              
+⣸⠁⠀⢀⣴⡟⢹⠀⠉⠓⢤⣀⠀⣄⠀⣀⠴⠊⠁⢀⡏⢷⣄⠀⠀⠘⡆                                              
+⡏⠀⢠⢿⡏⠀⠀⠹⢦⣀⠴⠛⠋⣉⠙⠓⠤⣠⠴⠋⠀⠈⢻⣳⡄⠀⣿                                              
+⣧⢀⡏⠈⠳⣄⡀⣀⣤⣄⠀⠀⡘⠈⢆⠀⠀⣠⣄⡀⢀⡴⠞⠀⢻⠀⡿                                              
+⠹⡌⡇⠀⠀⠀⠉⠉⣆⡏⡀⠰⠅⠤⠬⠀⠘⢩⣼⠉⠉⠀⠀⠀⣸⣰⠃                                              
+⠀⠙⢿⣄⠀⠀⠀⠀⡟⣏⡑⠳⠒⠲⠲⠚⢋⡟⣷⠀⠀⠀⠀⣰⡿⠃⠀                                              
+⠀⠀⠈⠛⢷⣤⡀⠀⣇⠑⠬⣑⠒⠄⠒⣈⠕⠂⣸⠀⣀⣴⡾⠋⠀⠀⠀                                              
+⠀⠀⠀⠀⠀⠙⢿⡳⣌⡳⣄⠀⣉⣚⡉⠀⡠⢊⡤⣺⠟⠋⠀⠀⠀⠀⠀                                              
+⠀⠀⠀⠀⠀⠀⠀⠉⢮⡱⣌⠉⠉⠉⠉⠉⡵⢋⠞⠁⠀⠀⠀⠀⠀⠀⠀                                              
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠑⢌⢣⡀⠀⢀⢞⡴⠋⠀⠀⠀⠀⠀⠀⠀⠀⠀                                              
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠓⢬⣀⠵⠋⠀⠀⠀⠀⠀⠀⠀⠀                                              
+```
+
 # Grimlocker — Private Edition
 
-> **Complete zero-trust password manager.** Hybrid Go/Rust architecture with Tauri desktop frontend. Unencrypted data never touches disk or Go's garbage collector.
+> **Zero-trust, enterprise-grade Password Manager.** Hybrid Go/Rust Architektur mit Tauri-Desktop-Frontend. Unverschlüsselte Daten berühren weder die Festplatte noch den Go-Garbage-Collector.
 
 ---
 
@@ -102,316 +125,61 @@ TOKEN=$(bash scripts/get-token.sh)
 
 ### core-rust/ — Rust Crypto Enclave
 
-The cryptographic heart of the system. Compiled as a `cdylib` shared library and linked into the Go daemon via CGO.
+The cryptographic heart of the system. Compiled as a `cdylib` shared library and linked via CGO.
 
-| File | Lines (approx) | Purpose |
-|---|---|---|
-| `src/crypto.rs` | ~200 | ChaCha20-Poly1305 AEAD, BLAKE3 hashing, mlock/VirtualLock, zeroize, guard pages |
-| `src/enclave.rs` | ~180 | Secure memory enclave: alloc/dealloc with automatic zeroization, platform-specific page protection |
-| `src/coordinates.rs` | ~120 | 200-character coordinate parser, BLAKE3+HKDF key extraction, panic-key (`0,0,0`) detection |
-| `src/lib.rs` | ~800 | C-ABI entry points (`extern "C"`) for all FFI exports: generate_entropy, extract_key, secure_zero, encrypt/decrypt |
-| `src/main.rs` | ~500 | CLI state machine, IPC client for direct vault operations, entropy file management |
-| `src/time_guard.rs` | ~80 | Dual-clock integrity: monotonic (`Instant`) + wall-clock cross-check, anomaly detection, wipe triggers |
-| `src/wipe.rs` | ~100 | 7-pass anti-forensic shredder with fsync verification, file truncation, unlink |
-
-**Dependencies** (`Cargo.toml`): `chacha20poly1305`, `blake3`, `zeroize`, `rand`, `subtle`, `libc` (Unix), `winapi` (Windows).
+| Module | Key Files | Purpose |
+|--------|-----------|---------|
+| Crypto | `crypto.rs` | ChaCha20-Poly1305 AEAD, BLAKE3, mlock, zeroize, guard pages |
+| Enclave | `enclave.rs` | Secure memory alloc/dealloc with automatic zeroization |
+| Coordinates | `coordinates.rs` | 200-char coordinate parser, BLAKE3+HKDF extraction, panic-key detection |
+| FFI | `lib.rs` | C-ABI entry points: generate_entropy, extract_key, encrypt/decrypt, secure_zero |
+| CLI | `main.rs` | CLI state machine, IPC client, entropy management |
+| Time Guard | `time_guard.rs` | Dual-clock integrity (monotonic + wall-clock cross-check) |
+| Shredder | `wipe.rs` | 7-pass anti-forensic shredder with fsync verification |
 
 ---
 
 ### grimdb/ — Go Daemon
 
-#### kernel/ — Event-Driven Kernel
+Event-driven kernel with modular architecture. All inter-module communication flows through the event bus.
 
-The central nervous system of the daemon. All inter-module communication flows through the event bus.
-
-| File | Purpose |
-|---|---|
-| `bus.go` | Thread-safe event bus. Publish/subscribe pattern with typed event channels. |
-| `dispatcher.go` | Routes events to registered module handlers. Ensures in-order delivery within subscription scopes. |
-| `event.go` | Event type definitions, constants (`AUTH.UNLOCK`, `VAULT.CREATE`, `SECURITY.LOCKDOWN`, etc.), event struct. |
-| `registry.go` | Module registry: tracks all loaded modules, their dependencies, and lifecycle state. |
-| `uuid.go` | UUID generation for events, entries, sessions, and audit log entries. |
-| `watchdog.go` | 30-second heartbeat monitor. On module timeout, triggers `KERNEL_RESTART` via registry. |
-
-#### crypto/ — Go Crypto Engine
-
-Go-side cryptographic operations, orchestrated by a central engine that delegates to Rust for all key-sensitive paths.
-
-| File | Purpose |
-|---|---|
-| `argon.go` | Argon2id password hashing (32 MiB, 3 iterations, 4 lanes). Produces 32-byte hashes. |
-| `chacha.go` | ChaCha20-Poly1305 AEAD via `golang.org/x/crypto`. Nonce management with CSPRNG. |
-| `coordinate.go` | Coordinate-based key derivation. Parses coordinate sets, uses BLAKE3+HKDF for key extraction. |
-| `engine.go` | Central coordinator. Manages the entire crypto pipeline: key generation, derivation, encryption, zeroization. |
-| `entropy.go` | Secure entropy generation via `crypto/rand`. Creates and validates entropy files. |
-| `hkdf.go` | HKDF-SHA256 (RFC 5869). Extract+expand for deriving child keys from master key. |
-| `interface.go` | Swappable provider interfaces (`Engine`, `PasswordHasher`, `Encryptor`, `KeyDeriver`). |
-| `module.go` | Kernel module registration. Handles lifecycle and event subscriptions for the crypto module. |
-| `provider.go` | Default provider binding all Go primitives with the Rust FFI bridge. |
-| `shredder.go` | Secure memory/disk deletion with verification. Uses compiler barriers to prevent optimization. |
-
-#### security/ — Security Module
-
-Handles authentication, authorization, auditing, memory protection, and the lockdown state machine.
-
-| File | Purpose |
-|---|---|
-| `audit.go` | Immutable audit log with SHA-256 hash chaining. Every security event is cryptographically linked. |
-| `constant_time.go` | Constant-time byte and string comparisons. Prevents timing side-channels in password verification. |
-| `integrity.go` | Binary hash verification at startup and periodic intervals. Watchdog integration for tamper detection. |
-| `lockdown.go` | Hard/soft lockdown state machine: 3 fails → 200-min window → 4 coordinate attempts → wipe. |
-| `memlock.go` | Cross-platform memory locking interface. Abstracts mlock (Unix) and VirtualLock (Windows). |
-| `memlock_unix.go` | Unix mlock implementation via `golang.org/x/sys/unix`. Locks buffer pages into RAM. |
-| `memlock_windows.go` | Windows VirtualLock implementation via `golang.org/x/sys/windows`. |
-| `module.go` | Kernel module registration for the security subsystem. Handles `AUTH.*`, `SECURITY.*` events. |
-| `session.go` | Session and key lifecycle management. Ephemeral session keys, auto-expiry, zeroization on logout/lockdown. |
-| `mtls/bridge.go` | mTLS bridge for enterprise-tier deployment. Mutual TLS between daemon and external services. |
-| `mtls/certmanager.go` | Certificate management: generation, rotation, validation for mTLS connections. |
-
-#### storage/ — Storage Layer
-
-Manages the encrypted vault file (`.gdb`), block-level storage, compression, file ingestion, and workspace organization.
-
-| File | Purpose |
-|---|---|
-| `block.go` | Block-level read/write operations on the encrypted vault file. Atomic write semantics. |
-| `compression.go` | Data compression/decompression before encryption. Reduces plaintext size and adds entropy. |
-| `compression_test.go` | Unit tests for compression correctness and edge cases. |
-| `entry.go` | Entry data model: fields, metadata, timestamps, encryption state. |
-| `entry_module.go` | Kernel module for entry CRUD operations. Handles `ENTRY.CREATE`, `ENTRY.UPDATE`, `ENTRY.DELETE` events. |
-| `ingest.go` | io.Pipe-based streaming file ingestion. Chunked encryption with progress reporting. |
-| `interface.go` | Storage provider interfaces allowing swappable backends (local, remote). |
-| `vfs_adapter.go` | Virtual filesystem adapter. Maps vault entries to a mountable filesystem interface. |
-| `workspace.go` | Multi-workspace management. Isolated workspaces with independent keys and policies. |
-| `grimdb/adapter.go` | GrimDB-native storage adapter. Bridges the storage layer with Go's file I/O. |
-| `grimdb/blockstore.go` | Block store implementation for `.gdb` file operations. Handles the 26-byte header. |
-| `grimdb/metadata.go` | Metadata management: creation times, modification timestamps, size tracking. |
-| `grimdb/store.go` | High-level store interface for vault read/write operations. |
-| `grimdb/vault.go` | Vault lifecycle: create, open, close, lock, unlock, destroy. |
-| `remote/adapter.go` | Remote storage adapter for enterprise distributed deployments. |
-| `remote/cache.go` | Client-side cache for remote storage with consistency guarantees. |
-| `remote/index.go` | Remote index management for distributed vault entries. |
-| `remote/vault.go` | Remote vault implementation communicating with a GrimDB server. |
-| `strategies/deniable.go` | Deniable encryption strategy. Provides plausible deniability with hidden volumes. |
-| `strategies/honeypot.go` | Honeypot vault strategy. Decoy vaults that appear real but contain no actual secrets. |
-
-#### api/ — API & Communication
-
-Handles all external communication: IPC protocol, WebSocket bridge, message translation, and policy enforcement.
-
-| File | Purpose |
-|---|---|
-| `ipc_handler.go` | IPC message handler. Dispatches incoming messages to the appropriate module handler. |
-| `translator.go` | Message translator. Converts IPC messages to/from kernel events and vice versa. |
-| `handlers/entry_handler.go` | Entry-specific request handler. Processes `MsgEntryCreate`, `MsgEntryUpdate`, `MsgEntryDelete`, `MsgFileIngest*`. |
-| `handlers/policy.go` | Policy validation handler. Checks permissions before allowing CRUD operations. |
-| `ipc/protocol.go` | IPC protocol definition: message types, wire format, framing (4-byte length + 1-byte type + payload). |
-| `ipc/server.go` | IPC server implementation. Accepts connections, parses frames, routes to handler. |
-| `mtls/protocol.go` | mTLS protocol handler. TLS handshake, certificate validation, secure channel management. |
-| `websocket/bridge.go` | WebSocket bridge. Serves the Tauri frontend on port 8374 with token-based authentication. |
-
-#### sdk/ — Plugin SDK
-
-Interfaces and base implementations for building GrimDB plugins.
-
-| File | Purpose |
-|---|---|
-| `biometric_interface.go` | Biometric authentication interface for hardware token integration (YubiKey, fingerprint, etc.). |
-| `dispatcher.go` | Plugin dispatcher interface. Allows plugins to publish and subscribe to events. |
-| `event.go` | Plugin event definitions and serialization. |
-| `plugin.go` | Base plugin struct. Lifecycle hooks: `Init()`, `Start()`, `Stop()`, `Name()`, `Version()`. |
-| `registry.go` | Plugin registry. Manages plugin loading, dependency resolution, and lifecycle. |
-| `storage.go` | Plugin storage interface. Allows plugins to persist data in their own encrypted namespace. |
-
-#### config/ — Configuration System
-
-Tier-based configuration for single-user and enterprise deployments.
-
-| File | Purpose |
-|---|---|
-| `factory.go` | Configuration factory. Selects and instantiates the appropriate tier config based on environment. |
-| `tier_enterprise.go` | Enterprise tier configuration: multi-user, mTLS, Keycloak, distributed storage. |
-| `tier_single.go` | Single-user tier configuration: local-only, token auth, local storage. |
-| `enterprise/auth.go` | Enterprise authentication: OIDC, SAML, Keycloak integration. |
-| `enterprise/config.go` | Enterprise-specific configuration: cluster mode, replication, failover. |
-| `enterprise/provider.go` | Enterprise provider implementations for storage, auth, and networking. |
-| `single/auth.go` | Single-user authentication: password + coordinate system. |
-| `single/provider.go` | Single-user provider: local file storage, token auth, no network. |
-| `single/storage.go` | Single-user storage configuration: local `.gdb` path, entropy location. |
-
-#### cmd/ — Entry Points
-
-| File | Purpose |
-|---|---|
-| `daemon/main.go` | Main daemon entry point. Dual-port server (8080 UI + 8374 IPC), token generation, module initialization. |
-| `daemon/listener_enterprise.go` | Enterprise listener setup: mTLS, OIDC endpoints, cluster health checks. |
-| `daemon/listener_single.go` | Single-user listener setup: local token auth, no external network ports. |
-| `client/main.go` | CLI client for interacting with a running GrimDB daemon. |
-| `client/commands.go` | CLI command definitions: unlock, lock, create-entry, list-entries, health, wipe. |
-| `client/local.go` | Local client implementation connecting via Unix socket / named pipe. |
-| `client/remote.go` | Remote client implementation for enterprise cluster connections. |
-| `healthcheck/main.go` | Health check binary for Docker/Kubernetes readiness and liveness probes. |
-
-#### tools/ — Utility Tools
-
-| File | Purpose |
-|---|---|
-| `module.go` | Module utility functions: validation, dependency checking, configuration parsing. |
-| `ssh_gen.go` | SSH key pair generator. Creates and securely stores SSH keys within the vault. |
-| `ssh_gen_test.go` | Unit tests for SSH key generation. |
-
-#### deploy/ — Deployment Resources
-
-| File | Purpose |
-|---|---|
-| `keycloak/grimlocker-realm.json` | Keycloak realm configuration for enterprise OIDC authentication. |
-| `tls/.gitkeep` | Placeholder for generated TLS certificates in deployment. |
-
-#### scripts/ — Operational Scripts
-
-| File | Purpose |
-|---|---|
-| `gen-certs.sh` | TLS certificate generation script. Creates CA, server cert, client cert for mTLS. |
-| `get-token.sh` | Token retrieval script for authenticating external clients with the daemon. |
-
-#### tests/ — Integration Tests
-
-| File | Purpose |
-|---|---|
-| `lockdown_test.go` | Integration test for the lockdown state machine: failed attempts, timeout, coordinate override, wipe. |
-
-#### docs/ — Documentation
-
-| File | Purpose |
-|---|---|
-| `api_flow.md` | Mermaid diagrams of API flows: Vault Unlock, File Ingest, CRUD, Watchdog Heartbeat, Audit Log. |
-
-#### provider/ — Provider Interfaces
-
-| File | Purpose |
-|---|---|
-| `interfaces.go` | Top-level provider interface definitions consumed by the kernel to initialize subsystems. |
+| Module | Purpose | Key Files |
+|--------|---------|-----------|
+| `kernel/` | Event bus, dispatcher, module registry, watchdog | `bus.go`, `dispatcher.go`, `registry.go`, `watchdog.go` |
+| `crypto/` | Argon2id, ChaCha20-Poly1305, HKDF, entropy, coordinate keys | `argon.go`, `engine.go`, `chacha.go`, `coordinate.go`, `hkdf.go` |
+| `security/` | Auth, lockdown, audit, mTLS, memlock, session management | `lockdown.go`, `audit.go`, `session.go`, `memlock.go`, `constant_time.go` |
+| `storage/` | Block storage, compression, VFS, workspaces, remote | `block.go`, `entry.go`, `workspace.go`, `compression.go`, `vfs_adapter.go` |
+| `api/` | IPC protocol, WebSocket bridge, message handlers | `ipc_handler.go`, `protocol.go`, `server.go`, `bridge.go` |
+| `sdk/` | Plugin SDK interfaces (biometric, events, storage) | `plugin.go`, `registry.go`, `event.go`, `storage.go` |
+| `config/` | Tier-based config (single/enterprise) | `factory.go`, `tier_single.go`, `tier_enterprise.go` |
+| `cmd/` | Entry points: daemon, client, healthcheck | `daemon/main.go`, `client/main.go`, `healthcheck/main.go` |
+| `tools/` | SSH keygen, module utilities | `ssh_gen.go`, `module.go` |
+| `deploy/` | Keycloak realm, TLS templates | `keycloak/`, `tls/` |
+| `scripts/` | Cert generation, token retrieval | `gen-certs.sh`, `get-token.sh` |
 
 ---
 
 ### ui-layer/ — Tauri Desktop Frontend
 
-React-based cyberpunk-themed UI wrapped in a Tauri native shell (no Electron). State managed by Zustand, animations via GSAP and Framer Motion, 3D elements via Three.js.
+React-based cyberpunk-themed UI wrapped in a Tauri native shell. State managed by Zustand, animations via GSAP and Framer Motion, 3D via Three.js.
 
-#### Core Files
+**Core:** `src/main.jsx`, `src/App.jsx`, `index.html`, `vite.config.js`, `tailwind.config.js`
 
-| File | Purpose |
-|---|---|
-| `src/main.jsx` | React entry point. Mounts the App component and initializes global styles. |
-| `src/App.jsx` | Root component. Onboarding state machine: WELCOME → GENERATING → SINGLE_GLANCE → DASHBOARD. GSAP page transitions. |
-| `index.html` | HTML shell. Meta tags, font loading, Tauri CSP configuration. |
-| `package.json` | Node dependencies: React 18, Vite 5, TailwindCSS 3, Three.js, GSAP, Framer Motion, Zustand. |
-| `vite.config.js` | Vite build configuration with Tauri plugin and dev server proxy. |
-| `tailwind.config.js` | Tailwind configuration with cyberpunk color palette and custom animations. |
+**Component groups:**
+| Group | Components |
+|-------|-----------|
+| `auth/` | LoginScreen, SetupScreen, LockdownScreen, CoordinateInput, CountdownTimer |
+| `onboarding/` | WelcomeScreen, GeneratingScreen, SingleGlanceScreen |
+| `dashboard/` | BentoGrid, CoreNodeOrb, SecretsVault, TerminalPanel, ThroughputPanel |
+| `vault/` | VaultGrid, EntryCard, AddEntryModal, SearchBar, FileVaultUpload |
+| `admin/` | AuditLog, HealthCards, PolicyEditor |
+| `shared/` | ScanLine, ZeroizeBar, TerminalError |
+| `layout/` | AppShell, Sidebar, Topbar, DetailPanel |
 
-#### Components
+**Services:** `crypto.js`, `ipc.js`, `tauriBridge.js`
+**State:** `store/useGrimStore.js` (Zustand)
 
-| Directory / File | Purpose |
-|---|---|
-| **auth/** | Authentication UI |
-| `LoginScreen.jsx` | Master password entry with visual feedback and coordinate prompt. |
-| `SetupScreen.jsx` | Initial vault creation: password, confirmation, entropy file path. |
-| `LockdownScreen.jsx` | 200-minute lockdown display with countdown and coordinate override option. |
-| `CoordinateInput.jsx` | Coordinate entry field with panic-key support (`0,0,0`). |
-| `CountdownTimer.jsx` | Visual countdown timer during lockdown period. |
-| `EntropyDisplay.jsx` | 200-character entropy key display during Single Glance phase. |
-| **onboarding/** | Onboarding Flow |
-| `WelcomeScreen.jsx` | Introduction screen with feature highlights and initialization button. |
-| `GeneratingScreen.jsx` | Progress display with GSAP particle animations during entropy generation. |
-| `SingleGlanceScreen.jsx` | 30-second entropy display with copy/paste blocking and auto-zeroize. |
-| **dashboard/** | Main Dashboard |
-| `BentoGrid.jsx` | Bento-style grid layout for the dashboard. Modular, responsive tile arrangement. |
-| `CoreNodeOrb.jsx` | Interactive 3D orb (Three.js / react-three-fiber) representing vault state. |
-| `CryptoGenerator.jsx` | Password and key generator with strength indicator. |
-| `EntropyIntegrity.jsx` | Entropy file health display with integrity verification results. |
-| `OperationsLog.jsx` | Real-time operation log with event streaming from the daemon. |
-| `SecretsVault.jsx` | Secrets overview with categorization and quick-access cards. |
-| `TerminalPanel.jsx` | Terminal-style command panel for power users. |
-| `ThroughputPanel.jsx` | Performance metrics: encryption throughput, ingest speed, I/O stats. |
-| `VaultDashboard.jsx` | Top-level vault management: health, size, workspace overview. |
-| **vault/** | Vault Entry Management |
-| `VaultGrid.jsx` | Grid view of all vault entries with search and filtering. |
-| `EntryCard.jsx` | Individual entry display with icon, title, strength indicator, and actions. |
-| `EntryContextMenu.jsx` | Right-click context menu: edit, copy, delete, move to workspace. |
-| `AddEntryModal.jsx` | Modal for creating new entries: title, fields, tags, workspace assignment. |
-| `SearchBar.jsx` | Full-text search across all vault entries with real-time filtering. |
-| `FileVaultUpload.jsx` | File upload interface with drag-and-drop and progress tracking. |
-| `StrengthDot.jsx` | Visual password strength indicator (colored dot with tooltip). |
-| **workspace/** | Workspace Management |
-| `WorkspaceSwitcher.jsx` | Dropdown to switch between active workspaces with key separation. |
-| **admin/** | Administration (Enterprise) |
-| `AuditLog.jsx` | Immutable audit log viewer with cryptographic chain verification. |
-| `HealthCards.jsx` | System health dashboard: daemon status, memory, disk, uptime. |
-| `PolicyEditor.jsx` | Access policy editor for enterprise deployments. |
-| **preferences/** | User Preferences |
-| `PreferencesPanel.jsx` | Settings: auto-lock timeout, theme, entropy path, security hardening. |
-| **layout/** | App Layout |
-| `AppShell.jsx` | Main application shell: sidebar + topbar + content area. |
-| `Sidebar.jsx` | Navigation sidebar: dashboard, vault, admin, preferences, workspace. |
-| `Topbar.jsx` | Top bar: lock button, health indicator, connection status. |
-| `DetailPanel.jsx` | Slide-out detail panel for entry inspection and editing. |
-| **shared/** | Shared/Utility Components |
-| `ScanLine.jsx` | Animated scan-line effect for the cyberpunk aesthetic. |
-| `ZeroizeBar.jsx` | Visual indicator showing auto-zeroize countdown (30s). |
-| `TerminalError.jsx` | Terminal-style error display with redacted sensitive information. |
-| **debug/** | Debug Utilities |
-| `DebugPanel.jsx` | Developer debug panel: event bus monitor, module state, performance tracing. |
-| **ui/** | UI Primitives |
-| `Badge.jsx` | Status badge component. |
-| `Button.jsx` | Themed button with loading, disabled, and icon states. |
-| `Card.jsx` | Reusable card container with header, body, and footer slots. |
-| `Input.jsx` | Themed input with label, error, and icon support. |
-| `Select.jsx` | Themed dropdown select. |
-| `Toggle.jsx` | Toggle switch for boolean settings. |
-
-#### Services
-
-| File | Purpose |
-|---|---|
-| `crypto.js` | Browser-side cryptographic utilities for non-sensitive operations. |
-| `ipc.js` | Legacy IPC client for communicating with the Go daemon. |
-| `tauriBridge.js` | Tauri-native WebSocket bridge. Reads `.grim_token`, connects to port 8374, handles message framing. |
-
-#### State Management
-
-| File | Purpose |
-|---|---|
-| `store/useGrimStore.js` | Zustand store. Manages global state: vault status, active workspace, onboarding phase, auth state. |
-| `store/preferencesSlice.js` | Zustand slice for user preferences. |
-
-#### Hooks
-
-| File | Purpose |
-|---|---|
-| `hooks/useAutoLock.jsx` | Auto-lock hook: triggers vault lock after idle timeout. |
-| `hooks/useCountdown.js` | Countdown hook for lockdown timer display. |
-
-#### Context
-
-| File | Purpose |
-|---|---|
-| `context/AuthContext.jsx` | React context for authentication state propagation. |
-
-#### Utils
-
-| File | Purpose |
-|---|---|
-| `utils/devMode.js` | Development mode utilities: mock data, debug logging, hot-reload helpers. |
-
-#### Styles
-
-| File | Purpose |
-|---|---|
-| `styles/globals.css` | Global styles: Tailwind directives, cyberpunk theme variables, font configuration. |
-| `styles/onboarding.css` | Onboarding-specific styles: security hardening animations, copy/paste blocking. |
-| `styles/tokens.css` | Design tokens: colors, spacing, shadows, typography scale. |
-
----
+Full component tree: [ui-layer/src/](ui-layer/src/), detailed docs: [docs/](docs/)
 
 ## Build & Setup
 
@@ -720,6 +488,14 @@ Additional documentation:
 ## Related Repositories
 
 - **[grimlocker-public](../grimlocker-public)** — Security audit edition with only the crypto and security code. Suitable for community review.
+
+---
+
+## Nutzungsbedingungen
+
+- **Der Quellcode und die Projektstruktur dürfen nicht verändert werden.**
+- Das **SDK** darf frei verwendet werden, um Plugins und Erweiterungen zu entwickeln.
+- Bei Fragen, Hilfe oder Contribution-Anfragen: **info@blackforest-digital.de**
 
 ---
 
