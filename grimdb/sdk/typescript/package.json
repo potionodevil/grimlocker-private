@@ -1,5 +1,5 @@
 {
-  "name": "@grimlocker/sdk",
+  "name": "grimlocker-sdk",
   "version": "1.0.0",
   "description": "TypeScript/JavaScript SDK for the Grimlocker Zero-Trust Vault daemon",
   "main": "dist/index.cjs",
@@ -18,7 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "keywords": ["grimlocker", "vault", "password-manager", "security"],
-  "license": "UNLICENSED",
+  "license": "MIT",
   "devDependencies": {
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
