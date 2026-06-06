@@ -40,12 +40,12 @@ const CLIPBOARD_OPTIONS = [
   { val: 0,   label: 'Never' },
 ]
 
-const TABS = [
-  { id: 'appearance',   label: 'Appearance' },
-  { id: 'security',     label: 'Security' },
-  { id: 'behavior',     label: 'Behavior' },
-  { id: 'groups',       label: 'Groups' },
-  { id: 'accessibility',label: 'Accessibility' },
+  const TABS = [
+  { id: 'appearance',   label: 'Appearance' },    // Aussehen: Theme, Accent, Dichte, Schrift
+  { id: 'security',     label: 'Security' },      // Sicherheit: Auto-Lock, Clipboard, Lockdown
+  { id: 'behavior',     label: 'Behavior' },      // Verhalten: Close-Button, Startup, Confirm
+  { id: 'groups',       label: 'Groups' },        // Passwort-Gruppen verwalten
+  { id: 'accessibility',label: 'Accessibility' }, // Barrierefreiheit: Motion, Kontrast
 ]
 
 export function PreferencesPanel() {
@@ -415,7 +415,7 @@ export function PreferencesPanel() {
   )
 }
 
-// ── local sub-components ──────────────────────────────────────────────────────
+// ── Lokale Sub-Komponenten für die Preferences-Tabs ──────────────────────────
 
 function TabHeader({ title, description }) {
   return (

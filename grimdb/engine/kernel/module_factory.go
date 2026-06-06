@@ -1,17 +1,15 @@
-// Package kernel (module_factory.go) provides the ModuleConfig, ModuleFactory,
-// and BaseModule types that standardise how kernel.Module implementations are
-// constructed and registered.
+// Package kernel (module_factory.go) stellt ModuleConfig, ModuleFactory und BaseModule
+// bereit — die Standard-Bausteine für kernel.Module-Implementierungen.
 //
-// Every Module should:
-//  1. Embed BaseModule to get ID()/Channels() for free.
-//  2. Accept a ModuleConfig in its constructor instead of positional params.
-//  3. Optionally implement ModuleFactory to support generic registration.
+// Jedes Module sollte:
+//  1. BaseModule embeden, um ID()/Channels() gratis zu bekommen.
+//  2. Einen ModuleConfig im Constructor akzeptieren statt positional params.
+//  3. Optional ModuleFactory implementieren für generische Registration.
 //
 // Example:
 //
 //	type MyModule struct {
 //	    kernel.BaseModule
-//	    // ... fields
 //	}
 //	func NewMyModule(cfg kernel.ModuleConfig) *MyModule {
 //	    return &MyModule{BaseModule: kernel.NewBaseModule(cfg)}
@@ -22,50 +20,40 @@ import "context"
 
 // ─── ModuleConfig ─────────────────────────────────────────────────────────────
 
-// ModuleConfig is the canonical set of parameters passed to every Module
-// constructor. Using a config struct instead of positional parameters makes
-// it easy to add new optional fields without breaking existing call sites.
+// ModuleConfig ist der kanonische Parametersatz für jeden Module-Constructor.
+// Ein Config-Struct statt positional params macht es einfach, neue optionale Felder
+// hinzuzufügen, ohne existierende Call-Sites zu brechen.
 //
-// Modules that do not need all fields simply ignore the unused ones.
+// Module, die nicht alle Felder brauchen, ignorieren die ungenutzten einfach.
 type ModuleConfig struct {
-	// ID is the unique module identifier (e.g. "crypto", "storage").
-	// Must not be empty. Must be unique within the bus.
+	// ID ist der eindeutige Module-Identifier (z.B. "crypto", "storage").
+	// Darf nicht leer sein. Muss im Bus eindeutig sein.
 	ID string
 
-	// Channels lists the channel prefixes this module owns.
-	// Example: []string{"CRYPTO"} → module receives all CRYPTO.* events.
+	// Channels listet die Channel-Präfixe auf, die dieses Module besitzt.
+	// Example: []string{"CRYPTO"} → Module empfängt alle CRYPTO.*-Events.
 	Channels []string
 
-	// Context is the parent context for the module's lifetime.
-	// If nil, context.Background() is used.
+	// Context ist der Parent-Context für die Module-Lebensdauer.
+	// Wenn nil, wird context.Background() verwendet.
 	Context context.Context
 
-	// DebugLogging enables verbose handler entry/exit logs.
+	// DebugLogging aktiviert verbose Handler-Entry/Exit-Logs.
 	DebugLogging bool
 }
 
 // ─── ModuleFactory ────────────────────────────────────────────────────────────
 
-// ModuleFactory is the interface for creating kernel.Module instances from
-// a ModuleConfig. Implementing this interface lets modules be constructed
-// generically and registered without knowing their concrete type.
-//
-// Example:
-//
-//	type CryptoFactory struct{ provider crypto.Provider }
-//	func (f *CryptoFactory) Create(cfg kernel.ModuleConfig) (kernel.Module, error) {
-//	    return crypto.NewModule(cfg, f.provider), nil
-//	}
+// ModuleFactory ist das Interface zum Erzeugen von kernel.Module-Instanzen aus
+// einem ModuleConfig. Dieses Interface zu implementieren erlaubt es, Module generisch
+// zu konstruieren und zu registrieren, ohne ihren konkreten Typ zu kennen.
 type ModuleFactory interface {
 	Create(cfg ModuleConfig) (Module, error)
 }
 
-// FactoryFunc is a function adapter that implements ModuleFactory.
-// Use it to convert a plain constructor function into a ModuleFactory:
-//
-//	f := kernel.FactoryFunc(func(cfg kernel.ModuleConfig) (kernel.Module, error) {
-//	    return mymodule.New(cfg), nil
-//	})
+// FactoryFunc ist ein Function-Adapter, der ModuleFactory implementiert.
+// Verwende das, um eine einfache Constructor-Funktion in eine ModuleFactory
+// zu verwandeln.
 type FactoryFunc func(cfg ModuleConfig) (Module, error)
 
 func (f FactoryFunc) Create(cfg ModuleConfig) (Module, error) {
@@ -74,33 +62,21 @@ func (f FactoryFunc) Create(cfg ModuleConfig) (Module, error) {
 
 // ─── BaseModule ───────────────────────────────────────────────────────────────
 
-// BaseModule provides a default implementation of the ID() and Channels()
-// methods of the kernel.Module interface. Embed it in your module struct to
-// avoid boilerplate and ensure consistent ID/Channels behaviour.
+// BaseModule ist eine Default-Implementierung der ID()- und Channels()-Methoden
+// des kernel.Module-Interfaces. Embed das in dein Module-Struct, um Boilerplate
+// zu vermeiden und konsistentes ID/Channels-Verhalten zu garantieren.
 //
-// Modules MUST still implement Handle(), Start(), and Stop() themselves.
-//
-// Example:
-//
-//	type MyModule struct {
-//	    kernel.BaseModule
-//	    // ... other fields
-//	}
-//	func NewMyModule(cfg kernel.ModuleConfig) *MyModule {
-//	    return &MyModule{BaseModule: kernel.NewBaseModule(cfg)}
-//	}
+// Module MÜSSEN Handle(), Start() und Stop() trotzdem selbst implementieren.
 type BaseModule struct {
 	id       string
 	channels []string
 }
 
-// NewBaseModule creates a BaseModule from a ModuleConfig.
+// NewBaseModule erzeugt ein BaseModule aus einem ModuleConfig.
 func NewBaseModule(cfg ModuleConfig) BaseModule {
 	return BaseModule{id: cfg.ID, channels: cfg.Channels}
 }
 
-// ID implements kernel.Module.
 func (b *BaseModule) ID() string { return b.id }
 
-// Channels implements kernel.Module.
 func (b *BaseModule) Channels() []string { return b.channels }

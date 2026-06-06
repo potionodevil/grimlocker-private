@@ -3,17 +3,18 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Button } from './Button'
 
 /**
- * ConfirmDialog — styled confirmation modal replacing native window.confirm().
+ * ConfirmDialog — Unser eigener, gestylter Confirm-Dialog (ersetzt window.confirm()).
+ * Warum? Native confirm()-Dialoge lassen sich nicht stylen und sind immer Englisch.
  *
  * Props:
- *   isOpen        boolean   — controls visibility
- *   title         string    — dialog heading
- *   message       string    — body text
- *   confirmLabel  string    — confirm button label (default: "Confirm")
- *   cancelLabel   string    — cancel button label (default: "Cancel")
- *   variant       string    — "danger" (red confirm) | "primary" (default)
- *   onConfirm     function  — called when user confirms
- *   onCancel      function  — called when user cancels or presses ESC
+ *   isOpen        boolean   — Sichtbarkeit
+ *   title         string    — Dialog-Überschrift
+ *   message       string    — Body-Text (gerne auch auf Deutsch)
+ *   confirmLabel  string    — Confirm-Button-Label (default: "Confirm")
+ *   cancelLabel   string    — Cancel-Button-Label (default: "Cancel")
+ *   variant       string    — "danger" (roter Confirm) | "primary" (default)
+ *   onConfirm     function  — wird bei Bestätigung aufgerufen
+ *   onCancel      function  — wird bei Abbruch oder ESC aufgerufen
  */
 export function ConfirmDialog({
   isOpen,
@@ -27,14 +28,14 @@ export function ConfirmDialog({
 }) {
   const cancelRef = useRef(null)
 
-  // Focus the cancel button when opened (safer default for destructive actions).
+  // Fokus auf Cancel-Button beim Öffnen — sicherer Default bei destruktiven Aktionen
   useEffect(() => {
     if (isOpen && cancelRef.current) {
       cancelRef.current.focus()
     }
   }, [isOpen])
 
-  // Keyboard: ESC = cancel, Enter = confirm.
+  // Tastatur: ESC = abbrechen, Enter = bestätigen (nur wenn Confirm fokussiert ist)
   useEffect(() => {
     if (!isOpen) return
     const handleKey = (e) => {

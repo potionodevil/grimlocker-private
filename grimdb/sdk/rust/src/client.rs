@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, broadcast};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -24,7 +25,60 @@ pub enum ClientEvent {
     Connected,
     Disconnected,
     EntryChanged { entry_id: String },
+    SyncComplete,
     Error(String),
+}
+
+/// Circuit breaker state machine.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CbState {
+    Closed,
+    Open { until: Instant },
+    HalfOpen,
+}
+
+struct CircuitBreaker {
+    state: std::sync::Mutex<CbState>,
+    consecutive_fails: std::sync::Mutex<u32>,
+}
+
+impl CircuitBreaker {
+    fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(CbState::Closed),
+            consecutive_fails: std::sync::Mutex::new(0),
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        let mut st = self.state.lock().unwrap();
+        match *st {
+            CbState::Open { until } => {
+                if Instant::now() > until {
+                    *st = CbState::HalfOpen;
+                    false
+                } else {
+                    true
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn record_success(&self) {
+        let mut st = self.state.lock().unwrap();
+        *self.consecutive_fails.lock().unwrap() = 0;
+        *st = CbState::Closed;
+    }
+
+    fn record_failure(&self) {
+        let mut fails = self.consecutive_fails.lock().unwrap();
+        *fails += 1;
+        if *fails >= 5 {
+            let mut st = self.state.lock().unwrap();
+            *st = CbState::Open { until: Instant::now() + Duration::from_secs(30) };
+        }
+    }
 }
 
 /// Async GQL WebSocket client.
@@ -41,6 +95,7 @@ pub enum ClientEvent {
 pub struct GrimlockerClient {
     ws:       Arc<Mutex<WsStream>>,
     event_tx: broadcast::Sender<ClientEvent>,
+    cb:       CircuitBreaker,
 }
 
 impl GrimlockerClient {
@@ -57,7 +112,7 @@ impl GrimlockerClient {
         }
 
         let (event_tx, _) = broadcast::channel::<ClientEvent>(64);
-        Ok(Self { ws, event_tx })
+        Ok(Self { ws, event_tx, cb: CircuitBreaker::new() })
     }
 
     /// Disconnect gracefully.
@@ -163,6 +218,22 @@ impl GrimlockerClient {
         }
         let resp = self.execute("search_entries", "default", "", "", "", &fields, 100, 0).await?;
         self.parse_entries(&resp)
+    }
+
+    pub async fn create_entries_batch(&mut self, items: &[(String, String, HashMap<String, String>)]) -> Result<Vec<String>, Error> {
+        let mut ids = Vec::with_capacity(items.len());
+        for (title, category, fields) in items {
+            let e = self.create_entry(title, category, fields).await?;
+            ids.push(e.id);
+        }
+        Ok(ids)
+    }
+
+    pub async fn delete_entries_batch(&mut self, ids: &[String]) -> Result<(), Error> {
+        for id in ids {
+            self.delete_entry(id).await?;
+        }
+        Ok(())
     }
 
     // ── File Vault ────────────────────────────────────────────────────────────
@@ -356,21 +427,100 @@ impl GrimlockerClient {
         limit:     u32,
         offset:    u32,
     ) -> Result<GqlResponse, Error> {
-        let frame = protocol::encode_query(operation, namespace, entry_id, category, title, fields, limit, offset);
-        let mut lock = self.ws.lock().await;
-        lock.send(Message::Binary(frame.into())).await
-            .map_err(|e| Error::WebSocket(e.to_string()))?;
-        let msg = lock.next().await
-            .ok_or_else(|| Error::WebSocket("connection closed".into()))?
-            .map_err(|e| Error::WebSocket(e.to_string()))?;
-        drop(lock);
+        if self.cb.is_open() {
+            return Err(Error::WebSocket("circuit breaker open".into()));
+        }
 
-        let data = match msg {
-            Message::Binary(b) => b.to_vec(),
-            Message::Text(t)   => t.into_bytes(),
-            other => return Err(Error::Protocol(format!("unexpected message type: {other:?}"))),
-        };
-        protocol::parse_response(&data)
+        let mut delay = Duration::from_millis(100);
+        let mut last_err: Option<Error> = None;
+
+        for attempt in 0..4 {
+            if attempt > 0 {
+                tokio::time::sleep(delay).await;
+                delay = std::cmp::min(delay * 2, Duration::from_secs(2));
+            }
+
+            let frame = protocol::encode_query(operation, namespace, entry_id, category, title, fields, limit, offset);
+            let mut lock = self.ws.lock().await;
+            let send_res = lock.send(Message::Binary(frame.into())).await;
+            let msg_res = lock.next().await;
+            drop(lock);
+
+            if let Err(e) = send_res {
+                let err = Error::WebSocket(e.to_string());
+                if Self::_is_retryable(&err) {
+                    last_err = Some(err);
+                    continue;
+                }
+                self.cb.record_failure();
+                return Err(err);
+            }
+
+            let msg = match msg_res {
+                Some(Ok(m)) => m,
+                Some(Err(e)) => {
+                    let err = Error::WebSocket(e.to_string());
+                    if Self::_is_retryable(&err) {
+                        last_err = Some(err);
+                        continue;
+                    }
+                    self.cb.record_failure();
+                    return Err(err);
+                }
+                None => {
+                    let err = Error::WebSocket("connection closed".into());
+                    if Self::_is_retryable(&err) {
+                        last_err = Some(err);
+                        continue;
+                    }
+                    self.cb.record_failure();
+                    return Err(err);
+                }
+            };
+
+            let data = match msg {
+                Message::Binary(b) => b.to_vec(),
+                Message::Text(t)   => t.into_bytes(),
+                other => {
+                    let err = Error::Protocol(format!("unexpected message type: {other:?}"));
+                    if Self::_is_retryable(&err) {
+                        last_err = Some(err);
+                        continue;
+                    }
+                    self.cb.record_failure();
+                    return Err(err);
+                }
+            };
+
+            match protocol::parse_response(&data) {
+                Ok(resp) => {
+                    self.cb.record_success();
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    if Self::_is_retryable(&e) {
+                        last_err = Some(e);
+                        continue;
+                    }
+                    self.cb.record_failure();
+                    return Err(e);
+                }
+            }
+        }
+
+        self.cb.record_failure();
+        Err(last_err.unwrap_or_else(|| Error::WebSocket("execute failed after retries".into())))
+    }
+
+    fn _is_retryable(err: &Error) -> bool {
+        match err {
+            Error::WebSocket(_) => true,
+            Error::Connect(_) => true,
+            Error::Protocol(_) => false,
+            Error::Json(_) => false,
+            Error::Io(_) => true,
+            Error::Daemon { code, .. } => matches!(code, crate::error::ErrorCode::BusError | crate::error::ErrorCode::Timeout),
+        }
     }
 
     fn parse_entries(&self, resp: &GqlResponse) -> Result<Vec<Entry>, Error> {

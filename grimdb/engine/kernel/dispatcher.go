@@ -2,51 +2,50 @@ package kernel
 
 import "context"
 
-// Dispatcher is the sole communication interface between modules.
-// Modules MUST NOT import each other; they interact exclusively through Dispatch.
+// Dispatcher ist das einzige Kommunikations-Interface zwischen Modulen.
+// Module DÜRFEN sich nicht gegenseitig importieren — sie interagieren ausschließlich via Dispatch.
 type Dispatcher interface {
-	// Dispatch sends an event to all registered handlers for its channel.
-	// It is asynchronous — handlers run in their own goroutines.
+	// Dispatch sendet ein Event an alle registrierten Handler für seinen Channel.
+	// Asynchron — Handler laufen in ihren eigenen Goroutinen.
 	Dispatch(e Event) error
 
-	// Request dispatches e and blocks until a response event arrives with
-	// ReplyTo == e.ID, or the context is cancelled.
+	// Request dispatched e und blockt, bis eine Response mit ReplyTo == e.ID
+	// eintrifft, oder der Context gecancelled wird.
 	Request(ctx context.Context, e Event) (Event, error)
 
-	// Subscribe registers a handler for a specific event type.
-	// Returns an unsubscribe function that removes the handler.
+	// Subscribe registriert einen Handler für einen bestimmten Event-Type.
+	// Gibt eine Unsubscribe-Funktion zurück.
 	Subscribe(eventType EventType, handler Handler) (unsubscribe func())
 
-	// Register adds a Module to the bus, subscribing it to its declared channels.
+	// Register fügt ein Module zum Bus hinzu und subscribed es auf seine deklarierten Channels.
 	Register(m Module) error
 
-	// Unregister removes a module and all its subscriptions.
+	// Unregister entfernt ein Module und alle seine Subscriptions.
 	Unregister(moduleID string)
 
-	// Shutdown drains in-flight events and stops the bus.
+	// Shutdown drainet In-Flight-Events und stoppt den Bus.
 	Shutdown(ctx context.Context) error
 }
 
-// Handler is a function that processes a delivered event.
-// A non-nil error is logged; it does not stop the bus.
+// Handler ist eine Funktion, die ein zugestelltes Event verarbeitet.
+// Ein non-nil Error wird geloggt, stoppt aber nicht den Bus.
 type Handler func(Event) error
 
-// Module is the contract every module must satisfy to plug into the kernel.
+// Module ist der Vertrag, den jedes Module erfüllen muss, um in den Kernel einzustecken.
 type Module interface {
-	// ID returns the unique identifier for this module (e.g. "crypto", "storage").
+	// ID gibt den eindeutigen Identifier für dieses Module zurück (z.B. "crypto", "storage").
 	ID() string
 
-	// Channels returns the event-type channel prefixes this module owns.
-	// The bus routes all events whose prefix matches to this module's Handle method.
-	// Example: ["CRYPTO"] causes the module to receive all CRYPTO.* events.
+	// Channels gibt die Event-Type-Channel-Präfixe zurück, die dieses Module besitzt.
+	// Der Bus routed alle Events mit passendem Prefix an Module.Handle.
 	Channels() []string
 
-	// Handle processes a routed event. Called in a dedicated goroutine per event.
+	// Handle verarbeitet ein geroutetes Event. Wird in einer eigenen Goroutine pro Event aufgerufen.
 	Handle(Event) error
 
-	// Start is called once after registration, before the first event is delivered.
+	// Start wird einmal nach der Registration aufgerufen, vor dem ersten Event.
 	Start(ctx context.Context, d Dispatcher) error
 
-	// Stop is called during bus Shutdown.
+	// Stop wird während des Bus-Shutdowns aufgerufen.
 	Stop() error
 }

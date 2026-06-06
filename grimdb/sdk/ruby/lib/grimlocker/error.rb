@@ -15,4 +15,10 @@ module Grimlocker
         -102 => 'PERMISSION_DENIED', -103 => 'INVALID_REQUEST' }[code] || 'UNKNOWN'
     end
   end
+
+  class CircuitBreakerOpenError < GrimlockerError
+    def initialize(msg = 'Circuit breaker is open')
+      super(msg, 0)
+    end
+  end
 end

@@ -50,7 +50,7 @@ export function SyncPanel() {
     if (isOnline) loadPeers()
   }, [isOnline, loadPeers])
 
-  // Poll for peer updates every 30 seconds when unlocked
+  // Pollt alle 30 Sekunden nach neuen Peers, solange der Vault entsperrt ist
   useEffect(() => {
     if (!isOnline) return
     const interval = setInterval(loadPeers, 30_000)
@@ -198,7 +198,7 @@ export function SyncPanel() {
         )}
       </div>
 
-      {/* Security info */}
+      {/* Security-Infos — damit der User sieht, wie sicher der Sync ist */}
       <div className="bg-surface-subtle border border-border rounded-xl p-4 space-y-1.5">
         <p className="text-xs font-semibold text-text-primary">Security Properties</p>
         {[

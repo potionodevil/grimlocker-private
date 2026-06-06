@@ -47,24 +47,24 @@ function applyTokens({ theme, density, fontSize, accentKey }) {
 export const createPreferencesSlice = (set, get) => {
   const saved = loadSavedPreferences()
   const defaults = {
-    // Appearance
+    // Darstellung
     theme:                'light',
     density:              'cozy',
     fontSize:             14,
     accentKey:            'blue',
     reduceMotion:         false,
     highContrast:         false,
-    sidebarWidth:         224,   // px
-    // Security
+    sidebarWidth:         224,   // Pixel
+    // Sicherheit
     autoLockMinutes:      15,
     clipboardClearSeconds: 30,
     showPasswordStrength: true,
     lockdownThreshold:    3,
-    // Behavior
-    closeBehavior:        'quit', // 'quit' | 'minimize'
+    // Verhalten
+    closeBehavior:        'quit', // 'quit' (beenden) | 'minimize' (minimieren)
     startupView:          'all',  // 'all' | 'passwords' | 'FILE_VAULT' | 'dashboard'
     confirmDelete:        true,
-    // Vault groups — stored as array of { id, label, color, type }
+    // Vault-Gruppen — Array von { id, label, color, type }
     passwordGroups:       [],
   }
 

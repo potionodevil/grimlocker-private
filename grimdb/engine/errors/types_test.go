@@ -9,7 +9,7 @@ import (
 	gerrors "github.com/grimlocker/grimdb/engine/errors"
 )
 
-// ─── Error Code Constants ─────────────────────────────────────────────────────
+// ─── Error-Code-Konstanten ─────────────────────────────────────────────────────
 
 func TestErrorCodeConstants(t *testing.T) {
 	cases := []struct {
@@ -42,7 +42,7 @@ func TestErrorCodeConstants(t *testing.T) {
 	}
 }
 
-// ─── Error() Formatting ───────────────────────────────────────────────────────
+// ─── Error()-Format ────────────────────────────────────────────────────────────
 
 func TestGrimlockError_Error_WithCause(t *testing.T) {
 	cause := errors.New("disk full")
@@ -97,7 +97,7 @@ func TestGrimlockError_Is_DifferentCode(t *testing.T) {
 	}
 }
 
-// ─── HTTP Status Mapping ──────────────────────────────────────────────────────
+// ─── HTTP-Status-Mapping ───────────────────────────────────────────────────────
 
 func TestHTTPStatus(t *testing.T) {
 	cases := []struct {
@@ -123,7 +123,7 @@ func TestHTTPStatus(t *testing.T) {
 	}
 }
 
-// ─── MarshalJSON ──────────────────────────────────────────────────────────────
+// ─── MarshalJSON ───────────────────────────────────────────────────────────────
 
 func TestGrimlockError_MarshalJSON(t *testing.T) {
 	e := gerrors.NewStorageIOError("write_block", "block-123", errors.New("disk full"))
@@ -138,8 +138,6 @@ func TestGrimlockError_MarshalJSON(t *testing.T) {
 	if !strings.Contains(s, "block-123") {
 		t.Errorf("expected block_id in JSON, got: %s", s)
 	}
-	// Cause should NOT appear as plain text (it is excluded from JSON)
-	// but the message should appear.
 	if !strings.Contains(s, "storage I/O failure") {
 		t.Errorf("expected message in JSON, got: %s", s)
 	}
@@ -148,7 +146,6 @@ func TestGrimlockError_MarshalJSON(t *testing.T) {
 // ─── Stacktrace ───────────────────────────────────────────────────────────────
 
 func TestGrimlockError_StacktracePresent(t *testing.T) {
-	// Storage IO errors capture a stacktrace.
 	e := gerrors.NewStorageIOError("write_block", "id", errors.New("oops"))
 	if len(e.Stack) == 0 {
 		t.Error("expected stacktrace to be captured for StorageIOError")
@@ -156,14 +153,13 @@ func TestGrimlockError_StacktracePresent(t *testing.T) {
 }
 
 func TestGrimlockError_NoStacktraceForVaultLocked(t *testing.T) {
-	// VaultLocked is a hot-path — no stacktrace overhead.
 	e := gerrors.NewVaultLockedError()
 	if len(e.Stack) != 0 {
 		t.Error("VaultLockedError should not capture a stacktrace")
 	}
 }
 
-// ─── Wrap ─────────────────────────────────────────────────────────────────────
+// ─── Wrap ──────────────────────────────────────────────────────────────────────
 
 func TestWrap_PlainError(t *testing.T) {
 	plain := errors.New("some stdlib error")
@@ -179,7 +175,6 @@ func TestWrap_PlainError(t *testing.T) {
 func TestWrap_AlreadyGrimlockError(t *testing.T) {
 	original := gerrors.NewVaultLockedError()
 	wrapped := gerrors.Wrap(gerrors.ErrCodeStorageIO, "ignored msg", original)
-	// Should return the original unchanged.
 	if wrapped.Code != gerrors.ErrCodeVaultLocked {
 		t.Errorf("Wrap() of GrimlockError should return original, got code %d", wrapped.Code)
 	}

@@ -113,6 +113,39 @@ class GrimlockerClientTest {
     }
 
     @Test
+    void testCreateEntriesBatch() {
+        GrimlockerClient client = null;
+        try {
+            client = createMockedClient();
+            List<String> ids = client.createEntriesBatch("default", List.of(
+                new BatchEntryInput("Entry 1", "PASSWORD", Map.of("username", "alice")),
+                new BatchEntryInput("Entry 2", "NOTE", Map.of("content", "hello"))
+            ));
+            assertNotNull(ids);
+            assertEquals(2, ids.size());
+            assertEquals("new1", ids.get(0));
+            assertEquals("new1", ids.get(1));
+        } finally {
+            if (client != null) client.close();
+        }
+    }
+
+    @Test
+    void testDeleteEntriesBatch() {
+        MockGrimlockerClient client = null;
+        try {
+            client = new MockGrimlockerClient();
+            client.deleteEntriesBatch("default", List.of("e1", "e2"));
+            List<String> deleted = client.getDeletedEntryIds();
+            assertEquals(2, deleted.size());
+            assertTrue(deleted.contains("e1"));
+            assertTrue(deleted.contains("e2"));
+        } finally {
+            if (client != null) client.close();
+        }
+    }
+
+    @Test
     void testListPasswords() {
         GrimlockerClient client = null;
         try {
@@ -367,6 +400,31 @@ class GrimlockerClientTest {
         }
     }
 
+    @Test
+    void testCircuitBreakerOpensAfterFailures() {
+        GrimlockerClient client = new CircuitBreakerTestClient();
+        try {
+            for (int i = 0; i < 5; i++) {
+                assertThrows(GrimlockerException.class, () -> {
+                    client.createEntry()
+                        .namespace("default")
+                        .title("Test")
+                        .category("PASSWORD")
+                        .execute();
+                });
+            }
+            assertThrows(CircuitBreakerOpenException.class, () -> {
+                client.createEntry()
+                    .namespace("default")
+                    .title("Test")
+                    .category("PASSWORD")
+                    .execute();
+            });
+        } finally {
+            client.close();
+        }
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────────────
 
     private GrimlockerClient createMockedClient() {
@@ -419,9 +477,15 @@ class GrimlockerClientTest {
             return new MockQueryBuilder(this, "update_entry", List.of());
         }
 
+        private final List<String> deletedEntryIds = new ArrayList<>();
+
         @Override
         public void deleteEntry(String namespace, String entryId) {
-            // no-op success
+            deletedEntryIds.add(entryId);
+        }
+
+        List<String> getDeletedEntryIds() {
+            return deletedEntryIds;
         }
 
         @Override
@@ -546,6 +610,18 @@ class GrimlockerClientTest {
         public Entry executeOne() {
             var list = execute();
             return list.isEmpty() ? null : list.get(0);
+        }
+    }
+
+    private static class FailingMockWS extends com.grimlocker.sdk.GrimlockerClient.InternalWSClient {
+        FailingMockWS() {
+            super(null);
+        }
+    }
+
+    private static class CircuitBreakerTestClient extends GrimlockerClient {
+        CircuitBreakerTestClient() {
+            super(new FailingMockWS());
         }
     }
 

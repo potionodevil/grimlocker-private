@@ -1,3 +1,24 @@
+//! Koordinaten-basierte Notfall-Keyableitung für den Grimlocker Vault.
+//!
+//! # Warum?
+//! Wenn der Vault im Lockdown ist (3 Fehlversuche am Master-Password),
+//! kann er nur noch über Koordinaten in einer großen Entropy-Datei
+//! entsperrt werden. Das ist der Override-Mechanismus für den Notfall.
+//!
+//! # Threat Model
+//! Ein Angreifer braucht beides: die Entropy-Datei UND die Koordinaten.
+//! Die Koordinaten sind typischerweise auf Papier notiert (Offline-Backup).
+//! Ohne die Koordinaten hilft auch die Entropy-Datei nichts — und umgekehrt.
+//!
+//! # Panic Trigger
+//! Coordinate (0,0,0) ist reserviert als Panic-Signal: statt zu entsperren
+//! wird der gesamte Vault sicher gelöscht (plausible deniability).
+//!
+//! # Key Derivation Pipeline
+//! Entropy-Bytes → BLAKE3 → HKDF-SHA256 → 32-Byte Key
+//! BLAKE3 ist schnell und resistent gegen Length-Extension-Angriffe.
+//! HKDF sorgt für Domain Separation und kontrollierte Output-Länge.
+
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -114,14 +135,17 @@ fn derive_key(extracted: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(okm)
 }
 
-/// derive_key_from_extracted takes raw extracted bytes and runs BLAKE3 → HKDF-SHA256.
-/// This is the same as derive_key() but public, for use by the CGO bridge.
+/// Öffentlicher Einstiegspunkt für die CGO-Bridge.
+/// Macht dasselbe wie `derive_key()` — BLAKE3 hashen, dann HKDF-SHA256 expanden —
+/// aber als `pub fn`, damit Go drüber weg callen kann.
 pub fn derive_key_from_extracted(extracted: &[u8]) -> Result<Vec<u8>, Error> {
     derive_key(extracted)
 }
 
-/// derive_coordinate_offsets takes an argon2id hash and file size, and produces
-/// 32 file offsets using HKDF-SHA256. This matches Go's DeriveCoordinateOffsets.
+/// Nimmt einen Argon2id-Hash und die Dateigröße der Entropy-Datei und
+/// berechnet daraus 32 Byte-Offsets via HKDF-SHA256.
+/// Muss mit Go's `DeriveCoordinateOffsets` identisch sein — sonst
+/// passen Rust- und Go-Koordinaten nicht zusammen.
 pub fn derive_coordinate_offsets(argon_hash: &[u8], file_size: i64) -> Result<[i64; 32], Error> {
     if file_size <= 0 {
         return Err(Error::Coordinates("invalid file size".into()));
@@ -141,8 +165,9 @@ pub fn derive_coordinate_offsets(argon_hash: &[u8], file_size: i64) -> Result<[i
     Ok(offsets)
 }
 
-/// Derives a workspace-specific key from a master key using HKDF-SHA256.
-/// The workspace_id is used as the info parameter, allowing per-workspace keys.
+/// Leitet einen Workspace-spezifischen Key aus dem Master Key ab.
+/// Die `workspace_id` fließt als HKDF-info-Parameter ein — so bekommt
+/// jeder Workspace seinen eigenen Key, ohne einen separaten KDF-Durchlauf.
 pub fn derive_workspace_key(master_key: &[u8], workspace_id: &str) -> Result<[u8; 32], Error> {
     let salt = b"grimlocker-workspace-v1";
     let hk = Hkdf::<Sha256>::new(Some(salt), master_key);

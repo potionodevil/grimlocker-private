@@ -2,28 +2,28 @@ package security
 
 import "unsafe"
 
-// MemoryGuard provides OS-level memory protection primitives.
-// Implementations are platform-specific (memlock_unix.go / memlock_windows.go).
+// MemoryGuard bietet OS-Level-Memory-Protection-Primitives.
+// Implementierungen sind plattformspezifisch (memlock_unix.go / memlock_windows.go).
 type MemoryGuard interface {
-	// Lock pins the memory region, preventing it from being swapped to disk.
+	// Lock pinnt den Memory-Bereich, damit er nicht auf die Platte ausgelagert wird.
 	Lock(b []byte) error
 
-	// Unlock releases a previously locked region.
+	// Unlock gibt einen vorher gelockten Bereich wieder frei.
 	Unlock(b []byte) error
 
-	// Zeroize overwrites b with zeros in a way the compiler cannot elide.
+	// Zeroize überschreibt b mit Nullen, so dass der Compiler das nicht wegoptimieren kann.
 	Zeroize(b []byte)
 
-	// CompareConstantTime returns true iff a and b are equal.
-	// The comparison runs in constant time regardless of content.
+	// CompareConstantTime gibt true zurück, wenn a und b gleich sind.
+	// Der Vergleich läuft in konstanter Zeit, unabhängig vom Inhalt.
 	CompareConstantTime(a, b []byte) bool
 
-	// AllocLocked allocates a zeroed, memory-locked buffer of the given size.
+	// AllocLocked alloziert einen gezeroiten, memory-gelockten Buffer.
 	AllocLocked(size int) ([]byte, error)
 }
 
-// zeroize overwrites b with zeros in a way the compiler cannot elide.
-// This is the cross-platform zeroization primitive used by SecretGuard.
+// zeroize überschreibt b mit Nullen — compiler-resistent.
+// Plattformübergreifende Zeroization-Primitive, von SecretGuard genutzt.
 func zeroize(b []byte) {
 	for i := range b {
 		b[i] = 0

@@ -9,8 +9,11 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use tauri::Manager;
+use tauri::Emitter;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState, Code, Modifiers};
+use enigo::KeyboardControllable;
 
 struct DaemonHandle {
     child: Option<Child>,
@@ -26,6 +29,12 @@ struct DaemonConfig {
 struct DaemonState {
     handle: Mutex<DaemonHandle>,
     config: Mutex<DaemonConfig>,
+}
+
+// Speichert das HWND des Fensters das beim Ctrl+G-Druck aktiv war,
+// damit fill_text es vor dem Tippen wieder in den Vordergrund holen kann.
+struct AutofillTarget {
+    hwnd: Mutex<isize>,
 }
 
 #[tauri::command]
@@ -155,6 +164,197 @@ fn secure_delete_temp(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Liest den Titel und Prozessnamen des aktuell fokussierten Fensters aus.
+/// Funktioniert systemweit — auch wenn Grimlocker im Hintergrund läuft.
+#[tauri::command]
+fn get_window_title() -> Result<serde_json::Value, String> {
+    get_active_window_info()
+}
+
+fn get_active_window_info() -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetForegroundWindow, GetWindowTextW, GetWindowTextLengthW, GetWindowThreadProcessId,
+        };
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW,
+            PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
+        };
+        use windows_sys::Win32::Foundation::CloseHandle;
+
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd == std::ptr::null_mut() {
+                return Err("Kein aktives Fenster gefunden".into());
+            }
+
+            let len = GetWindowTextLengthW(hwnd) as usize;
+            let mut title_buf: Vec<u16> = vec![0; len + 1];
+            let actual_len = GetWindowTextW(hwnd, title_buf.as_mut_ptr(), (len + 1) as i32) as usize;
+            let title = String::from_utf16_lossy(&title_buf[..actual_len]);
+
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+
+            let app_name = if pid > 0 {
+                let h_proc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
+                if h_proc != std::ptr::null_mut() {
+                    let mut exe_buf = [0u16; 260];
+                    let mut exe_len = exe_buf.len() as u32;
+                    let ret = QueryFullProcessImageNameW(h_proc, 0, exe_buf.as_mut_ptr(), &mut exe_len);
+                    CloseHandle(h_proc);
+                    if ret != 0 {
+                        let exe_path = String::from_utf16_lossy(&exe_buf[..exe_len as usize]);
+                        std::path::Path::new(&exe_path)
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("Unbekannt")
+                            .to_string()
+                    } else {
+                        "Unbekannt".to_string()
+                    }
+                } else {
+                    "Unbekannt".to_string()
+                }
+            } else {
+                "Unbekannt".to_string()
+            };
+
+            Ok(serde_json::json!({
+                "title": title,
+                "appName": app_name,
+                "url": null,
+                "processId": pid,
+            }))
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let title = std::process::Command::new("xdotool")
+            .args(["getactivewindow", "getwindowname"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        Ok(serde_json::json!({
+            "title": title,
+            "appName": "Unbekannt",
+            "url": null,
+            "processId": 0,
+        }))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_name = std::process::Command::new("osascript")
+            .args(["-e", r#"tell application "System Events" to get name of first application process whose frontmost is true"#])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        let title = std::process::Command::new("osascript")
+            .args(["-e", r#"tell application "System Events" to get name of front window of first application process whose frontmost is true"#])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+
+        Ok(serde_json::json!({
+            "title": title,
+            "appName": app_name,
+            "url": null,
+            "processId": 0,
+        }))
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        return Err("Plattform wird nicht unterstützt".into());
+    }
+}
+
+/// Simuliert Tastatureingaben in das aktuell fokussierte Fenster.
+/// Nutzt enigo (SendInput auf Windows, XTest auf Linux, CGEvent auf macOS).
+#[tauri::command]
+fn fill_text(text: String, state: tauri::State<AutofillTarget>) -> Result<(), String> {
+    let hwnd = *state.hwnd.lock().unwrap();
+    eprintln!("[AUTOFILL] fill_text called: {} chars, hwnd={}", text.len(), hwnd);
+
+    // Original-Fenster wieder fokussieren bevor wir tippen,
+    // sonst landen Tastatureingaben im falschen Fenster.
+    #[cfg(target_os = "windows")]
+    if hwnd != 0 {
+        use windows_sys::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+        unsafe { SetForegroundWindow(hwnd as _); }
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let mut enigo = enigo::Enigo::new();
+
+    let parts: Vec<&str> = text.splitn(2, '\t').collect();
+    if parts.len() == 2 {
+        enigo.key_sequence(parts[0]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        enigo.key_click(enigo::Key::Tab);
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        enigo.key_sequence(parts[1]);
+    } else {
+        enigo.key_sequence(&text);
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    enigo.key_click(enigo::Key::Return);
+    Ok(())
+}
+
+/// Schreibt eine Debug-Meldung vom Popup ins Terminal (sichtbar in `tauri dev`).
+#[tauri::command]
+fn log_autofill(message: String) {
+    eprintln!("[AUTOFILL-POPUP] {}", message);
+}
+
+/// Vom Autofill-Popup aufgerufen: speichert die Auswahl und emittet ein Event
+/// ans Hauptfenster, das dann entschlüsselt und fill_text aufruft.
+#[tauri::command]
+fn confirm_autofill(
+    entry_id: String,
+    fill_mode: String,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    eprintln!("[AUTOFILL] confirm_autofill called: entry_id={} fill_mode={}", entry_id, fill_mode);
+
+    let main_win = app.get_webview_window("main");
+    eprintln!("[AUTOFILL] main window found: {}", main_win.is_some());
+
+    if let Some(win) = main_win {
+        let result = win.emit("autofill:confirm", serde_json::json!({
+            "entryId": entry_id,
+            "fillMode": fill_mode,
+        }));
+        eprintln!("[AUTOFILL] emit autofill:confirm result: {:?}", result);
+    }
+
+    // Popup schließen
+    if let Some(popup) = app.get_webview_window("autofill") {
+        eprintln!("[AUTOFILL] closing popup window");
+        let _ = popup.close();
+    } else {
+        eprintln!("[AUTOFILL] WARNING: autofill window not found for close");
+    }
+    Ok(())
+}
+
+/// Vom Autofill-Popup aufgerufen: Abbruch — Popup schließen.
+#[tauri::command]
+fn cancel_autofill(app: tauri::AppHandle) -> Result<(), String> {
+    eprintln!("[AUTOFILL] cancel_autofill called");
+    if let Some(popup) = app.get_webview_window("autofill") {
+        let _ = popup.close();
+    }
+    Ok(())
+}
+
 fn main() {
     let daemon_state = DaemonState {
         handle: Mutex::new(DaemonHandle {
@@ -164,16 +364,25 @@ fn main() {
         config: Mutex::new(DaemonConfig::default()),
     };
 
+    let autofill_target = AutofillTarget { hwnd: Mutex::new(0) };
+
     tauri::Builder::default()
         .manage(daemon_state)
+        .manage(autofill_target)
         .invoke_handler(tauri::generate_handler![
             get_session_token,
             rust_get_version,
             rust_secure_wipe,
             save_temp_file,
             open_with_default_app,
-            secure_delete_temp
+            secure_delete_temp,
+            get_window_title,
+            fill_text,
+            confirm_autofill,
+            cancel_autofill,
+            log_autofill
         ])
+        .plugin(tauri_plugin_global_shortcut::Builder::default().build())
         .setup(|app| {
             let app_handle = app.handle().clone();
             let app_dir = app
@@ -183,7 +392,53 @@ fn main() {
 
             spawn_daemon(&app_handle, &app_dir);
 
-            let app_handle_clone = app_handle.clone();
+            // ── Hotkey: Strg+G — Autofill Passwort ins aktive Fenster ──────
+            let app_handle_shortcut = app_handle.clone();
+            app.global_shortcut().on_shortcut(
+                Shortcut::new(Some(Modifiers::CONTROL), Code::KeyG),
+                move |app, _shortcut, event| {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    eprintln!("[AUTOFILL] Ctrl+G pressed — capturing active window");
+                    // HWND des aktiven Fensters speichern BEVOR das Popup den Fokus stielt.
+                    // fill_text ruft später SetForegroundWindow damit auf.
+                    #[cfg(target_os = "windows")]
+                    {
+                        use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+                        let hwnd = unsafe { GetForegroundWindow() as isize };
+                        if let Some(target) = app.try_state::<AutofillTarget>() {
+                            *target.hwnd.lock().unwrap() = hwnd;
+                        }
+                    }
+
+                    // Fenstertitel des aktiven Fensters systemweit ermitteln
+                    let info = get_active_window_info().unwrap_or(serde_json::json!({
+                        "title": "",
+                        "appName": "Unbekannt",
+                        "url": null,
+                        "processId": 0,
+                    }));
+                    let title = info["title"].as_str().unwrap_or("").to_string();
+                    let app_name = info["appName"].as_str().unwrap_or("").to_string();
+                    let url = info.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
+                    eprintln!("[AUTOFILL] active window: title='{}' app='{}'", title, app_name);
+
+                    // Nur Event senden — Hauptfenster NICHT öffnen (Popup öffnet sich separat)
+                    if let Some(win) = app.get_webview_window("main") {
+                        let _ = win.emit(
+                            "autofill:trigger",
+                            serde_json::json!({
+                                "windowTitle": title,
+                                "appName": app_name,
+                                "url": url,
+                            }),
+                        );
+                    }
+                },
+            ).ok();
+
+            let app_handle_clone = app_handle_shortcut.clone();
             let window = app.get_webview_window("main").expect("main window not found");
             window.on_window_event(move |event| {
                 if let tauri::WindowEvent::Destroyed = event {

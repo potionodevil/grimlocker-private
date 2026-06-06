@@ -6,22 +6,21 @@ import (
 	"fmt"
 )
 
-// GQLQuery is the deserialized form of a GQL query or mutate request.
-// This is the canonical internal representation passed between the frame
-// decoder, validator, and dispatcher.
+// GQLQuery ist die deserialisierte Form eines GQL-Query- oder Mutate-Requests.
+// Das ist die kanonische interne Repräsentation zwischen Frame-Decoder, Validator und Dispatcher.
 type GQLQuery struct {
-	Namespace   string            // Workspace or user ID (required)
-	Operation   Operation         // The GQL operation to perform
-	EntryID     string            // Target entry ID (for get/update/delete)
-	Category    string            // Filter category (PASSWORD, SSH_KEY, etc.)
-	Title       string            // Entry title (for create/update)
-	Fields      map[string]string // Key-value fields for the entry
-	Credentials []byte            // SKE-encrypted MVK handle proof (for write ops)
-	Limit       uint32            // Max results, 0 = use default (50)
-	Offset      uint32            // Pagination offset
+	Namespace   string            // Workspace oder User-ID (required)
+	Operation   Operation         // Die auszuführende GQL-Operation
+	EntryID     string            // Target-Entry-ID (für get/update/delete)
+	Category    string            // Filter-Category (PASSWORD, SSH_KEY, etc.)
+	Title       string            // Entry-Title (für create/update)
+	Fields      map[string]string // Key-Value-Felder für den Entry
+	Credentials []byte            // SKE-encrypted MVK-Handle-Proof (für write-ops)
+	Limit       uint32            // Max-Ergebnisse, 0 = default (50)
+	Offset      uint32            // Pagination-Offset
 }
 
-// GQLEntry is a single entry in a GQL result set.
+// GQLEntry ist ein einzelner Entry in einem GQL-Resultset.
 type GQLEntry struct {
 	ID        string            `json:"id"`
 	Category  string            `json:"category"`
@@ -32,7 +31,7 @@ type GQLEntry struct {
 	UpdatedAt int64             `json:"updated_at"`
 }
 
-// GQLResult is the server response for a GQL query or mutate.
+// GQLResult ist die Server-Response für eine GQL-Query oder -Mutation.
 type GQLResult struct {
 	RequestID  string     `json:"request_id,omitempty"`
 	Success    bool       `json:"success"`
@@ -42,8 +41,7 @@ type GQLResult struct {
 	ErrorMsg   string     `json:"error_msg,omitempty"`
 }
 
-// serializeField serializes a string field in length-prefixed binary format.
-// Format: length(2 bytes big-endian) + data(bytes).
+// serializeField serialisiert ein String-Feld im Längenpräfix-Binary-Format.
 func serializeField(buf []byte, offset int, s string) int {
 	l := len(s)
 	binary.BigEndian.PutUint16(buf[offset:], uint16(l))
@@ -52,8 +50,7 @@ func serializeField(buf []byte, offset int, s string) int {
 	return offset + l
 }
 
-// deserializeField reads a length-prefixed string from a byte slice.
-// Returns the string and the number of bytes consumed.
+// deserializeField liest ein längenpräfixiertes String aus einem Byte-Slice.
 func deserializeField(data []byte) (string, int, error) {
 	if len(data) < 2 {
 		return "", 0, fmt.Errorf("gql: field too short for length prefix")
@@ -65,31 +62,26 @@ func deserializeField(data []byte) (string, int, error) {
 	return string(data[2 : 2+l]), 2 + l, nil
 }
 
-// fieldSize returns the serialized size of a string field (2 + len(s)).
+// fieldSize gibt die serialisierte Größe eines String-Feldes zurück (2 + len(s)).
 func fieldSize(s string) int { return 2 + len(s) }
 
-// Encode serializes a GQLQuery into a binary payload.
+// Encode serialisiert ein GQLQuery in einen Binary-Payload.
 //
-// Binary layout (all multi-byte integers are big-endian):
+// Binary-Layout (alle Multi-Byte-Ints sind Big-Endian):
 //
-//	[0:1]   field_count    uint8   (number of fields in the Fields map)
+//	[0:1]   field_count    uint8   (Anzahl der Felder in der Fields-Map)
 //	[1:3]   operation_len  uint16
-//	[3:n]   operation      bytes   (e.g. "list_entries", "create_entry")
+//	[3:n]   operation      bytes
 //	[n:n+2] namespace_len  uint16
 //	[n+2:m] namespace      bytes
-//	[n:n+2] entry_id_len   uint16
-//	[n+2:m] entry_id       bytes
-//	[m:m+2] category_len   uint16
-//	[m+2:p] category       bytes
-//	[p:p+2] title_len      uint16
-//	[p+2:q] title          bytes
-//	[q:r]   field entries  (each: key_len(2) + key + value_len(2) + value)
+//	... (entry_id, category, title)
+//	[q:r]   field entries  (jeweils: key_len(2) + key + value_len(2) + value)
 //	[r:r+4] limit          uint32
 //	[s:s+4] offset         uint32
 //	[t:t+2] creds_len      uint16
 //	[t+2:u] credentials    bytes
 func (q *GQLQuery) Encode() []byte {
-	size := 1 // field_count
+	size := 1
 	size += fieldSize(string(q.Operation))
 	size += fieldSize(q.Namespace)
 	size += fieldSize(q.EntryID)
@@ -98,14 +90,13 @@ func (q *GQLQuery) Encode() []byte {
 	for k, v := range q.Fields {
 		size += fieldSize(k) + fieldSize(v)
 	}
-	size += 4 // limit
-	size += 4 // offset
+	size += 4
+	size += 4
 	size += fieldSize(string(q.Credentials))
 
 	buf := make([]byte, size)
 	off := 0
 
-	// field_count
 	fc := uint8(len(q.Fields))
 	if fc > MaxFieldsCount {
 		fc = MaxFieldsCount
@@ -113,42 +104,27 @@ func (q *GQLQuery) Encode() []byte {
 	buf[off] = fc
 	off++
 
-	// operation
 	off = serializeField(buf, off, string(q.Operation))
-
-	// namespace
 	off = serializeField(buf, off, q.Namespace)
-
-	// entry_id
 	off = serializeField(buf, off, q.EntryID)
-
-	// category
 	off = serializeField(buf, off, q.Category)
-
-	// title
 	off = serializeField(buf, off, q.Title)
 
-	// fields
 	for k, v := range q.Fields {
 		off = serializeField(buf, off, k)
 		off = serializeField(buf, off, v)
 	}
 
-	// limit
 	binary.BigEndian.PutUint32(buf[off:], q.Limit)
 	off += 4
-
-	// offset
 	binary.BigEndian.PutUint32(buf[off:], q.Offset)
 	off += 4
-
-	// credentials
 	serializeField(buf, off, string(q.Credentials))
 
 	return buf
 }
 
-// DecodeQuery deserializes a GQLQuery from a binary payload.
+// DecodeQuery deserialisiert ein GQLQuery aus einem Binary-Payload.
 func DecodeQuery(payload []byte, op Operation) (*GQLQuery, error) {
 	if len(payload) < 1 {
 		return nil, fmt.Errorf("gql: payload too short for field_count")
@@ -166,7 +142,6 @@ func DecodeQuery(payload []byte, op Operation) (*GQLQuery, error) {
 		Fields:    make(map[string]string),
 	}
 
-	// operation (override from payload if present)
 	s, n, err := deserializeField(payload[off:])
 	if err != nil {
 		return nil, fmt.Errorf("gql: operation: %w", err)
@@ -176,7 +151,6 @@ func DecodeQuery(payload []byte, op Operation) (*GQLQuery, error) {
 	}
 	off += n
 
-	// namespace
 	s, n, err = deserializeField(payload[off:])
 	if err != nil {
 		return nil, fmt.Errorf("gql: namespace: %w", err)
@@ -184,7 +158,6 @@ func DecodeQuery(payload []byte, op Operation) (*GQLQuery, error) {
 	q.Namespace = s
 	off += n
 
-	// entry_id
 	s, n, err = deserializeField(payload[off:])
 	if err != nil {
 		return nil, fmt.Errorf("gql: entry_id: %w", err)
@@ -192,7 +165,6 @@ func DecodeQuery(payload []byte, op Operation) (*GQLQuery, error) {
 	q.EntryID = s
 	off += n
 
-	// category
 	s, n, err = deserializeField(payload[off:])
 	if err != nil {
 		return nil, fmt.Errorf("gql: category: %w", err)
@@ -200,7 +172,6 @@ func DecodeQuery(payload []byte, op Operation) (*GQLQuery, error) {
 	q.Category = s
 	off += n
 
-	// title
 	s, n, err = deserializeField(payload[off:])
 	if err != nil {
 		return nil, fmt.Errorf("gql: title: %w", err)
@@ -208,7 +179,6 @@ func DecodeQuery(payload []byte, op Operation) (*GQLQuery, error) {
 	q.Title = s
 	off += n
 
-	// fields
 	for i := 0; i < fieldCount; i++ {
 		if off >= len(payload) {
 			return nil, fmt.Errorf("gql: truncated at field %d", i)
@@ -231,21 +201,18 @@ func DecodeQuery(payload []byte, op Operation) (*GQLQuery, error) {
 		q.Fields[k] = v
 	}
 
-	// limit
 	if off+4 > len(payload) {
 		return nil, fmt.Errorf("gql: truncated at limit")
 	}
 	q.Limit = binary.BigEndian.Uint32(payload[off:])
 	off += 4
 
-	// offset
 	if off+4 > len(payload) {
 		return nil, fmt.Errorf("gql: truncated at offset")
 	}
 	q.Offset = binary.BigEndian.Uint32(payload[off:])
 	off += 4
 
-	// credentials (optional — may be empty)
 	if off < len(payload) {
 		s, n, err = deserializeField(payload[off:])
 		if err != nil {
@@ -258,8 +225,8 @@ func DecodeQuery(payload []byte, op Operation) (*GQLQuery, error) {
 	return q, nil
 }
 
-// EncodeResult serializes a GQLResult into a JSON byte slice for wire transport.
-// Results use JSON for easy frontend consumption; queries use binary for security.
+// EncodeResult serialisiert ein GQLResult in ein JSON-Byte-Slice für den Wire-Transport.
+// Results nutzen JSON für einfache Frontend-Konsumption; Queries nutzen Binary für Security.
 func (r *GQLResult) EncodeResult() ([]byte, error) {
 	return json.Marshal(r)
 }

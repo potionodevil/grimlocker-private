@@ -1,12 +1,16 @@
 import { useState, useMemo } from 'react'
 import { useAuth } from '../../context/AuthContext'
 
-/** Convert raw daemon error strings to user-friendly messages. */
+/**
+ * Wandelt rohe Daemon-Fehlerstrings in benutzerfreundliche Nachrichten um.
+ * Der Daemon schickt manchmal JSON, manchmal Plaintext — das hier normalisiert beides.
+ * Die deutschen Texte sind bewusst gewählt, weil die UI auf Deutsch ist.
+ */
 function parseAuthError(msg) {
   if (!msg) return null
   const lower = msg.toLowerCase()
 
-  // Try JSON first (daemon sometimes sends structured errors)
+  // Erst versuchen, JSON zu parsen — der Daemon schickt manchmal strukturierte Fehler
   try {
     const j = JSON.parse(msg)
     const text = j.message || j.error || j.msg || ''
@@ -97,7 +101,7 @@ export function LoginScreen() {
             />
           </div>
 
-          {/* Error display — friendly, not raw JSON */}
+          {/* Fehleranzeige — immer benutzerfreundlich, nie rohes JSON */}
           {parsedError && (
             <div className="flex items-start gap-3 p-3 rounded-lg bg-danger/10 border border-danger/30">
               <span className="text-lg leading-none mt-0.5 shrink-0">{parsedError.icon}</span>

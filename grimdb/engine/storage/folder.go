@@ -2,10 +2,10 @@ package storage
 
 import "time"
 
-// CategoryFolder is the block category for encrypted folder entries in the FileVault.
+// CategoryFolder ist die Block-Kategorie für encrypted Folder-Einträge im FileVault.
 const CategoryFolder Category = "FOLDER"
 
-// FolderEntry describes a folder in the vault file system hierarchy.
+// FolderEntry beschreibt einen Ordner in der Vault-Dateisystem-Hierarchie.
 type FolderEntry struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -14,12 +14,12 @@ type FolderEntry struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
-// FolderBlockID returns the block store key for this folder.
+// FolderBlockID gibt den Block-Store-Key für diesen Folder zurück.
 func (f *FolderEntry) FolderBlockID() string {
 	return "folder-" + f.ID
 }
 
-// NewFolderEntry creates a new FolderEntry with a generated UUID.
+// NewFolderEntry erzeugt einen neuen FolderEntry mit generierter UUID.
 func NewFolderEntry(name, parentID string) FolderEntry {
 	now := time.Now().UnixNano()
 	return FolderEntry{

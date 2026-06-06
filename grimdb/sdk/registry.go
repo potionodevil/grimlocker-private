@@ -6,7 +6,7 @@ import (
 	"log"
 	"sync"
 
-	"github.com/grimlocker/grimdb/kernel"
+	"github.com/grimlocker/grimdb/engine/kernel"
 )
 
 // Registry manages the lifecycle of loaded plugins.

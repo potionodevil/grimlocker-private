@@ -4,10 +4,10 @@ import { tauriBridge } from '../../services/tauriBridge'
 import { useGrimStore } from '../../store/useGrimStore'
 import { FileVaultUpload } from './FileVaultUpload'
 
-// Passphrase mode for SSH key generation
-// 'none'   — no passphrase (key fully functional without one)
-// 'auto'   — daemon generates a 32-char crypto-random passphrase (shown once)
-// 'custom' — user types their own passphrase
+// Passphrase-Modi für SSH-Key-Generierung:
+// 'none'   — keine Passphrase (Key funktioniert ohne)
+// 'auto'   — Daemon generiert 32-Zeichen Zufallspassphrase (wird EINMAL gezeigt)
+// 'custom' — User gibt eigene Passphrase ein
 
 const ENTRY_TYPES = [
   {
@@ -32,7 +32,7 @@ const ENTRY_TYPES = [
     id: 'file_vault',
     label: 'Files',
     category: 'FILE_VAULT',
-    fields: [], // file upload UI, no manual fields
+    fields: [], // FileVault hat kein manuelles Formular — nur Drag&Drop-Upload
   },
 ]
 
@@ -86,9 +86,9 @@ export function AddEntryModal({ open, onClose }) {
   }
 
   /**
-   * Generate an Ed25519 SSH key pair via the TOOL.SSH_GEN kernel event.
-   * The comment is built from the sshKeyName field as "name@grimlocker.sec".
-   * The key pair is automatically saved to the vault by the daemon.
+   * Generiert ein Ed25519-SSH-Keypair via TOOL.SSH_GEN-Kernel-Event.
+   * Der Comment wird aus dem sshKeyName-Feld als "name@grimlocker.sec" gebaut.
+   * Der Daemon speichert das Keypair automatisch im Vault.
    */
   const handleGenerateSSHKey = async () => {
     const rawName = form.sshKeyName?.trim() || 'key'
@@ -386,7 +386,7 @@ export function AddEntryModal({ open, onClose }) {
                 )}
               </div>
 
-              {/* Footer — hidden for file_vault and SSH generate mode */}
+              {/* Footer — versteckt bei file_vault und SSH-Generate-Mode */}
               {!isFileVault && !(type === 'ssh' && sshMode === 'generate') && (
                 <div className="shrink-0 px-5 py-4 border-t border-border flex justify-end gap-2">
                   <button

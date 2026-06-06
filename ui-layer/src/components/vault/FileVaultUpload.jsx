@@ -2,14 +2,14 @@ import { useState, useRef, useCallback } from 'react'
 import { tauriBridge } from '../../services/tauriBridge'
 
 /**
- * FileVaultUpload — drag-and-drop / browse file ingestion for the FileVault tab.
+ * FileVaultUpload — Drag&Drop / Browse-File-Upload für den FileVault-Tab.
  *
- * Protocol: MSG_FILE_INGEST_BEGIN (0x20) → MSG_FILE_CHUNK (0x21)× N → MSG_FILE_INGEST_END (0x22)
- * Uses the existing backend streaming protocol; no new backend code required.
+ * Protokoll: MSG_FILE_INGEST_BEGIN (0x20) → MSG_FILE_CHUNK (0x21)× N → MSG_FILE_INGEST_END (0x22)
+ * Nutzt das existierende Backend-Streaming-Protokoll — kein neuer Backend-Code nötig.
  *
  * Props:
- *   onSuccess(manifest) — called when the daemon confirms the upload.
- *   onCancel()          — called when the user dismisses without uploading.
+ *   onSuccess(manifest) — wird aufgerufen, wenn der Daemon den Upload bestätigt.
+ *   onCancel()          — wird aufgerufen, wenn der User abbricht, ohne hochzuladen.
  */
 export function FileVaultUpload({ onSuccess, onCancel, folderId = '' }) {
   const [dragging, setDragging]     = useState(false)
@@ -70,8 +70,8 @@ export function FileVaultUpload({ onSuccess, onCancel, folderId = '' }) {
         setProgress(pct)
       }, folderId)
       setProgress(1)
-      // manifest.manifest_block_id is the full "blob-{uuid}-manifest" key for downloads.
-      // Ensure the caller receives it with the correct field name.
+      // manifest.manifest_block_id ist der vollständige "blob-{uuid}-manifest"-Key für Downloads.
+      // Wichtig: der Aufrufer kriegt das mit dem korrekten Feldnamen.
       onSuccess?.(manifest)
     } catch (err) {
       console.error('[FileVaultUpload] Ingest failed:', err)

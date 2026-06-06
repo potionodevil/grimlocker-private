@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 )
 
-// VaultMeta is the JSON schema for vault.meta. Unchanged from the original
-// grimdb-go format to maintain backwards compatibility.
+// VaultMeta ist das JSON-Schema für vault.meta. Unverändert vom originalen
+// grimdb-go-Format, um Abwärtskompatibilität zu gewährleisten.
 type VaultMeta struct {
 	IsInitialized            bool   `json:"is_initialized"`
 	ArgonSalt                []byte `json:"argon_salt,omitempty"`
@@ -22,14 +22,14 @@ type VaultMeta struct {
 	LockdownThreshold        int    `json:"lockdown_threshold,omitempty"`
 }
 
-// IsV5Format returns true when the metadata uses the V5 Argon2id+coordinate format.
+// IsV5Format gibt true zurück, wenn die Metadaten das V5 Argon2id+Coordinate-Format verwenden.
 func (m *VaultMeta) IsV5Format() bool {
 	return len(m.ArgonSalt) == 16
 }
 
 const metaFileName = "vault.meta"
 
-// LoadMeta reads and unmarshals vault.meta from appDir.
+// LoadMeta liest vault.meta aus appDir und parsed das JSON.
 func LoadMeta(appDir string) (*VaultMeta, error) {
 	data, err := os.ReadFile(filepath.Join(appDir, metaFileName))
 	if err != nil {
@@ -46,7 +46,7 @@ func LoadMeta(appDir string) (*VaultMeta, error) {
 	return &meta, nil
 }
 
-// SaveMeta atomically writes vault.meta to appDir.
+// SaveMeta schreibt vault.meta atomar in appDir (tmp + rename).
 func SaveMeta(appDir string, m *VaultMeta) error {
 	metaPath := filepath.Join(appDir, metaFileName)
 	tmpPath := metaPath + ".tmp"

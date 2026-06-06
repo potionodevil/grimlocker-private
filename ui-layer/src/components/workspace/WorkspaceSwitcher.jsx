@@ -10,14 +10,14 @@ export const WorkspaceSwitcher = ({ onWorkspaceSwitch }) => {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  // Rename state: which workspace is being renamed inline
+  // Rename-Status: welcher Workspace wird gerade inline umbenannt
   const [renamingId, setRenamingId] = useState(null)
   const [renameValue, setRenameValue] = useState('')
 
-  // Delete confirm dialog
+  // Delete-Confirm-Dialog — welcher Workspace soll gelöscht werden
   const [deleteConfirm, setDeleteConfirm] = useState(null) // workspace id to delete
 
-  // Right-click context menu
+  // Rechtsklick-Context-Menu für Workspace-Optionen
   const [contextMenu, setContextMenu] = useState(null) // { x, y, workspace }
 
   const workspaces = useGrimStore((s) => s.workspaces)
@@ -43,7 +43,7 @@ export const WorkspaceSwitcher = ({ onWorkspaceSwitch }) => {
     }
   }, [isOpen, deleteConfirm])
 
-  // Close context menu on any outside click
+  // Context-Menu schliessen bei Klick ausserhalb
   useEffect(() => {
     if (!contextMenu) return
     const close = () => setContextMenu(null)
@@ -51,7 +51,7 @@ export const WorkspaceSwitcher = ({ onWorkspaceSwitch }) => {
     return () => document.removeEventListener('mousedown', close)
   }, [contextMenu])
 
-  // Focus rename input when entering rename mode
+  // Input fokussieren, wenn der User in den Rename-Mode wechselt
   useEffect(() => {
     if (renamingId && renameInputRef.current) {
       renameInputRef.current.focus()
@@ -178,7 +178,7 @@ export const WorkspaceSwitcher = ({ onWorkspaceSwitch }) => {
                 }`}
               >
                 {renamingId === ws.id ? (
-                  // Inline rename input
+                  // Inline-Rename-Input (statt dem normalen Button)
                   <div className="flex-1 px-2 py-1.5 flex gap-1">
                     <input
                       ref={renameInputRef}
@@ -279,7 +279,7 @@ export const WorkspaceSwitcher = ({ onWorkspaceSwitch }) => {
         </div>
       )}
 
-      {/* Right-click context menu */}
+      {/* Rechtsklick-Context-Menu */}
       {contextMenu && (
         <div
           className="fixed z-[9999] bg-surface-base border border-border rounded-lg shadow-lg py-1 min-w-[140px]"
@@ -310,7 +310,7 @@ export const WorkspaceSwitcher = ({ onWorkspaceSwitch }) => {
         </div>
       )}
 
-      {/* Delete confirmation dialog — rendered outside the dropdown for proper z-index */}
+      {/* Delete-Confirm-Dialog — ausserhalb des Dropdowns gerendert für korrekten z-index */}
       <ConfirmDialog
         isOpen={!!deleteConfirm}
         title="Workspace loeschen"

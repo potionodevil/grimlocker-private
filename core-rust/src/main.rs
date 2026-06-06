@@ -1,3 +1,22 @@
+//! CLI-Frontend für den Grimlocker Vault — Master-Password- und
+//! Coordinate-Override-Logik.
+//!
+//! # Warum?
+//! Dieses Binary verbindet sich mit dem GrimDB-Daemon (Go) via Unix-Socket
+//! und führt die interaktive Authentifizierung durch.
+//!
+//! # Ablauf
+//! 1. Verbindung zum Daemon aufbauen (Cookie-Auth)
+//! 2. Vault-Header lesen (Fehlversuche, Lockdown-Status)
+//! 3. TimeGuard-Check — bei Zeitmanipulation sofortiges Wipe
+//! 4. Wenn Lockdown → Coordinate-Override oder Wipe bei expired
+//! 5. Sonst → Master-Password eingeben
+//!
+//! # Threat Model
+//! - Der Daemon ist der Trusted Server, dieses Binary ist der Client
+//! - Kommunikation über lokalen Unix-Socket — kein Netzwerk
+//! - Der Cookie (32 Bytes) authentifiziert den Client am Daemon
+
 use std::io::{self, BufRead, Write};
 use std::thread;
 use std::time::Duration;

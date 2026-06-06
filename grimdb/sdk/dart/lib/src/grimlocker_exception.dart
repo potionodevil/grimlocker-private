@@ -24,3 +24,8 @@ class GrimlockerException implements Exception {
     _    => 'UNKNOWN',
   };
 }
+
+class CircuitBreakerOpenException implements Exception {
+  @override
+  String toString() => 'CircuitBreakerOpenException: Circuit breaker is open';
+}

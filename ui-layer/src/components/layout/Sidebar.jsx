@@ -3,7 +3,7 @@ import { clsx } from 'clsx'
 import { isDevMode } from '../../utils/devMode'
 import { useGrimStore } from '../../store/useGrimStore'
 
-// ── icons (SVG inline, keeps no external dependency) ──────────────────────────
+// ── Icons als inline-SVG (keine externe Dependency — Bundle bleibt klein) ────
 function Icon({ path, size = 14, className = '' }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -33,12 +33,12 @@ const ICONS = {
   sync:      'M4 4v5h.582m15.356 2A8.001 8.001 0 0 0 4.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 0 1-15.357-2m15.357 2H15',
 }
 
-// ── group color dots ──────────────────────────────────────────────────────────
+// ── Farbpunkte für die Gruppen (ein Dutzend Farben, mehr braucht kein Mensch) ─
 const GROUP_COLORS = [
   '#0055FF', '#7C3AED', '#DC2626', '#D97706', '#16A34A', '#0891B2',
 ]
 
-// ── inline rename input ───────────────────────────────────────────────────────
+// ── Inline-Rename-Input (für Ordner und Gruppen) ─────────────────────────────
 function RenameInput({ value, onChange, onCommit, onCancel }) {
   const ref = useRef(null)
   useEffect(() => { ref.current?.focus(); ref.current?.select() }, [])
@@ -59,7 +59,7 @@ function RenameInput({ value, onChange, onCommit, onCancel }) {
   )
 }
 
-// ── nav item ──────────────────────────────────────────────────────────────────
+// ── Ein einzelner Nav-Eintrag (mit Icon, Label, Badge, optional children) ────
 function NavItem({ id, label, icon, active, onClick, children, indent = 0, badge }) {
   return (
     <div>
@@ -84,7 +84,7 @@ function NavItem({ id, label, icon, active, onClick, children, indent = 0, badge
   )
 }
 
-// ── section header ─────────────────────────────────────────────────────────────
+// ── Section-Header mit Collapse-Toggle und Plus-Button ────────────────────────
 function SectionHeader({ label, expanded, onToggle, onAdd, addTitle }) {
   return (
     <div className="flex items-center gap-1 px-2 mb-0.5 group">
@@ -112,7 +112,7 @@ function SectionHeader({ label, expanded, onToggle, onAdd, addTitle }) {
   )
 }
 
-// ── main sidebar ──────────────────────────────────────────────────────────────
+// ── Haupt-Sidebar ─────────────────────────────────────────────────────────────
 export function Sidebar({
   activeView,
   onNavigate,

@@ -7,7 +7,7 @@ import { FileVaultUpload } from './FileVaultUpload'
 import { FileVaultViewer } from './FileVaultViewer'
 import { EditEntryModal } from './EditEntryModal'
 
-// Filter definitions. FILE_VAULT is handled by its own dedicated FileVaultBrowser.
+// Filter-Definitionen. FILE_VAULT wird vom eigenen FileVaultBrowser behandelt, nicht hier.
 const FILTERS = [
   { id: 'all',        label: 'All',          category: '' },
   { id: 'passwords',  label: 'Passwords',    category: 'PASSWORD' },
@@ -24,8 +24,8 @@ const LEGACY_MAP = {
 }
 
 /**
- * Checks whether an entry matches a given filter.
- * "All Items" (category='') excludes FILE_VAULT — files live in FileVaultBrowser.
+ * Prüft, ob ein Entry zum aktuellen Filter passt.
+ * "All Items" (category='') schliesst FILE_VAULT aus — Dateien leben im FileVaultBrowser.
  */
 function entryMatchesFilter(entry, filter) {
   const cat = entry.category || LEGACY_MAP[entry.type] || entry.type?.toUpperCase()
@@ -54,7 +54,7 @@ export function VaultGrid({ filter = 'all', group = null }) {
     }
   }, [connected, fetchEntries])
 
-  // Re-fetch entries on reconnect
+  // Bei Reconnect die Entries neu laden — der Daemon könnte sich geändert haben
   useEffect(() => {
     const unsub = tauriBridge.on('connected', () => {
       fetchedOnce.current = true
@@ -63,7 +63,7 @@ export function VaultGrid({ filter = 'all', group = null }) {
     return unsub
   }, [fetchEntries])
 
-  // Sync with the `filter` prop so sidebar navigation updates the active tab.
+  // Mit der `filter`-Prop synchronisieren, damit die Sidebar-Navigation den aktiven Tab updated
   useEffect(() => {
     setFilterId(filter)
     setShowUpload(false)
@@ -113,7 +113,7 @@ export function VaultGrid({ filter = 'all', group = null }) {
         </div>
 
         <div className="ml-auto flex items-center gap-1">
-          {/* Upload button — only visible in FILE_VAULT tab */}
+          {/* Upload-Button — nur im FILE_VAULT-Tab sichtbar */}
           {isFileVault && (
             <button
               onClick={() => setShowUpload((v) => !v)}
@@ -201,7 +201,7 @@ export function VaultGrid({ filter = 'all', group = null }) {
         />
       )}
 
-      {/* FileVaultViewer — opens when user right-clicks a file entry and picks "Open" */}
+      {/* FileVaultViewer — öffnet sich, wenn der User per Rechtsklick "Open" wählt */}
       {viewingFile && (
         <FileVaultViewer
           entry={viewingFile}
@@ -210,7 +210,7 @@ export function VaultGrid({ filter = 'all', group = null }) {
         />
       )}
 
-      {/* Overwrite modal — re-uses FileVaultUpload, updates the entry fields with new manifest */}
+      {/* Overwrite-Modal — nutzt FileVaultUpload, updated die Entry-Felder mit neuem Manifest */}
       {overwriteEntry && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-surface-base border border-border rounded-lg shadow-lg p-6 w-full max-w-md">

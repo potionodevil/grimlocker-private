@@ -1,25 +1,26 @@
-// Package grimdb implements the file-backed encrypted block store (GrimDB).
+// Package grimdb implementiert den datei-basierten encrypted BlockStore (GrimDB).
 //
-// Storage layout on disk:
+// Storage-Layout auf der Platte:
 //
-//	vault_entries.enc  — append-only data file; each block occupies:
+//	vault_entries.enc  — append-only Data-File; jeder Block belegt:
 //	                     nonce(12 bytes) + ciphertext+AEAD-tag + HMAC(32 bytes)
-//	vault_index.enc    — encrypted JSON index mapping block ID → blockRecord.
-//	                     Written atomically via a .tmp file + rename.
+//	vault_index.enc    — encrypted JSON-Index, der Block-ID → blockRecord mapped.
+//	                     Wird atomar via .tmp-Datei + Rename geschrieben.
 //
-// Encryption: ChaCha20-Poly1305 with a per-block random 12-byte nonce.
-// The encryption key (MVK) is never stored in heap memory — callers provide
-// a resolver function via SetMVKFunc that fetches the key from locked memory.
+// Encryption: ChaCha20-Poly1305 mit einem zufälligen 12-Byte-Nonce pro Block.
+// Der Encryption-Key (MVK) wird nie im Heap gelagert — Caller stellen eine
+// Resolver-Funktion via SetMVKFunc bereit, die den Key aus locked Memory holt.
 //
-// Block integrity: each block carries an HMAC-SHA256 over (id ‖ nonce ‖ ciphertext)
-// computed with a key derived from the MVK via HMAC-SHA256("grimlocker-hmac-v1").
-// ReadBlock verifies the HMAC before returning data, using constant-time comparison.
+// Block-Integrity: Jeder Block hat einen HMAC-SHA256 über (id ‖ nonce ‖ ciphertext).
+// Der HMAC-Key wird via HMAC-SHA256("grimlocker-hmac-v1") aus dem MVK abgeleitet.
+// ReadBlock verifiziert den HMAC mit constant-time-Vergleich, bevor er Daten zurückgibt.
 //
-// Deletion is secure: DeleteBlock overwrites the ciphertext region with zeros on
-// disk before removing the block from the index (best-effort on SSDs with wear-leveling).
+// Sicheres Löschen: DeleteBlock überschreibt den Ciphertext-Bereich auf der Platte
+// mit Nullen, bevor er den Block aus dem Index entfernt (best-effort auf SSDs mit
+// Wear-Leveling — für echte Sicherheit TRIM/discard verwenden).
 //
-// Concurrency: a single sync.RWMutex guards the in-memory index and all file I/O.
-// Reads hold RLock; writes hold Lock. Multiple concurrent reads are safe.
+// Concurrency: Ein sync.RWMutex schützt den In-Memory-Index und File-I/O.
+// Reads halten ein RLock, Writes ein Lock. Multiple gleichzeitige Reads sind sicher.
 package grimdb
 
 import (
@@ -46,15 +47,15 @@ type blockRecord struct {
 	Length    int64            `json:"length"`
 	Nonce     []byte           `json:"nonce"`
 	HMAC      []byte           `json:"hmac"`
-	Category  storage.Category `json:"category,omitempty"` // entry category for in-memory filtering
+	Category  storage.Category `json:"category,omitempty"` // entry category für In-Memory-Filterung
 	CreatedAt int64            `json:"created_at"`
 	UpdatedAt int64            `json:"updated_at"`
 }
 
-// BlockStoreImpl is the concrete BlockStore backed by vault_entries.enc.
-// It uses ChaCha20-Poly1305 with the MVK for both index encryption and
-// entry encryption. The MVK is never stored in heap memory — callers
-// provide a resolver function via SetMVKFunc and revoke it via ZeroMVK.
+// BlockStoreImpl ist der konkrete BlockStore, backed by vault_entries.enc.
+// Nutzt ChaCha20-Poly1305 mit dem MVK für Index- und Entry-Encryption.
+// Der MVK wird nie im Heap gelagert — Caller stellen einen Resolver via
+// SetMVKFunc bereit und entziehen ihn via ZeroMVK.
 type BlockStoreImpl struct {
 	mu        sync.RWMutex
 	filePath  string
@@ -80,17 +81,17 @@ func (bs *BlockStoreImpl) mvk() []byte {
 	return bs.getMVK()
 }
 
-// SetMVKFunc stores a function that resolves the master vault key from
-// locked memory. Call after successful UnlockVault. The returned key
-// references stay in locked memory — no heap copy is made.
+// SetMVKFunc speichert eine Funktion, die den MVK aus locked Memory holt.
+// Nach erfolgreichem UnlockVault aufrufen. Der zurückgegebene Key lebt in locked
+// Memory — es wird keine Heap-Kopie erstellt.
 func (bs *BlockStoreImpl) SetMVKFunc(fn func() []byte) {
 	bs.mu.Lock()
 	bs.getMVK = fn
 	bs.mu.Unlock()
 }
 
-// ZeroMVK drops the key reference and clears the index.
-// The actual key material in locked memory is managed by the security module.
+// ZeroMVK entfernt die Key-Referenz und löscht den Index.
+// Das eigentliche Key-Material in locked Memory wird vom Security-Modul verwaltet.
 func (bs *BlockStoreImpl) ZeroMVK() {
 	bs.mu.Lock()
 	bs.getMVK = nil
@@ -98,7 +99,7 @@ func (bs *BlockStoreImpl) ZeroMVK() {
 	bs.mu.Unlock()
 }
 
-// SetStrategy injects a StorageStrategy.
+// SetStrategy injiziert eine StorageStrategy.
 func (bs *BlockStoreImpl) SetStrategy(s storage.StorageStrategy) {
 	bs.mu.Lock()
 	bs.strategy = s
@@ -166,17 +167,15 @@ func (bs *BlockStoreImpl) LoadIndex() error {
 	return nil
 }
 
-// WriteBlock encrypts and appends a block to the vault_entries.enc data file,
-// then atomically updates the encrypted index.
+// WriteBlock encryptet und appended einen Block an vault_entries.enc,
+// dann wird der encrypted Index atomar aktualisiert.
 //
-// The block's Data field must be the plaintext or ciphertext depending on the
-// storage strategy in use (NopStrategy passes data through unchanged).
-// WriteBlock generates a random 12-byte nonce, derives an HMAC key from the MVK,
-// computes HMAC-SHA256(id ‖ nonce ‖ data), appends nonce+hmac+data to the file,
-// and calls persistIndexLocked to flush the updated in-memory index.
+// Data muss je nach Strategy Plaintext oder Ciphertext sein (NopStrategy lässt
+// alles unverändert). WriteBlock generiert ein random 12-Byte-Nonce, leitet einen
+// HMAC-Key aus dem MVK ab, berechnet HMAC-SHA256(id ‖ nonce ‖ data), schreibt
+// nonce+hmac+data an die Datei und persistiert den Index.
 //
-// Returns *errors.GrimlockError with code ErrCodeStorageIO on any I/O failure.
-// The vault must be unlocked (MVK resolver set) before calling WriteBlock.
+// Der Vault muss unlocked sein (MVK-Resolver gesetzt), bevor WriteBlock aufgerufen wird.
 func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -252,15 +251,15 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 	return bs.persistIndexLocked()
 }
 
-// ReadBlock retrieves a block from the store by its ID, verifies its HMAC,
-// and returns the raw (still-encrypted) ciphertext inside the Block.Data field.
+// ReadBlock retrieviert einen Block aus dem Store anhand der ID, verifiziert den HMAC
+// und gibt den rohen (noch verschlüsselten) Ciphertext in Block.Data zurück.
 //
-// HMAC verification uses constant-time comparison to prevent timing attacks.
-// If verification fails, ErrCodeStorageCorruption (2002) is returned — this
-// indicates either tampered data or a mismatched MVK (e.g. wrong password).
+// HMAC-Verifikation nutzt constant-time-Vergleich, um Timing-Angriffe zu verhindern.
+// Bei Fehlschlag kommt ErrCodeStorageCorruption (2002) — das bedeutet entweder
+// manipulierte Daten oder einen falschen MVK (z.B. falsches Passwort).
 //
-// Returns ErrCodeStorageNotFound (2003) if the block ID is not in the index.
-// Returns ErrCodeStorageIO (2001) on any disk read failure.
+// ErrCodeStorageNotFound (2003) wenn die Block-ID nicht im Index ist.
+// ErrCodeStorageIO (2001) bei Disk-Read-Fehlern.
 func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
 	bs.mu.RLock()
 	rec, exists := bs.index[id]
@@ -283,7 +282,7 @@ func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
 		return storage.Block{}, gerrors.NewStorageIOError("read_block_data", id, err)
 	}
 
-	// Verify HMAC before returning.
+	// HMAC verifizieren, bevor wir die Daten rausgeben.
 	hmacKey := deriveHMACKey(mvk)
 	mac := hmac.New(sha256.New, hmacKey[:])
 	mac.Write([]byte(id))
@@ -306,13 +305,13 @@ func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
 	return bs.strategy.OnRead(b)
 }
 
-// DeleteBlock performs a secure delete: it overwrites the block's ciphertext
-// region on disk with zeros (best-effort; SSDs with wear-leveling may retain
-// copies), then removes the block from the in-memory index and persists the
-// updated index atomically.
+// DeleteBlock macht sicheres Löschen: Überschreibt den Ciphertext-Bereich auf
+// der Platte mit Nullen (best-effort; SSDs mit Wear-Leveling können Kopien
+// behalten), entfernt den Block aus dem In-Memory-Index und persistiert den
+// aktualisierten Index atomar.
 //
-// Silently returns nil if the block ID is not in the index (idempotent).
-// Returns ErrCodeStorageIO (2001) if the disk overwrite or index persist fails.
+// Gibt nil zurück, wenn die Block-ID nicht existiert (idempotent).
+// ErrCodeStorageIO (2001) bei Disk-Overwrite- oder Index-Persist-Fehlern.
 func (bs *BlockStoreImpl) DeleteBlock(id string) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -322,7 +321,7 @@ func (bs *BlockStoreImpl) DeleteBlock(id string) error {
 		return nil
 	}
 
-	// Zero the ciphertext region on disk to prevent forensic recovery.
+	// Ciphertext-Bereich auf der Platte mit Nullen überschreiben.
 	if err := bs.zeroBlockDataLocked(rec); err != nil {
 		log.Printf("[blockstore] zeroBlockData for %s failed: %v (continuing with index delete)", id, err)
 	}
@@ -331,12 +330,12 @@ func (bs *BlockStoreImpl) DeleteBlock(id string) error {
 	return bs.persistIndexLocked()
 }
 
-// ListBlocks returns a snapshot of BlockMeta for all blocks in the in-memory
-// index. No disk I/O is performed — the index is loaded once during LoadIndex
-// and kept in sync by WriteBlock/DeleteBlock.
+// ListBlocks gibt einen Snapshot der BlockMeta für alle Blöcke im In-Memory-Index.
+// Kein Disk-I/O — der Index wird einmal bei LoadIndex geladen und von WriteBlock/DeleteBlock
+// synchron gehalten.
 //
-// The vault must be unlocked for the index to be populated; calling ListBlocks
-// on a locked vault returns an empty slice (the index is zeroed on ZeroMVK).
+// Der Vault muss unlocked sein, damit der Index gefüllt ist. Bei locked vault
+// kommt eine leere Slice zurück (der Index wird bei ZeroMVK geleert).
 func (bs *BlockStoreImpl) ListBlocks() ([]storage.BlockMeta, error) {
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
@@ -354,9 +353,9 @@ func (bs *BlockStoreImpl) ListBlocks() ([]storage.BlockMeta, error) {
 	return result, nil
 }
 
-// QueryBlocks returns BlockMeta for all blocks whose Category matches the given value.
-// If category is empty, all blocks are returned (equivalent to ListBlocks).
-// Operates on the decrypted in-memory index; vault must be unlocked.
+// QueryBlocks gibt BlockMeta für alle Blöcke zurück, deren Category dem Wert entspricht.
+// Bei leerer Category werden alle Blöcke zurückgegeben (äquivalent zu ListBlocks).
+// Arbeitet auf dem entschlüsselten In-Memory-Index; Vault muss unlocked sein.
 func (bs *BlockStoreImpl) QueryBlocks(category storage.Category) ([]storage.BlockMeta, error) {
 	bs.mu.RLock()
 	defer bs.mu.RUnlock()
@@ -376,18 +375,18 @@ func (bs *BlockStoreImpl) QueryBlocks(category storage.Category) ([]storage.Bloc
 	return result, nil
 }
 
-// Flush atomically rewrites the encrypted index to vault_index.enc.
-// Called during graceful shutdown before zeroing the MVK to ensure no
-// pending writes are lost. Safe to call concurrently — acquires the write lock.
+// Flush schreibt den encrypted Index atomar nach vault_index.enc.
+// Sollte vor dem Graceful-Shutdown aufgerufen werden, bevor der MVK gezeroized wird,
+// damit keine ausstehenden Writes verloren gehen. Thread-safe (write lock).
 func (bs *BlockStoreImpl) Flush() error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	return bs.persistIndexLocked()
 }
 
-// Close flushes the index and logs the final block count. Always call Close
-// (or defer it) before the daemon exits to prevent index corruption.
-// Returns ErrCodeStorageIndexFailed (2005) if the final persist fails.
+// Close flusht den Index und loggt die finale Block-Anzahl. Immer Close (oder defer)
+// vor Daemon-Exit aufrufen, um Index-Korruption zu vermeiden.
+// ErrCodeStorageIndexFailed (2005) wenn finaler Persist fehlschlägt.
 func (bs *BlockStoreImpl) Close() error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -399,9 +398,9 @@ func (bs *BlockStoreImpl) Close() error {
 	return nil
 }
 
-// zeroBlockDataLocked overwrites the ciphertext region of a deleted block
-// on disk. The caller must hold bs.mu. This is a best-effort secure delete —
-// on SSDs with wear-leveling, full data erasure requires TRIM/discard.
+// zeroBlockDataLocked überschreibt den Ciphertext-Bereich eines gelöschten Blocks
+// auf der Platte mit Nullen. Der Caller muss bs.mu halten. Best-effort —
+// auf SSDs mit Wear-Leveling ist TRIM/discard nötig für echte Löschung.
 func (bs *BlockStoreImpl) zeroBlockDataLocked(rec blockRecord) error {
 	f, err := os.OpenFile(bs.filePath, os.O_WRONLY, 0)
 	if err != nil {
@@ -409,9 +408,8 @@ func (bs *BlockStoreImpl) zeroBlockDataLocked(rec blockRecord) error {
 	}
 	defer f.Close()
 
-	// The block layout on disk is: nonce(12) + ciphertext+tag + hmac(32).
-	// Zero the region from Offset to Offset+Length so no plaintext-related
-	// data remains.
+	// Block-Layout auf Disk: nonce(12) + ciphertext+tag + hmac(32).
+	// Nullt den Bereich von Offset bis Offset+Length.
 	start := int64(rec.Offset)
 	length := int64(rec.Length)
 	if start < 0 || length <= 0 {

@@ -5,13 +5,13 @@ import { FileVaultViewer } from './FileVaultViewer'
 import { FileVaultUpload } from './FileVaultUpload'
 
 /**
- * FileVaultBrowser — hierarchical file browser for the encrypted FileVault.
+ * FileVaultBrowser — Hierarchischer Datei-Browser für den verschlüsselten FileVault.
  *
- * Shows folders + files in a two-panel layout:
- *   Left  — folder tree (collapsible)
- *   Right — contents of the selected folder (files + subfolders)
+ * Zeigt Ordner + Dateien in einem zweispaltigen Layout:
+ *   Links  — Breadcrumb-Navigation
+ *   Rechts — Inhalt des ausgewählten Ordners (Dateien + Unterordner)
  *
- * Users can: create folders, upload files, open files, rename/delete, move files.
+ * User können: Ordner erstellen, Dateien hochladen, öffnen, umbenennen/löschen, verschieben.
  */
 export function FileVaultBrowser({ jumpToFolder, onFolderChange, onRootFoldersChange }) {
   const [currentFolder, setCurrentFolder]  = useState(jumpToFolder ?? '')
@@ -37,7 +37,7 @@ export function FileVaultBrowser({ jumpToFolder, onFolderChange, onRootFoldersCh
         folders: result.folders || [],
         files:   result.files   || [],
       })
-      // Update breadcrumb name if it was a placeholder
+      // Breadcrumb-Name updaten, falls es ein Platzhalter war (z.B. beim Sidebar-Sprung)
       if (result.name && folderId !== '') {
         setBreadcrumbs(prev => prev.map(b => b.id === folderId && b.name === '…' ? { ...b, name: result.name } : b))
       }
@@ -52,7 +52,7 @@ export function FileVaultBrowser({ jumpToFolder, onFolderChange, onRootFoldersCh
     loadFolder(currentFolder)
   }, [currentFolder, loadFolder])
 
-  // When root folders are loaded, expose them to AppShell
+  // Wenn Root-Ordner geladen wurden, an AppShell melden (für die Sidebar)
   useEffect(() => {
     if (currentFolder === '' && onRootFoldersChange) {
       tauriBridge.listFolder('').then(r => {
@@ -62,7 +62,7 @@ export function FileVaultBrowser({ jumpToFolder, onFolderChange, onRootFoldersCh
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentFolder])
 
-  // Jump to a folder from the sidebar
+  // Von der Sidebar in einen Ordner springen
   useEffect(() => {
     if (jumpToFolder === undefined) return
     const id = jumpToFolder ?? ''
@@ -90,7 +90,7 @@ export function FileVaultBrowser({ jumpToFolder, onFolderChange, onRootFoldersCh
     }
   }, [newFolderMode])
 
-  // Close context menu on outside click
+  // Context-Menu schliessen bei Klick ausserhalb
   useEffect(() => {
     if (!contextMenu) return
     const close = (e) => {
@@ -148,8 +148,8 @@ export function FileVaultBrowser({ jumpToFolder, onFolderChange, onRootFoldersCh
       if (item.type === 'folder') {
         await tauriBridge.deleteFolder(item.id)
       } else {
-        // For files: delete the vault entry by manifest_block_id
-        // This reuses the existing deleteEntryFromStore → MsgEntryDelete path
+        // Bei Dateien: Vault-Eintrag per manifest_block_id löschen
+        // Nutzt den existierenden deleteEntryFromStore → MsgEntryDelete-Pfad
         await tauriBridge.deleteEntry(item.manifest_block_id || item.id)
       }
       await loadFolder(currentFolder)
@@ -169,7 +169,7 @@ export function FileVaultBrowser({ jumpToFolder, onFolderChange, onRootFoldersCh
     setContextMenu({ x: e.clientX, y: e.clientY, item })
   }
 
-  // Right-click on empty area (background, not on a file/folder card)
+  // Rechtsklick auf leeren Bereich (Background, nicht auf Datei/Ordner-Karte)
   const handleAreaContextMenu = (e) => {
     if (e.target.closest('[data-file-item]')) return // item has its own menu
     e.preventDefault()

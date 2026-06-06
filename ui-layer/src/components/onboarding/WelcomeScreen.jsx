@@ -65,7 +65,7 @@ export function WelcomeScreen({ onInitialize, connected, connecting }) {
     { icon: '◆', label: 'Anti-Forensic Self-Destruct' },
   ]
 
-  const isDisabled = !connected
+  const isDisabled = !connected  // Ohne Daemon-Verbindung kann der Vault nicht initialisiert werden
 
   return (
     <div

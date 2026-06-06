@@ -1,25 +1,25 @@
 package storage
 
-// BlockStore is the interface every storage backend must implement.
-// Implementations receive and return opaque Blocks; they never decrypt.
+// BlockStore ist das Interface, das jedes Storage-Backend implementieren muss.
+// Implementierungen empfangen und geben opaque Blocks zurück — sie entschlüsseln nie selbst.
 type BlockStore interface {
 	WriteBlock(b Block) error
 	ReadBlock(id string) (Block, error)
 	DeleteBlock(id string) error
 	ListBlocks() ([]BlockMeta, error)
-	// QueryBlocks returns all BlockMeta whose Category matches the given value.
-	// Operates on the in-memory index; vault must be unlocked.
-	// Passing an empty string returns all blocks (same as ListBlocks).
+	// QueryBlocks gibt alle BlockMeta zurück, deren Category dem gegebenen Wert entspricht.
+	// Arbeitet auf dem In-Memory-Index; Vault muss unlocked sein.
+	// Ein leerer String gibt alle Blöcke zurück (identisch zu ListBlocks).
 	QueryBlocks(category Category) ([]BlockMeta, error)
-	// Flush atomically persists the in-memory index.
+	// Flush schreibt den In-Memory-Index atomar auf die Platte.
 	Flush() error
 	Close() error
 }
 
-// StorageStrategy is a pluggable interceptor injected into BlockStore.
-// The store calls OnWrite before persisting and OnRead after retrieving.
-// OnTrigger is called with a trigger key (e.g. "bait" for honeypot,
-// "decoy" for deniable encryption activation).
+// StorageStrategy ist ein pluggbarer Interceptor, der in den BlockStore injiziert wird.
+// Der Store ruft OnWrite vor dem Persistieren und OnRead nach dem Abrufen auf.
+// OnTrigger wird mit einem Trigger-Key aufgerufen (z.B. "bait" für Honeypot,
+// "decoy" für Deniable Encryption).
 type StorageStrategy interface {
 	Name() string
 	OnWrite(b Block) (Block, error)
@@ -27,7 +27,7 @@ type StorageStrategy interface {
 	OnTrigger(key string) error
 }
 
-// NopStrategy is a no-op StorageStrategy used when no strategy is active.
+// NopStrategy ist eine No-Op-Strategy, wenn keine Strategy aktiv ist.
 type NopStrategy struct{}
 
 func (NopStrategy) Name() string               { return "nop" }

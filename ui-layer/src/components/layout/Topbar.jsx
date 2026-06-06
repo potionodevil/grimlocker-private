@@ -3,7 +3,10 @@ import { useGrimStore } from '../../store/useGrimStore'
 import { tauriBridge } from '../../services/tauriBridge'
 import { WorkspaceSwitcher } from '../workspace/WorkspaceSwitcher'
 
-/** Shows a fading lock countdown when < 2 min remain before auto-lock. */
+/**
+ * Zeigt einen ausblendenden Lock-Countdown, wenn < 2 Minuten bis zum Auto-Lock übrig sind.
+ * Das ist der kleine amber-farbene Timer ganz oben rechts.
+ */
 function AutoLockBadge() {
   const autoLockMinutes = useGrimStore((s) => s.preferences.autoLockMinutes ?? 15)
   const [secondsLeft, setSecondsLeft] = useState(null)
@@ -15,11 +18,11 @@ function AutoLockBadge() {
 
     const update = () => {
       const left = Math.max(0, Math.round((deadline - Date.now()) / 1000))
-      // Only show badge when ≤ 120 seconds remain
+      // Badge nur anzeigen, wenn ≤ 120 Sekunden übrig sind — sonst lenkt es nur ab
       setSecondsLeft(left <= 120 ? left : null)
     }
 
-    // Listen for any user activity — reset the deadline
+    // Jede User-Aktivität resetet den Countdown — der Timer zählt nur bei Inaktivität runter
     const resetDeadline = () => { deadline = Date.now() + totalMs; setSecondsLeft(null) }
     const events = ['mousedown', 'keydown', 'scroll', 'touchstart']
     for (const e of events) window.addEventListener(e, resetDeadline, { passive: true })
@@ -64,7 +67,7 @@ export function Topbar({ onSearchOpen, onAddEntry }) {
     }
   }, [setWorkspaces, setActiveWorkspace])
 
-  // Cmd+K / Ctrl+K shortcut
+  // Cmd+K / Ctrl+K — der Klassiker, um die Suche zu öffnen
   useEffect(() => {
     const handler = (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
