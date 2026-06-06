@@ -24,14 +24,14 @@ export function AppShell() {
   const [addOpen, setAddOpen]                   = useState(false)
   const [createGroupOpen, setCreateGroupOpen]   = useState(false)
 
-  // File vault folder state — lifted up so sidebar can show folders
-  const [fileVaultFolders, setFileVaultFolders] = useState([])   // root-level folders
-  const [activeFileVaultFolder, setActiveFileVaultFolder] = useState('')  // '' = root
+  // FileVault-Ordner-Status — hier hochgezogen, damit die Sidebar die Ordner sehen kann
+  const [fileVaultFolders, setFileVaultFolders] = useState([])   // Root-Ordner
+  const [activeFileVaultFolder, setActiveFileVaultFolder] = useState('')  // '' = Root
 
-  // Password group state
+  // Password-Gruppen-Status — welcher Gruppen-Filter ist aktiv
   const [activePasswordGroup, setActivePasswordGroup] = useState(null)
 
-  // Fetch root-level file vault folders when switching to FILE_VAULT
+  // Root-Ordner laden, sobald der User auf FILE_VAULT wechselt
   const foldersLoadedRef = useRef(false)
 
   const loadFileVaultFolders = useCallback(async () => {
@@ -39,7 +39,7 @@ export function AppShell() {
       const result = await tauriBridge.listFolder('')
       setFileVaultFolders(result.folders || [])
     } catch {
-      // Non-critical; sidebar just won't show folders
+      // Nicht kritisch — die Sidebar zeigt dann halt keine Ordner an
     }
   }, [])
 

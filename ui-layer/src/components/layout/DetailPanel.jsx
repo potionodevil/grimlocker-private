@@ -5,7 +5,7 @@ import { useCopyToClipboard } from '../../hooks/useClipboard'
 
 const MASK = '••••••••'
 
-// Type badge labels (no emoji)
+// Type-Badge-Labels — kurze Kürzel für den Entry-Typ im Panel-Header
 const TYPE_LABELS = {
   password:    'PW',
   ssh:         'SSH',
@@ -25,7 +25,7 @@ function MaskedField({ label, value, revealed }) {
   )
 }
 
-/** Plain visible field — for non-sensitive data like public keys. */
+/** Normales, immer sichtbares Feld — für nicht-sensitive Daten wie Public Keys. */
 function PlainField({ label, value }) {
   return (
     <div>
@@ -93,7 +93,7 @@ export function DetailPanel({ entry, onClose }) {
   const entryType = decrypted?.type || entry?.type || entry?.category?.toLowerCase() || 'unknown'
   const typeLabel = TYPE_LABELS[entryType] || entryType.toUpperCase().slice(0, 4)
 
-  // Public key / fingerprint are exposed in metadata (non-sensitive).
+  // Public Key / Fingerprint sind in den Metadaten sichtbar — die sind nicht sensitiv.
   const publicKey  = entry.publicKey  || entryData.publicKey
   const fingerprint = entry.fingerprint || entryData.fingerprint
 

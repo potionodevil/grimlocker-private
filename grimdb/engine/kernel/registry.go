@@ -5,18 +5,18 @@ import (
 	"fmt"
 )
 
-// Registry wraps a Dispatcher and provides ordered module startup.
+// Registry wrappt einen Dispatcher und bietet geordnetes Module-Startup.
 type Registry struct {
 	bus     Dispatcher
 	started []Module
 }
 
-// NewRegistry creates a Registry backed by the given Dispatcher.
+// NewRegistry erzeugt ein Registry mit dem gegebenen Dispatcher.
 func NewRegistry(d Dispatcher) *Registry {
 	return &Registry{bus: d}
 }
 
-// Add registers a module with the bus and records it for ordered startup.
+// Add registriert ein Module auf dem Bus und merkt es fürs geordnete Startup vor.
 func (r *Registry) Add(m Module) error {
 	if err := r.bus.Register(m); err != nil {
 		return fmt.Errorf("register %s: %w", m.ID(), err)
@@ -25,7 +25,7 @@ func (r *Registry) Add(m Module) error {
 	return nil
 }
 
-// StartAll calls Start on every registered module in registration order.
+// StartAll ruft Start auf jedem registrierten Module in Registrierungs-Reihenfolge auf.
 func (r *Registry) StartAll(ctx context.Context) error {
 	for _, m := range r.started {
 		if err := m.Start(ctx, r.bus); err != nil {
@@ -35,12 +35,12 @@ func (r *Registry) StartAll(ctx context.Context) error {
 	return nil
 }
 
-// Bus returns the underlying Dispatcher for use by non-module code (e.g. api layer).
+// Bus gibt den darunterliegenden Dispatcher für Non-Module-Code zurück (z.B. API-Layer).
 func (r *Registry) Bus() Dispatcher {
 	return r.bus
 }
 
-// Modules returns a copy of the registered module list.
+// Modules gibt eine Kopie der registrierten Module-Liste zurück.
 func (r *Registry) Modules() []Module {
 	mods := make([]Module, len(r.started))
 	copy(mods, r.started)

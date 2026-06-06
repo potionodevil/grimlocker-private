@@ -207,6 +207,35 @@ public:
         CHECK_EQ(status, 200);
     }
 
+    std::vector<std::string> batch_create_entries(const std::vector<std::pair<std::string, std::string>>& items) {
+        std::vector<std::string> ids;
+        for (const auto& [title, category] : items) {
+            auto e = create_entry(title, category);
+            ids.push_back(e.id);
+        }
+        return ids;
+    }
+
+    void batch_delete_entries(const std::vector<std::string>& ids) {
+        for (const auto& id : ids) {
+            delete_entry(id);
+        }
+    }
+
+    int failure_count_ = 0;
+    bool circuit_open_ = false;
+
+    void call_with_circuit(const std::string& action, const std::string& payload) {
+        if (circuit_open_) throw std::runtime_error("circuit open");
+        auto [status, body] = transport.call(action, payload);
+        if (status >= 500) {
+            failure_count_++;
+            if (failure_count_ >= 3) circuit_open_ = true;
+            throw std::runtime_error("service error");
+        }
+        failure_count_ = 0;
+    }
+
 private:
     std::string base_url_;
     std::string token_;
@@ -371,6 +400,50 @@ void test_generate_ssh_key() {
     c.generate_ssh_key();
 }
 
+void test_batch_create_entries() {
+    TestClient c("http://127.0.0.1:36353", "token");
+    c.transport.responses = {{200, R"({"id":"b1"})"}, {200, R"({"id":"b2"})"}};
+    auto ids = c.batch_create_entries({{"A", "PASSWORD"}, {"B", "SSH_KEY"}});
+    CHECK_EQ(ids.size(), 2u);
+    CHECK_EQ(ids[0], "b1");
+    CHECK_EQ(ids[1], "b2");
+    CHECK_EQ(c.transport.requests.size(), 2u);
+}
+
+void test_batch_delete_entries() {
+    TestClient c("http://127.0.0.1:36353", "token");
+    c.transport.responses = {{200, R"({"success":true})"}, {200, R"({"success":true})"}};
+    c.batch_delete_entries({"e1", "e2"});
+    CHECK_EQ(c.transport.requests.size(), 2u);
+}
+
+void test_circuit_breaker() {
+    TestClient c("http://127.0.0.1:36353", "token");
+    c.transport.responses = {
+        {500, R"({"error":"fail"})"},
+        {500, R"({"error":"fail"})"},
+        {500, R"({"error":"fail"})"}
+    };
+    for (int i = 0; i < 3; i++) {
+        bool caught = false;
+        try {
+            c.call_with_circuit("entry.list", "{}");
+        } catch (...) {
+            caught = true;
+        }
+        CHECK_TRUE(caught);
+    }
+    CHECK_TRUE(c.circuit_open_);
+    bool caught = false;
+    try {
+        c.call_with_circuit("entry.list", "{}");
+    } catch (...) {
+        caught = true;
+    }
+    CHECK_TRUE(caught);
+    CHECK_EQ(c.transport.requests.size(), 3u);
+}
+
 void test_error_handling() {
     TestClient c("http://127.0.0.1:36353", "token");
     c.transport.responses = {{500, R"({"error":"internal error"})"}};
@@ -425,6 +498,9 @@ int main() {
     run_test(test_list_audit_events, "list_audit_events");
     run_test(test_health_check, "health_check");
     run_test(test_generate_ssh_key, "generate_ssh_key");
+    run_test(test_batch_create_entries, "batch_create_entries");
+    run_test(test_batch_delete_entries, "batch_delete_entries");
+    run_test(test_circuit_breaker, "circuit_breaker");
     run_test(test_error_handling, "error_handling");
     run_test(test_unlock_error, "unlock_error");
 

@@ -1,32 +1,32 @@
-// Package security (zkp.go) implements a Zero-Knowledge Proof (ZKP) challenge-
-// response mechanism for password authentication.
+// Package security (zkp.go) implementiert ein Zero-Knowledge-Proof (ZKP) Challenge-
+// Response-Verfahren für die Passwort-Authentifizierung.
 //
-// Goal: Prove knowledge of a password WITHOUT ever transmitting the password
-// in plaintext (or even hashed plaintext) over any channel including the kernel
-// event bus.
+// Ziel: Nachweisen, dass man ein Passwort kennt, OHNE es jemals in Plaintext
+// (oder gehashtem Plaintext) über irgendeinen Channel zu senden — inklusive
+// des Kernel-Event-Bus.
 //
-// Protocol (ZKPP — Zero-Knowledge Password Proof):
-//  1. Daemon generates a random 32-byte nonce and stores it temporarily.
-//  2. Daemon sends (salt, nonce) to the client.
-//  3. Client computes: proof = Argon2id(password, salt) XOR BLAKE2b(nonce)
-//     — or equivalently: proof = derived_key XOR nonce_hash
-//     The proof is a one-time commitment that cannot be replayed (nonce is
-//     single-use) and does not reveal the password or the derived key alone.
-//  4. Client sends proof to daemon.
-//  5. Daemon verifies: stored_derived_key XOR BLAKE2b(nonce) == proof
-//     — using constant-time comparison to prevent timing attacks.
-//  6. Daemon deletes the nonce immediately after verification (replay prevention).
+// Protokoll (ZKPP — Zero-Knowledge Password Proof):
+//  1. Daemon generiert ein zufälliges 32-Byte-Nonce und speichert es temporär.
+//  2. Daemon sendet (salt, nonce) an den Client.
+//  3. Client berechnet: proof = Argon2id(password, salt) XOR BLAKE2b(nonce)
+//     — oder äquivalent: proof = derived_key XOR nonce_hash
+//     Der Proof ist ein Einmal-Commitment, das nicht replaybar ist (Nonce ist
+//     Single-Use) und weder das Passwort noch den Derived Key allein preisgibt.
+//  4. Client sendet proof an den Daemon.
+//  5. Daemon verifiziert: stored_derived_key XOR BLAKE2b(nonce) == proof
+//     — mit constant-time-Vergleich, um Timing-Angriffe zu verhindern.
+//  6. Daemon löscht das Nonce sofort nach Verifikation (Replay-Schutz).
 //
-// Security properties:
-//   - Password never leaves the client in any form.
-//   - Proof is single-use (nonce-bound) — replay attack protection.
-//   - Constant-time verification — no timing oracle.
-//   - Even if the proof is intercepted, the attacker cannot derive the password
-//     or the vault key without knowing the nonce AND the original password.
+// Security-Eigenschaften:
+//   - Passwort verlässt den Client nie in irgendeiner Form.
+//   - Proof ist Single-Use (Nonce-gebunden) — Replay-Schutz.
+//   - Constant-Time-Verifikation — kein Timing-Oracle.
+//   - Selbst wenn der Proof abgefangen wird, kann der Angreifer weder das Passwort
+//     noch den Vault-Key ableiten — dazu braucht er sowohl Nonce als auch Original-Passwort.
 //
-// NOTE: This is a Go-side framework. The actual password derivation (Argon2id)
-// happens in the Tauri frontend and in the Go auth handler. This file provides
-// the nonce lifecycle management and verification primitives.
+// HINWEIS: Das ist ein Go-seitiges Framework. Die eigentliche Passwort-Derivation
+// (Argon2id) passiert im Tauri-Frontend und im Go-Auth-Handler. Diese Datei stellt
+// nur Nonce-Lifecycle-Management und Verifikations-Primitives bereit.
 package security
 
 import (
@@ -42,48 +42,47 @@ import (
 )
 
 const (
-	// ZKPNonceSize is the length of the single-use challenge nonce in bytes.
+	// ZKPNonceSize ist die Länge des Single-Use-Challenge-Nonce in Bytes.
 	ZKPNonceSize = 32
 
-	// ZKPProofSize is the length of the ZKP commitment proof in bytes.
+	// ZKPProofSize ist die Länge des ZKP-Commitment-Proof in Bytes.
 	ZKPProofSize = 32
 
 	// zkpNonceTTL is how long a nonce is valid after issuance.
-	// After this, the challenge expires and the client must request a new one.
 	zkpNonceTTL = 5 * time.Minute
 )
 
-// ZKPChallenge is a single-use authentication challenge issued to a client.
+// ZKPChallenge ist eine Single-Use-Auth-Challenge, die einem Client ausgestellt wird.
 type ZKPChallenge struct {
-	// Nonce is the single-use random challenge sent to the client.
-	// Hex-encoded for safe transport over JSON/WebSocket.
+	// Nonce ist das Single-Use-Random-Challenge, das an den Client gesendet wird.
+	// Hex-encoded für sicheren Transport über JSON/WebSocket.
 	Nonce string `json:"nonce"`
 
-	// ExpiresAt is when this challenge becomes invalid.
+	// ExpiresAt gibt an, wann die Challenge ungültig wird.
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// ZKPVerifier manages the lifecycle of ZKP challenges and verifies proofs.
+// ZKPVerifier managed den Lifecycle von ZKP-Challenges und verifiziert Proofs.
 type ZKPVerifier struct {
 	mu       sync.Mutex
 	pending  map[string][ZKPNonceSize]byte // challenge_id -> raw nonce
 	expiries map[string]time.Time          // challenge_id -> expiry
 }
 
-// NewZKPVerifier creates a ZKPVerifier.
+// NewZKPVerifier erzeugt einen ZKPVerifier.
 func NewZKPVerifier() *ZKPVerifier {
 	v := &ZKPVerifier{
 		pending:  make(map[string][ZKPNonceSize]byte),
 		expiries: make(map[string]time.Time),
 	}
-	// Background cleanup of expired challenges.
+	// Hintergrund-Cleanup für abgelaufene Challenges.
 	go v.cleanupLoop()
 	return v
 }
 
-// IssueChallenge generates a new single-use nonce and returns a ZKPChallenge
-// to be sent to the client. The challenge ID is used by the client to reference
-// which challenge it is responding to.
+// IssueChallenge generiert ein neues Single-Use-Nonce und gibt ein ZKPChallenge
+// zurück, das an den Client gesendet wird. Die Challenge-ID referenziert,
+// auf welche Challenge der Client antwortet.
 func (v *ZKPVerifier) IssueChallenge() (challengeID string, challenge ZKPChallenge, err error) {
 	var rawID [16]byte
 	if _, err := rand.Read(rawID[:]); err != nil {
@@ -109,19 +108,19 @@ func (v *ZKPVerifier) IssueChallenge() (challengeID string, challenge ZKPChallen
 	}, nil
 }
 
-// VerifyProof verifies a ZKP proof for a given challenge.
-// derivedKey is the Argon2id-derived key that the daemon has pre-computed
-// from the stored vault params (without knowing the password).
+// VerifyProof verifiziert einen ZKP-Proof für eine gegebene Challenge.
+// derivedKey ist der Argon2id-abgeleitete Key, den der Daemon aus den
+// gespeicherten Vault-Parametern vorberechnet hat (ohne das Passwort zu kennen).
 //
-// Proof verification: proof == derivedKey XOR BLAKE2b(nonce)
+// Proof-Verifikation: proof == derivedKey XOR BLAKE2b(nonce)
 //
-// The challenge is consumed (deleted) after the first verification attempt
-// regardless of success — preventing replay attacks.
+// Die Challenge wird nach dem ersten Verifikationsversuch konsumiert (gelöscht),
+// unabhängig vom Erfolg — das verhindert Replay-Angriffe.
 func (v *ZKPVerifier) VerifyProof(challengeID string, derivedKey, proof []byte) error {
 	v.mu.Lock()
 	nonce, ok := v.pending[challengeID]
 	expiry := v.expiries[challengeID]
-	// Consume immediately — single use.
+	// Sofort konsumieren — Single-Use.
 	delete(v.pending, challengeID)
 	delete(v.expiries, challengeID)
 	v.mu.Unlock()
@@ -138,7 +137,7 @@ func (v *ZKPVerifier) VerifyProof(challengeID string, derivedKey, proof []byte) 
 		return fmt.Errorf("invalid proof or key length")
 	}
 
-	// Compute expected proof: derivedKey XOR BLAKE2b-256(nonce).
+	// Erwarteten Proof berechnen: derivedKey XOR BLAKE2b-256(nonce).
 	h, _ := blake2b.New256(nil)
 	h.Write(nonce[:])
 	nonceHash := h.Sum(nil)
@@ -148,7 +147,7 @@ func (v *ZKPVerifier) VerifyProof(challengeID string, derivedKey, proof []byte) 
 		expected[i] = derivedKey[i] ^ nonceHash[i]
 	}
 
-	// Constant-time comparison to prevent timing attacks.
+	// Constant-Time-Vergleich schützt vor Timing-Angriffen.
 	if subtle.ConstantTimeCompare(expected, proof) != 1 {
 		return fmt.Errorf("proof verification failed")
 	}
@@ -156,10 +155,9 @@ func (v *ZKPVerifier) VerifyProof(challengeID string, derivedKey, proof []byte) 
 	return nil
 }
 
-// ComputeProof computes the ZKP proof on the client side.
-// derivedKey is the Argon2id-derived key from the user's password.
-// nonceHex is the hex-encoded nonce from the ZKPChallenge.
-// Returns the proof bytes to send to the server.
+// ComputeProof berechnet den ZKP-Proof auf der Client-Seite.
+// derivedKey ist der Argon2id-abgeleitete Key aus dem User-Passwort.
+// nonceHex ist das hex-encoded Nonce aus ZKPChallenge.
 func ComputeProof(derivedKey []byte, nonceHex string) ([]byte, error) {
 	nonceBytes, err := hex.DecodeString(nonceHex)
 	if err != nil || len(nonceBytes) != ZKPNonceSize {
@@ -180,8 +178,7 @@ func ComputeProof(derivedKey []byte, nonceHex string) ([]byte, error) {
 	return proof, nil
 }
 
-// PendingCount returns the number of active (non-expired) challenges.
-// Useful for diagnostics.
+// PendingCount gibt die Anzahl der aktiven (nicht abgelaufenen) Challenges zurück.
 func (v *ZKPVerifier) PendingCount() int {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -192,7 +189,6 @@ func (v *ZKPVerifier) PendingCount() int {
 		if now.Before(expiry) {
 			count++
 		} else {
-			// Clean stale while we have the lock.
 			delete(v.pending, id)
 			delete(v.expiries, id)
 		}
@@ -200,7 +196,7 @@ func (v *ZKPVerifier) PendingCount() int {
 	return count
 }
 
-// cleanupLoop periodically removes expired challenges to prevent memory growth.
+// cleanupLoop entfernt periodisch abgelaufene Challenges, um Memory-Growth zu verhindern.
 func (v *ZKPVerifier) cleanupLoop() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()

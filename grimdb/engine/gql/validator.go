@@ -5,24 +5,24 @@ import (
 	"strings"
 )
 
-// SessionInfo provides the runtime context needed for semantic (ACL) validation.
-// The concrete implementation is provided by the daemon's security.SessionContext.
+// SessionInfo stellt den Runtime-Context bereit, der für die semantische (ACL-)Validierung
+// gebraucht wird. Die konkrete Implementierung kommt vom security.SessionContext des Daemons.
 type SessionInfo interface {
-	// IsUnlocked reports whether the vault is currently unlocked.
+	// IsUnlocked gibt zurück, ob der Vault gerade unlocked ist.
 	IsUnlocked() bool
 
-	// ActiveHandle returns the MVK handle if the session is unlocked.
+	// ActiveHandle gibt den MVK-Handle zurück, wenn die Session unlocked ist.
 	ActiveHandle() string
 
-	// UserID returns the authenticated user's subject identifier.
-	// Empty string means anonymous (pre-auth).
+	// UserID gibt die Subject-ID des authentifizierten Users zurück.
+	// Leerer String bedeutet anonym (pre-auth).
 	UserID() string
 
-	// HasRole reports whether the session holds the given RBAC role.
+	// HasRole gibt zurück, ob die Session die angegebene RBAC-Rolle hat.
 	HasRole(role string) bool
 }
 
-// SyntacticError describes a frame that fails schema-level validation.
+// SyntacticError beschreibt ein Frame, das die Schema-Validierung nicht besteht.
 type SyntacticError struct {
 	Field   string
 	Reason  string
@@ -36,7 +36,7 @@ func (e *SyntacticError) Error() string {
 	return fmt.Sprintf("gql: syntactic error in %q: %s", e.Field, e.Reason)
 }
 
-// SemanticError describes a frame that fails ACL/authorization validation.
+// SemanticError beschreibt ein Frame, das die ACL/Authorization-Validierung nicht besteht.
 type SemanticError struct {
 	Operation Operation
 	Reason    string
@@ -46,27 +46,25 @@ func (e *SemanticError) Error() string {
 	return fmt.Sprintf("gql: semantic error for %q: %s", e.Operation, e.Reason)
 }
 
-// ValidateFrame performs full two-stage validation on a GQL frame.
+// ValidateFrame führt die vollständige 2-stufige Validierung eines GQL-Frames durch.
 //
-// Stage 1 — Syntactic:
-//   - Version must be Version (1)
-//   - Opcode must be known
-//   - Payload must decode into a valid GQLQuery
-//   - All string fields must be within length limits
-//   - No null bytes or control characters in string fields
-//   - Field count must be within limits
-//   - Operation must be valid for this opcode (query vs mutate)
+// Stufe 1 — Syntaktisch:
+//   - Version muss Version (1) sein
+//   - Opcode muss bekannt sein
+//   - Payload muss sich zu einem gültigen GQLQuery dekodieren lassen
+//   - Alle String-Felder müssen innerhalb der Längenlimits liegen
+//   - Keine Null-Bytes oder Steuerzeichen in String-Feldern
+//   - Field-Count muss im Limit sein
+//   - Operation muss zum Opcode passen (query vs mutate)
 //
-// Stage 2 — Semantic:
-//   - Session must be unlocked for any operation
-//   - Write operations require credentials
-//   - Namespace must match session UserID (RBAC)
-//   - Must have appropriate role for the operation
+// Stufe 2 — Semantisch:
+//   - Session muss unlocked sein für jede Operation
+//   - Write-Operationen brauchen Credentials
+//   - Namespace muss zur Session-UserID passen (RBAC)
+//   - Passende Rolle für die Operation erforderlich
 //
-// Returns the decoded GQLQuery on success, or an error describing the failure.
+// Gibt den dekodierten GQLQuery bei Erfolg zurück, oder einen Error.
 func ValidateFrame(frame *Frame, session SessionInfo) (*GQLQuery, error) {
-	// -- Stage 1: Syntactic validation --
-
 	if frame.Version != Version {
 		return nil, &SyntacticError{Field: "version", Reason: fmt.Sprintf("unsupported version %d (expected %d)", frame.Version, Version)}
 	}
@@ -75,7 +73,7 @@ func ValidateFrame(frame *Frame, session SessionInfo) (*GQLQuery, error) {
 		return nil, &SyntacticError{Field: "opcode", Reason: fmt.Sprintf("unknown opcode 0x%02x", byte(frame.Opcode))}
 	}
 
-	// Result and Error frames don't need query-level validation
+	// Result- und Error-Frames brauchen keine Query-Level-Validierung.
 	if frame.Opcode == OpcodeResult || frame.Opcode == OpcodeError {
 		return nil, nil
 	}
@@ -88,25 +86,19 @@ func ValidateFrame(frame *Frame, session SessionInfo) (*GQLQuery, error) {
 		}
 	}
 
-	// Determine the operation from the payload (first decode, then the Operation field)
-	// For security, we don't trust the operation string in the decoded query until
-	// we've done byte-level validation on every field.
 	if len(frame.Payload) == 0 {
 		return nil, &SyntacticError{Field: "payload", Reason: "empty payload"}
 	}
 
-	// Validate payload bytes at the structural level before decoding
+	// Payload-Bytes auf struktureller Ebene validieren, bevor dekodiert wird.
 	if err := validatePayloadBytes(frame.Payload); err != nil {
 		return nil, err
 	}
 
-	// Determine operation type for decode
 	var op Operation
 	switch frame.Opcode {
 	case OpcodeQuery:
-		// Operation will be set after decode
 	case OpcodeMutate:
-		// Operation will be set after decode
 	default:
 		return nil, &SyntacticError{Field: "opcode", Reason: "opcode not allowed for query validation"}
 	}
@@ -116,13 +108,11 @@ func ValidateFrame(frame *Frame, session SessionInfo) (*GQLQuery, error) {
 		return nil, &SyntacticError{Field: "payload", Reason: "decode failed", Details: err.Error()}
 	}
 
-	// Now validate the decoded fields
 	if err := validateQuery(query, frame.Opcode); err != nil {
 		return nil, err
 	}
 
-	// -- Stage 2: Semantic (ACL) validation --
-
+	// -- Stufe 2: Semantische (ACL-)Validierung --
 	if err := validateACL(query, session); err != nil {
 		return nil, err
 	}
@@ -130,16 +120,14 @@ func ValidateFrame(frame *Frame, session SessionInfo) (*GQLQuery, error) {
 	return query, nil
 }
 
-// validatePayloadBytes checks the raw payload for structural integrity
-// before any decoding. This catches malformed/corrupted payloads early.
+// validatePayloadBytes prüft den rohen Payload auf strukturelle Integrität,
+// bevor dekodiert wird. Fängt malformed/corrupted Payloads früh.
 func validatePayloadBytes(payload []byte) error {
-	// Payload must be non-empty
 	if len(payload) == 0 {
 		return &SyntacticError{Field: "payload", Reason: "zero-length"}
 	}
 
-	// Basic sanity: check that the payload doesn't start with obviously
-	// wrong field counts or lengths that would cause infinite loops.
+	// Grundlegende Sanity: Field-Count und Längen dürfen keine Endlos-Loops verursachen.
 	fieldCount := int(payload[0])
 	if fieldCount > MaxFieldsCount {
 		return &SyntacticError{
@@ -152,9 +140,8 @@ func validatePayloadBytes(payload []byte) error {
 	return nil
 }
 
-// validateQuery performs field-level syntactic validation on a decoded GQLQuery.
+// validateQuery führt die Feld-Level-Syntaktische-Validierung auf einem dekodierten GQLQuery durch.
 func validateQuery(q *GQLQuery, opcode Opcode) error {
-	// namespace is required and must be alphanumeric + underscores + hyphens
 	if err := validateStringField("namespace", q.Namespace, true, MaxNamespaceLen); err != nil {
 		return err
 	}
@@ -162,7 +149,6 @@ func validateQuery(q *GQLQuery, opcode Opcode) error {
 		return err
 	}
 
-	// entry_id (required for get/update/delete, optional for list/create)
 	if q.EntryID != "" {
 		if err := validateStringField("entry_id", q.EntryID, false, MaxEntryIDLen); err != nil {
 			return err
@@ -172,7 +158,6 @@ func validateQuery(q *GQLQuery, opcode Opcode) error {
 		}
 	}
 
-	// category (optional, but must be valid if provided)
 	if q.Category != "" {
 		if err := validateStringField("category", q.Category, false, MaxCategoryLen); err != nil {
 			return err
@@ -182,18 +167,15 @@ func validateQuery(q *GQLQuery, opcode Opcode) error {
 		}
 	}
 
-	// title (optional)
 	if q.Title != "" {
 		if err := validateStringField("title", q.Title, false, MaxFieldValueLen); err != nil {
 			return err
 		}
-		// title allows printable chars including spaces
 		if err := validatePrintable("title", q.Title); err != nil {
 			return err
 		}
 	}
 
-	// field keys and values
 	if len(q.Fields) > MaxFieldsCount {
 		return &SyntacticError{
 			Field:   "fields",
@@ -216,7 +198,6 @@ func validateQuery(q *GQLQuery, opcode Opcode) error {
 		}
 	}
 
-	// Opcode ↔ operation consistency check
 	if opcode == OpcodeQuery && !isReadOperation(q.Operation) {
 		return &SyntacticError{
 			Field:   "operation",
@@ -235,7 +216,7 @@ func validateQuery(q *GQLQuery, opcode Opcode) error {
 	return nil
 }
 
-// validateACL performs semantic authorization checks.
+// validateACL führt semantische Authorization-Checks durch.
 func validateACL(q *GQLQuery, session SessionInfo) error {
 	if session == nil {
 		return &SemanticError{Operation: q.Operation, Reason: "no active session"}
@@ -249,7 +230,7 @@ func validateACL(q *GQLQuery, session SessionInfo) error {
 		return &SemanticError{Operation: q.Operation, Reason: "no active MVK handle"}
 	}
 
-	// Write operations require credentials
+	// Write-Operationen brauchen Credentials
 	if isWriteOperation(q.Operation) && len(q.Credentials) == 0 {
 		return &SemanticError{
 			Operation: q.Operation,
@@ -257,10 +238,9 @@ func validateACL(q *GQLQuery, session SessionInfo) error {
 		}
 	}
 
-	// RBAC: namespace must match session UserID (if RBAC is enabled)
+	// RBAC: Namespace muss mit der Session-UserID übereinstimmen (wenn RBAC aktiv ist).
 	userID := session.UserID()
 	if userID != "" && q.Namespace != "" && q.Namespace != userID {
-		// Admin role can access any namespace
 		if !session.HasRole("admin") {
 			return &SemanticError{
 				Operation: q.Operation,
@@ -272,7 +252,7 @@ func validateACL(q *GQLQuery, session SessionInfo) error {
 	return nil
 }
 
-// validateStringField checks a string field's length and content.
+// validateStringField prüft Länge und Inhalt eines String-Felds.
 func validateStringField(name, value string, required bool, maxLen int) error {
 	if required && value == "" {
 		return &SyntacticError{Field: name, Reason: "required field is empty"}
@@ -287,12 +267,12 @@ func validateStringField(name, value string, required bool, maxLen int) error {
 	return nil
 }
 
-// validateIdentifier checks that a string contains only safe identifier characters.
-// Allowed: a-z, A-Z, 0-9, _, -, .
-// This prevents injection attacks through identifier fields.
+// validateIdentifier prüft, dass ein String nur safe Identifier-Zeichen enthält.
+// Erlaubt: a-z, A-Z, 0-9, _, -, .
+// Verhindert Injection-Angriffe durch Identifier-Felder.
 func validateIdentifier(name, value string) error {
 	if value == "" {
-		return nil // empty is OK for optional fields
+		return nil
 	}
 	for i, c := range value {
 		if !isIdentChar(c) {
@@ -306,8 +286,8 @@ func validateIdentifier(name, value string) error {
 	return nil
 }
 
-// validatePrintable checks that a string contains only printable characters.
-// No control characters (tab, newline, etc.), no null bytes.
+// validatePrintable prüft, dass ein String nur druckbare Zeichen enthält.
+// Keine Steuerzeichen (Tab, Newline, etc.), keine Null-Bytes.
 func validatePrintable(name, value string) error {
 	if value == "" {
 		return nil
@@ -331,8 +311,7 @@ func validatePrintable(name, value string) error {
 	return nil
 }
 
-// isIdentChar returns true if c is a valid identifier character.
-// Allowed: a-z, A-Z, 0-9, _, -, .
+// isIdentChar gibt true zurück, wenn c ein gültiges Identifier-Zeichen ist.
 func isIdentChar(c rune) bool {
 	if c >= 'a' && c <= 'z' {
 		return true
@@ -349,8 +328,8 @@ func isIdentChar(c rune) bool {
 	return false
 }
 
-// SanitizeFieldKey normalizes a field key for safe storage.
-// Strips leading/trailing whitespace and replaces invalid characters.
+// SanitizeFieldKey normalisiert einen Field-Key für die sichere Speicherung.
+// Entfernt führende/trailende Leerzeichen und ersetzt invalide Zeichen.
 func SanitizeFieldKey(key string) string {
 	key = strings.TrimSpace(key)
 	var b strings.Builder

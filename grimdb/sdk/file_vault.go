@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/grimlocker/grimdb/gql"
+	"github.com/grimlocker/grimdb/engine/gql"
 )
 
 // FileEntry represents a file stored in the File Vault.

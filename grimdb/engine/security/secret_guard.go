@@ -1,15 +1,15 @@
-// Package security (secret_guard.go) implements SecretGuard — a thread-safe
-// store for short-lived secrets (passwords, keys, tokens) that must be
-// zeroed from memory as soon as they are no longer needed.
+// Package security (secret_guard.go) implementiert SecretGuard — einen thread-safeen
+// Store für kurzlebige Secrets (Passwörter, Keys, Tokens), die sofort aus dem Memory
+// gezeroized werden müssen, sobald sie nicht mehr gebraucht werden.
 //
-// Every secret is stored in a named slot. Calling Wipe or WipeAll overwrites
-// the backing byte slice with zeros before releasing the reference. This limits
-// the window in which a memory dump or GC scan could recover secret material.
+// Jedes Secret wird in einem benannten Slot gespeichert. Wipe oder WipeAll überschreiben
+// das zugrundeliegende Byte-Slice mit Nullen, bevor die Referenz freigegeben wird.
+// Das begrenzt das Zeitfenster, in dem ein Memory-Dump oder GC-Scan das Secret finden könnte.
 //
-// SecretGuard is not a substitute for mlock'd memory (see MemoryGuard) — it
-// lives in the Go heap and can in principle be paged. Use it for short-lived
-// transients (e.g. a password held between receive and derivation). For
-// persistent key material (MVK, session keys) use MemoryGuard.AllocLocked.
+// SecretGuard ist kein Ersatz für mlock'd Memory (siehe MemoryGuard) — es lebt im Go-Heap
+// und kann theoretisch ausgelagert werden. Nutze es für kurzlebige Transients (z.B. ein
+// Passwort zwischen Empfang und Derivation). Für persistentes Key-Material (MVK, Session-Keys)
+// MemoryGuard.AllocLocked verwenden.
 package security
 
 import (
@@ -19,25 +19,24 @@ import (
 	"sync"
 )
 
-// SecretGuard provides a thread-safe store for short-lived secret byte slices.
-// Each secret is identified by an opaque nonce token returned by Store.
-// Secrets are zeroed on Wipe or WipeAll.
+// SecretGuard ist ein thread-safeer Store für kurzlebige Secret-Byte-Slices.
+// Jedes Secret wird durch einen opaque Nonce-Token identifiziert, den Store zurückgibt.
+// Secrets werden bei Wipe oder WipeAll gezeroized.
 type SecretGuard struct {
 	mu    sync.Mutex
 	slots map[string][]byte
 }
 
-// NewSecretGuard creates an empty SecretGuard.
+// NewSecretGuard erzeugt einen leeren SecretGuard.
 func NewSecretGuard() *SecretGuard {
 	return &SecretGuard{
 		slots: make(map[string][]byte),
 	}
 }
 
-// Store saves a copy of secret under a freshly generated random nonce and
-// returns the nonce token. The caller must call Wipe(token) when done.
-// The original secret slice is NOT zeroed by Store — that is the caller's
-// responsibility.
+// Store speichert eine Kopie von secret unter einem frisch generierten Nonce und
+// gibt den Nonce-Token zurück. Der Caller muss Wipe(token) aufrufen, wenn er fertig ist.
+// Das originale Secret-Slice wird NICHT von Store gezeroized — das ist Caller-Verantwortung.
 func (g *SecretGuard) Store(secret []byte) (token string, err error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
@@ -45,7 +44,7 @@ func (g *SecretGuard) Store(secret []byte) (token string, err error) {
 	}
 	token = hex.EncodeToString(raw)
 
-	// Store a copy so we own the memory.
+	// Kopie speichern, damit wir das Memory kontrollieren.
 	buf := make([]byte, len(secret))
 	copy(buf, secret)
 
@@ -55,9 +54,9 @@ func (g *SecretGuard) Store(secret []byte) (token string, err error) {
 	return token, nil
 }
 
-// Retrieve returns the secret for the given token (copy) and removes the slot.
-// The returned slice should be zeroed by the caller after use.
-// Returns (nil, false) if the token is unknown or already wiped.
+// Retrieve gibt das Secret für den gegebenen Token (als Kopie) zurück und entfernt den Slot.
+// Das zurückgegebene Slice sollte nach Gebrauch vom Caller gezeroized werden.
+// Gibt (nil, false) zurück, wenn der Token unbekannt oder bereits gewiped ist.
 func (g *SecretGuard) Retrieve(token string) ([]byte, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -66,7 +65,7 @@ func (g *SecretGuard) Retrieve(token string) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	// Return a copy and wipe the stored copy immediately.
+	// Kopie zurückgeben und die gespeicherte Kopie sofort wipen.
 	out := make([]byte, len(buf))
 	copy(out, buf)
 	zeroize(buf)
@@ -74,8 +73,8 @@ func (g *SecretGuard) Retrieve(token string) ([]byte, bool) {
 	return out, true
 }
 
-// Wipe zeros and removes the slot for the given token.
-// Safe to call multiple times — subsequent calls are no-ops.
+// Wipe zeroized und entfernt den Slot für den gegebenen Token.
+// Kann mehrfach aufgerufen werden — Folgeaufrufe sind No-Ops.
 func (g *SecretGuard) Wipe(token string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -86,8 +85,8 @@ func (g *SecretGuard) Wipe(token string) {
 	}
 }
 
-// WipeAll zeros and removes all stored secrets.
-// Call this during graceful shutdown or lockdown.
+// WipeAll zeroized und entfernt ALLE gespeicherten Secrets.
+// Aufruf bei Graceful-Shutdown oder Lockdown.
 func (g *SecretGuard) WipeAll() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -102,7 +101,7 @@ func (g *SecretGuard) WipeAll() {
 	}
 }
 
-// Count returns the number of currently stored secret slots (for diagnostics).
+// Count gibt die Anzahl der aktuell gespeicherten Secret-Slots zurück (für Diagnostics).
 func (g *SecretGuard) Count() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()

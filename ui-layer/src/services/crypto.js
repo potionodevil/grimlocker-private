@@ -1,21 +1,22 @@
 /**
- * crypto.js — Client-side ChaCha20-Poly1305 decryption using @noble/ciphers.
+ * crypto.js — Clientseitige ChaCha20-Poly1305-Entschlüsselung via @noble/ciphers.
  *
- * All sensitive data (passwords, SSH keys, certificates) is encrypted
- * with a session key (SKE) before being sent over the WebSocket. The
- * session key is derived at unlock time and held only in JS RAM.
- * It is NEVER persisted and vanishes on page reload.
+ * Warum das Ganze? Alle sensitiven Daten (Passwörter, SSH-Keys, Zertifikate) werden
+ * vom Daemon mit einem Session-Key (SKE) verschlüsselt, bevor sie über den WebSocket
+ * geschickt werden. Das Frontend bekommt also nie Rohdaten zu sehen.
+ * Der Session-Key wird beim Unlock abgeleitet und lebt NUR im JS-RAM — kein
+ * localStorage, kein Cookie, nirgends. Beim Reload ist er weg.
  *
- * Wire format for SKE-encrypted payloads:
+ * Wire-Format für SKE-Payloads:
  *   base64(nonce[12] + ciphertext_with_tag)
  */
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 
 /**
- * Decrypt an SKE-encrypted payload.
- * @param {string} encryptedB64 — Base64-encoded (nonce[12] + ciphertext+tag)
- * @param {Uint8Array} key — 32-byte session key
- * @returns {string} Decrypted UTF-8 string
+ * Entschlüsselt ein SKE-encrypted Payload.
+ * @param {string} encryptedB64 — Base64-kodiert (nonce[12] + ciphertext+tag)
+ * @param {Uint8Array} key — 32-Byte Session-Key
+ * @returns {string} Entschlüsselter UTF-8-String
  */
 export function decryptSKE(encryptedB64, key) {
   const raw = base64ToBytes(encryptedB64)
@@ -30,11 +31,11 @@ export function decryptSKE(encryptedB64, key) {
 }
 
 /**
- * Decrypt a single SKE-encrypted field value.
- * Returns the plaintext string, or the original value if decryption fails
- * (e.g. the field was never encrypted).
- * @param {string} value — Either a plaintext string or an SKE-encrypted base64 blob
- * @param {Uint8Array} key — 32-byte session key
+ * Entschlüsselt ein einzelnes SKE-Feld — tolerant gegenüber Plaintext.
+ * Wenn der Wert nie verschlüsselt wurde (z.B. weil das Feld optional ist),
+ * geben wir einfach den Originalwert zurück.
+ * @param {string} value — Plaintext oder SKE-Base64-Blob
+ * @param {Uint8Array} key — 32-Byte Session-Key
  * @returns {string}
  */
 export function decryptField(value, key) {
@@ -47,7 +48,7 @@ export function decryptField(value, key) {
 }
 
 /**
- * Decode a base64 string to a Uint8Array.
+ * Base64 → Uint8Array. Der Klassiker, nur halt ohne Buffer.
  */
 export function base64ToBytes(b64) {
   const bin = atob(b64)
@@ -59,7 +60,7 @@ export function base64ToBytes(b64) {
 }
 
 /**
- * Encode a Uint8Array to a base64 string.
+ * Uint8Array → Base64. Der Rückweg.
  */
 export function bytesToBase64(bytes) {
   let bin = ''

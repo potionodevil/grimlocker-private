@@ -20,6 +20,8 @@
 #include <sstream>
 #include <cstring>
 #include <vector>
+#include <chrono>
+#include <thread>
 
 namespace grimlocker {
 
@@ -48,6 +50,16 @@ namespace detail {
         return out;
     }
 } // namespace detail
+
+struct CircuitBreakerOpenException : GrimlockerError {
+    CircuitBreakerOpenException() : GrimlockerError("circuit breaker is open", -200) {}
+};
+
+struct BatchEntryInput {
+    std::string title;
+    std::string category;
+    std::map<std::string, std::string> fields;
+};
 
 class Client {
 public:
@@ -106,6 +118,27 @@ public:
 
     void delete_entry(const std::string& id) {
         call("entry.delete", { {"id", id} });
+    }
+
+    std::vector<std::string> create_entries_batch(const std::vector<BatchEntryInput>& items) {
+        std::vector<std::string> ids;
+        ids.reserve(items.size());
+        for (const auto& item : items) {
+            ids.push_back(create_entry(item.title, item.category, item.fields).id);
+        }
+        return ids;
+    }
+
+    void delete_entries_batch(const std::vector<std::string>& ids) {
+        for (const auto& id : ids) {
+            delete_entry(id);
+        }
+    }
+
+    std::vector<VaultEntry> search_entries(const std::string& query, const std::string& category = "") {
+        nlohmann::json p = { {"query", query} };
+        if (!category.empty()) p["category"] = category;
+        return parse_entries(call("entry.search", p));
     }
 
     // ── Typed helpers ─────────────────────────────────────────────────────────
@@ -262,49 +295,94 @@ public:
         return out;
     }
 
+    // ── Tools ─────────────────────────────────────────────────────────────────
+
+    SSHKeyResult generate_ssh_key(const std::string& comment = "", bool save_to_vault = true) {
+        auto j = call("tool.ssh_keygen", { {"comment", comment}, {"save_to_vault", save_to_vault} });
+        return { j.value("public_key", std::string{}), j.value("fingerprint", std::string{}), j.value("entry_id", std::string{}) };
+    }
+
+    std::string get_recovery_phrase(const std::string& password) {
+        auto j = call("vault.recovery_phrase", { {"password", password} });
+        return j.value("recovery_phrase", j.value("phrase", std::string{}));
+    }
+
     // ── Health ────────────────────────────────────────────────────────────────
 
     VaultStatus health_check() { return vault_status(); }
 
 private:
     std::string base_url_, token_;
+    int consecutive_failures_ = 0;
+    std::chrono::steady_clock::time_point circuit_open_until_;
 
     nlohmann::json call(const std::string& action, const nlohmann::json& payload) {
-        CURL* curl = curl_easy_init();
-        if (!curl) throw GrimlockerError("curl_easy_init failed");
+        auto now = std::chrono::steady_clock::now();
+        if (now < circuit_open_until_) {
+            throw CircuitBreakerOpenException();
+        }
 
         std::string url = base_url_ + "/api/v1";
         std::string body = nlohmann::json{ {"action", action}, {"payload", payload} }.dump();
         std::string resp;
-
-        struct curl_slist* headers = nullptr;
-        headers = curl_slist_append(headers, "Content-Type: application/json");
-        std::string auth_hdr = "X-Grimlocker-Token: " + token_;
-        headers = curl_slist_append(headers, auth_hdr.c_str());
-
-        curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     body.c_str());
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER,     headers);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  detail::write_cb);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &resp);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT,        30L);
-
-        CURLcode res = curl_easy_perform(curl);
         long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-        curl_slist_free_all(headers);
-        curl_easy_cleanup(curl);
+        CURLcode last_res = CURLE_OK;
 
-        if (res != CURLE_OK) throw GrimlockerError(std::string("curl error: ") + curl_easy_strerror(res));
+        for (int attempt = 0; attempt < 4; ++attempt) {
+            resp.clear();
+            http_code = 0;
+            CURL* curl = curl_easy_init();
+            if (!curl) {
+                last_res = CURLE_FAILED_INIT;
+            } else {
+                struct curl_slist* headers = nullptr;
+                headers = curl_slist_append(headers, "Content-Type: application/json");
+                std::string auth_hdr = "X-Grimlocker-Token: " + token_;
+                headers = curl_slist_append(headers, auth_hdr.c_str());
+
+                curl_easy_setopt(curl, CURLOPT_URL,            url.c_str());
+                curl_easy_setopt(curl, CURLOPT_POSTFIELDS,     body.c_str());
+                curl_easy_setopt(curl, CURLOPT_HTTPHEADER,     headers);
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,  detail::write_cb);
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA,      &resp);
+                curl_easy_setopt(curl, CURLOPT_TIMEOUT,        30L);
+
+                last_res = curl_easy_perform(curl);
+                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+                curl_slist_free_all(headers);
+                curl_easy_cleanup(curl);
+            }
+
+            if (last_res == CURLE_OK && http_code >= 200 && http_code < 300) {
+                consecutive_failures_ = 0;
+                break;
+            }
+
+            bool is_network_error = (last_res != CURLE_OK);
+            bool is_client_error  = (last_res == CURLE_OK && http_code >= 400 && http_code < 500);
+
+            if (is_client_error || attempt == 3) {
+                consecutive_failures_++;
+                if (consecutive_failures_ >= 5) {
+                    circuit_open_until_ = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                }
+                if (last_res != CURLE_OK) {
+                    throw GrimlockerError(std::string("curl error: ") + curl_easy_strerror(last_res));
+                }
+                auto j = nlohmann::json::parse(resp, nullptr, false);
+                if (j.is_discarded()) throw GrimlockerError("invalid JSON response");
+                int code = j.value("error_code", 0);
+                std::string msg = j.value("error", std::string("HTTP ") + std::to_string(http_code));
+                throw GrimlockerError(std::string(GrimlockerError::name_of(code)) + ": " + msg, code);
+            }
+
+            long delay_ms = 100L * (1L << attempt);
+            if (delay_ms > 2000) delay_ms = 2000;
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+        }
 
         auto j = nlohmann::json::parse(resp, nullptr, false);
         if (j.is_discarded()) throw GrimlockerError("invalid JSON response");
-
-        if (http_code < 200 || http_code >= 300) {
-            int code = j.value("error_code", 0);
-            std::string msg = j.value("error", std::string("HTTP ") + std::to_string(http_code));
-            throw GrimlockerError(std::string(GrimlockerError::name_of(code)) + ": " + msg, code);
-        }
         return j;
     }
 

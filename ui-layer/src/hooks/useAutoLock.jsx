@@ -9,7 +9,7 @@ export function useAutoLock(isUnlocked) {
   const resetTimer = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current)
     if (!isUnlocked) return
-    if (autoLockMinutes === 0) return  // 0 = never lock
+    if (autoLockMinutes === 0) return  // 0 = nie sperren — der User hat's so eingestellt
 
     timerRef.current = setTimeout(() => {
       console.log('[AutoLock] Inactivity timeout — clearing session key')

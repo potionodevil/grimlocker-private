@@ -8,6 +8,8 @@ import { SetupScreen } from './components/auth/SetupScreen'
 import { LoginScreen } from './components/auth/LoginScreen'
 import { AuthProvider, useAuth, AUTH_STATE } from './context/AuthContext'
 import { useWindowClose } from './hooks/useWindowClose'
+import { useAutofill } from './hooks/useAutofill'
+import { AutofillLockedOverlay } from './components/autofill/AutofillLockedOverlay'
 
 const pageVariants = {
   initial: { opacity: 0, scale: 0.98, filter: 'blur(4px)' },
@@ -63,6 +65,7 @@ function AuthErrorScreen({ error, retryCount, onRetry }) {
 function AppContent() {
   const { authState, error: authError, retryCheck, retryCount } = useAuth()
   const { error, setError, setConnected, initPreferences, loadWorkspaces } = useGrimStore()
+  const { showLocked, handleUnlock, handleCancelLocked } = useAutofill()
   useWindowClose()
 
   useEffect(() => { initPreferences() }, [initPreferences])
@@ -70,7 +73,7 @@ function AppContent() {
   const attemptConnect = useCallback(async () => {
     try {
       await tauriBridge.connect()
-      // connected event will fire via tauriBridge.on('connected')
+      // Das 'connected'-Event feuert asynchron via tauriBridge.on('connected') — hier nur initialer Versuch
     } catch (err) {
       console.warn('[App] Initial connection failed:', err.message)
       setConnected(false)
@@ -143,6 +146,9 @@ function AppContent() {
           {renderView()}
         </motion.div>
       </AnimatePresence>
+      {showLocked && (
+        <AutofillLockedOverlay onUnlock={handleUnlock} onCancel={handleCancelLocked} />
+      )}
     </div>
   )
 }

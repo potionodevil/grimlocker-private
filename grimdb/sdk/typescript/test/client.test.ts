@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { GrimlockerClient } from '../src/index';
+import { GrimlockerClient, CircuitBreakerOpenError } from '../src/index';
 
 function createClient(baseUrl = 'http://127.0.0.1:36353', token = 'test-token') {
   return new GrimlockerClient(baseUrl, token);
@@ -484,6 +484,88 @@ describe('GrimlockerClient', () => {
       client.on('connected', badListener);
 
       await client.unlockVault('pass');
+    });
+  });
+
+  describe('batch operations', () => {
+    it('creates entries in batch', async () => {
+      mockResponse(200, { id: 'b1', title: 'Batch 1', category: 'PASSWORD' });
+      const client = createClient();
+
+      const ids = await client.createEntriesBatch([
+        { title: 'Batch 1', category: 'PASSWORD', fields: { username: 'a' } },
+        { title: 'Batch 2', category: 'PASSWORD', fields: { username: 'b' } },
+      ]);
+
+      expect(ids).toHaveLength(2);
+      expect(ids[0]).toBe('b1');
+    });
+
+    it('deletes entries in batch', async () => {
+      mockResponse(200, { success: true });
+      const client = createClient();
+
+      await client.deleteEntriesBatch(['e1', 'e2']);
+
+      const calls = (globalThis as any).fetch.mock.calls;
+      expect(calls.length).toBe(2);
+    });
+  });
+
+  describe('retry and circuit breaker', () => {
+    it('retries on 500 error then succeeds', async () => {
+      let attempts = 0;
+      (globalThis as any).fetch = vi.fn().mockImplementation(() => {
+        attempts++;
+        if (attempts < 3) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: () => Promise.resolve({ error: 'Internal Server Error' }),
+            text: () => Promise.resolve('Internal Server Error'),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ entries: [] }),
+        });
+      });
+      const client = createClient();
+
+      const entries = await client.listEntries();
+      expect(entries).toEqual([]);
+      expect(attempts).toBe(3);
+    });
+
+    it('does not retry on 4xx errors', async () => {
+      let attempts = 0;
+      (globalThis as any).fetch = vi.fn().mockImplementation(() => {
+        attempts++;
+        return Promise.resolve({
+          ok: false,
+          status: 401,
+          json: () => Promise.resolve({ error: 'Unauthorized' }),
+          text: () => Promise.resolve('Unauthorized'),
+        });
+      });
+      const client = createClient();
+
+      await expect(client.listEntries()).rejects.toMatchObject({ status_code: 401 });
+      expect(attempts).toBe(1);
+    });
+
+    it('opens circuit breaker after repeated failures', async () => {
+      (globalThis as any).fetch = vi.fn().mockRejectedValue(new TypeError('Network Error'));
+      const client = createClient();
+
+      // Trigger 6 failures to open circuit
+      for (let i = 0; i < 6; i++) {
+        try { await client.listEntries(); } catch { /* ignore */ }
+      }
+
+      // Next request should fail immediately with circuit breaker open
+      await expect(client.listEntries()).rejects.toBeInstanceOf(CircuitBreakerOpenError);
     });
   });
 

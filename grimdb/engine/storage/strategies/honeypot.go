@@ -7,17 +7,17 @@ import (
 	"github.com/grimlocker/grimdb/engine/storage"
 )
 
-// HoneypotStrategy fires an alarm when a designated bait block is read,
-// then invokes an optional callback (e.g. zeroize secrets, alert operator).
-// It is injected into BlockStore at wire-up time.
+// HoneypotStrategy feuert einen Alarm, wenn ein designierter Bait-Block gelesen wird,
+// und ruft dann einen optionalen Callback auf (z.B. Keys zeroisieren, Operator alarmieren).
+// Wird beim Wire-up in den BlockStore injiziert.
 type HoneypotStrategy struct {
 	baitIDs  map[string]bool
 	onTrigger func(baitID string)
 }
 
-// NewHoneypotStrategy creates a HoneypotStrategy.
-// onTrigger is called in the goroutine that detected access; it should be fast
-// (e.g. set a flag and return) — do not lock from within it.
+// NewHoneypotStrategy erzeugt eine HoneypotStrategy.
+// onTrigger wird in der gleichen Goroutine aufgerufen, die den Zugriff erkannt hat —
+// also schnell sein (Flag setzen und returnen) — kein Locking im Callback.
 func NewHoneypotStrategy(baitIDs []string, onTrigger func(baitID string)) *HoneypotStrategy {
 	ids := make(map[string]bool, len(baitIDs))
 	for _, id := range baitIDs {
@@ -28,12 +28,12 @@ func NewHoneypotStrategy(baitIDs []string, onTrigger func(baitID string)) *Honey
 
 func (h *HoneypotStrategy) Name() string { return "honeypot" }
 
-// OnWrite is a pass-through — honeypot only watches reads.
+// OnWrite ist ein reiner Passthrough — Honeypot überwacht nur Reads.
 func (h *HoneypotStrategy) OnWrite(b storage.Block) (storage.Block, error) {
 	return b, nil
 }
 
-// OnRead detects bait access and fires the alarm callback.
+// OnRead erkennt Bait-Zugriffe und feuert den Alarm.
 func (h *HoneypotStrategy) OnRead(b storage.Block) (storage.Block, error) {
 	if h.baitIDs[b.ID] {
 		log.Printf("[HONEYPOT] CRITICAL: bait block %s was accessed — intruder detected", b.ID)
@@ -44,7 +44,7 @@ func (h *HoneypotStrategy) OnRead(b storage.Block) (storage.Block, error) {
 	return b, nil
 }
 
-// OnTrigger registers a new bait ID ("bait:<id>") or removes one ("unbait:<id>").
+// OnTrigger registriert eine neue Bait-ID ("bait:<id>") oder entfernt eine ("unbait:<id>").
 func (h *HoneypotStrategy) OnTrigger(key string) error {
 	if len(key) > 5 && key[:5] == "bait:" {
 		h.baitIDs[key[5:]] = true

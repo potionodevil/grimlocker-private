@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
+import 'file_vault/file_vault_client.dart';
 import 'grimlocker_exception.dart';
 import 'models/vault_entry.dart';
 
@@ -24,6 +26,31 @@ class GrimlockerClient {
         'X-Grimlocker-Token': token,
       };
 
+  // ── Circuit breaker state ─────────────────────────────────────────────────────
+
+  int _consecutiveFailures = 0;
+  DateTime? _circuitOpenUntil;
+  bool _isProbe = false;
+
+  void _onFailure() {
+    if (_isProbe) {
+      _circuitOpenUntil = DateTime.now().add(const Duration(seconds: 30));
+      _isProbe = false;
+      return;
+    }
+    _consecutiveFailures++;
+    if (_consecutiveFailures >= 5) {
+      _circuitOpenUntil = DateTime.now().add(const Duration(seconds: 30));
+      _consecutiveFailures = 0;
+    }
+  }
+
+  void _onSuccess() {
+    _consecutiveFailures = 0;
+    _circuitOpenUntil = null;
+    _isProbe = false;
+  }
+
   // ── Auth ──────────────────────────────────────────────────────────────────────
 
   Future<void> unlockVault(String password) async {
@@ -36,6 +63,11 @@ class GrimlockerClient {
 
   Future<Map<String, dynamic>> vaultStatus() async {
     return await _call('vault.status', {});
+  }
+
+  Future<String> getRecoveryPhrase(String password) async {
+    final result = await _call('vault.recovery_phrase', {'password': password});
+    return result['recovery_phrase'] as String? ?? result['phrase'] as String? ?? '';
   }
 
   // ── Entries ───────────────────────────────────────────────────────────────────
@@ -74,6 +106,21 @@ class GrimlockerClient {
     await _call('entry.delete', {'id': id});
   }
 
+  Future<List<String>> createEntriesBatch(List<Map<String, dynamic>> entries) async {
+    final futures = entries.map((e) async {
+      final title = e['title'] as String;
+      final category = e['category'] as String;
+      final fields = (e['fields'] as Map).cast<String, String>();
+      final entry = await createEntry(title, category, fields);
+      return entry.id;
+    });
+    return await Future.wait(futures);
+  }
+
+  Future<void> deleteEntriesBatch(List<String> ids) async {
+    await Future.wait(ids.map((id) => deleteEntry(id)));
+  }
+
   Future<List<VaultEntry>> searchEntries(String query, {String? category}) async {
     final payload = <String, dynamic>{'query': query};
     if (category != null) {
@@ -108,6 +155,10 @@ class GrimlockerClient {
     return entry.id;
   }
 
+  Future<Map<String, dynamic>> generateSSHKey({String comment = '', bool saveToVault = true}) async {
+    return await _call('tool.ssh_keygen', {'comment': comment, 'save_to_vault': saveToVault});
+  }
+
   Future<List<CertificateEntry>> listCertificates() async {
     final entries = await listEntries(category: 'CERTIFICATE');
     return entries.map((e) => CertificateEntry.fromEntry(e)).toList();
@@ -120,61 +171,7 @@ class GrimlockerClient {
 
   // ── File Vault ────────────────────────────────────────────────────────────────
 
-  Future<FolderListing> listFolder({String folderId = ''}) async {
-    final result = await _call('file.list_folder', {'folder_id': folderId});
-    return FolderListing.fromJson(result);
-  }
-
-  Future<FolderItem> createFolder(String name, {String parentId = ''}) async {
-    final result = await _call(
-        'file.create_folder', {'name': name, 'parent_id': parentId});
-    return FolderItem.fromJson(result);
-  }
-
-  Future<void> renameFolder(String id, String name) async {
-    await _call('file.rename_folder', {'id': id, 'name': name});
-  }
-
-  Future<void> deleteFolder(String id) async {
-    await _call('file.delete_folder', {'id': id});
-  }
-
-  Future<void> moveFile(String manifestBlockId, String folderId) async {
-    await _call('file.move', {
-      'manifest_block_id': manifestBlockId,
-      'folder_id': folderId,
-    });
-  }
-
-  Future<FileEntry> uploadFile(
-    Uint8List data,
-    String fileName, {
-    String mimeType = 'application/octet-stream',
-    String folderId = '',
-    void Function(UploadProgress)? onProgress,
-  }) async {
-    onProgress?.call(UploadProgress(bytesSent: 0, totalBytes: data.length));
-    final dataB64 = base64Encode(data);
-    final result = await _call('file.ingest', {
-      'file_name': fileName,
-      'mime_type': mimeType,
-      'folder_id': folderId,
-      'data_b64': dataB64,
-    });
-    onProgress?.call(UploadProgress(bytesSent: data.length, totalBytes: data.length));
-    return FileEntry.fromJson(result);
-  }
-
-  Future<Uint8List> downloadFile(String manifestBlockId) async {
-    final result = await _call('file.download', {
-      'manifest_block_id': manifestBlockId,
-    });
-    final dataB64 = result['data_b64'] as String?;
-    if (dataB64 == null) {
-      throw GrimlockerException(-10, 'Download returned no data');
-    }
-    return base64Decode(dataB64);
-  }
+  late final FileVaultClient fileVault = FileVaultClient(_endpoint, _headers, _http);
 
   // ── Workspaces ────────────────────────────────────────────────────────────────
 
@@ -239,32 +236,74 @@ class GrimlockerClient {
 
   Future<dynamic> _call(
       String action, Map<String, dynamic> payload) async {
-    final body = jsonEncode({'action': action, 'payload': payload});
-    final response = await _http.post(
-      Uri.parse(_endpoint),
-      headers: _headers,
-      body: body,
-    );
-
-    final responseBody = response.body;
-    dynamic json;
-
-    try {
-      json = jsonDecode(responseBody);
-    } catch (_) {
-      json = {'error': responseBody};
+    if (_circuitOpenUntil != null) {
+      if (DateTime.now().isBefore(_circuitOpenUntil!)) {
+        throw CircuitBreakerOpenException();
+      }
+      _isProbe = true;
     }
 
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      final map = json is Map<String, dynamic> ? json : <String, dynamic>{};
-      final code = map['error_code'] as int? ?? 0;
-      final msg = map['error'] as String? ?? responseBody;
-      throw GrimlockerException(
-          code, '${GrimlockerException.nameOf(code)} ($action): $msg');
+    int attempt = 0;
+    int delayMs = 100;
+    Exception? lastException;
+
+    while (true) {
+      try {
+        final body = jsonEncode({'action': action, 'payload': payload});
+        final response = await _http.post(
+          Uri.parse(_endpoint),
+          headers: _headers,
+          body: body,
+        );
+
+        final responseBody = response.body;
+        dynamic json;
+
+        try {
+          json = jsonDecode(responseBody);
+        } catch (_) {
+          json = {'error': responseBody};
+        }
+
+        if (response.statusCode >= 400 && response.statusCode < 500) {
+          final map = json is Map<String, dynamic> ? json : <String, dynamic>{};
+          final code = map['error_code'] as int? ?? 0;
+          final msg = map['error'] as String? ?? responseBody;
+          throw GrimlockerException(
+              code, '${GrimlockerException.nameOf(code)} ($action): $msg');
+        }
+
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          final map = json is Map<String, dynamic> ? json : <String, dynamic>{};
+          final code = map['error_code'] as int? ?? 0;
+          final msg = map['error'] as String? ?? responseBody;
+          lastException = GrimlockerException(
+              code, '${GrimlockerException.nameOf(code)} ($action): $msg');
+        } else {
+          _onSuccess();
+          if (json is Map<String, dynamic>) return json;
+          if (json is List) return json;
+          return <String, dynamic>{};
+        }
+      } on GrimlockerException {
+        _onFailure();
+        rethrow;
+      } on http.ClientException catch (e) {
+        lastException = e;
+      } on TimeoutException catch (e) {
+        lastException = e;
+      } catch (e) {
+        _onFailure();
+        rethrow;
+      }
+
+      if (attempt >= 3) break;
+      await Future.delayed(Duration(milliseconds: min(delayMs, 2000)));
+      delayMs *= 2;
+      attempt++;
     }
 
-    if (json is Map<String, dynamic>) return json;
-    if (json is List) return json;
-    return <String, dynamic>{};
+    _onFailure();
+    throw lastException ?? Exception('Request failed after retries');
   }
 }

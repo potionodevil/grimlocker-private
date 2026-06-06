@@ -28,3 +28,5 @@ class GrimlockerException(
         }
     }
 }
+
+class CircuitBreakerOpenException : RuntimeException("Circuit breaker is open")

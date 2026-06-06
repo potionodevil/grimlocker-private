@@ -31,7 +31,7 @@ func TestCompress_Decompress_Roundtrip(t *testing.T) {
 				t.Fatalf("Compress(%q): %v", tc.name, err)
 			}
 
-			// Marker byte must be 0x00 or 0x01
+			// Marker-Byte muss 0x00 oder 0x01 sein.
 			if len(compressed) > 0 && compressed[0] != markerUncompressed && compressed[0] != markerZstd {
 				t.Errorf("unexpected marker byte 0x%02x", compressed[0])
 			}
@@ -49,7 +49,7 @@ func TestCompress_Decompress_Roundtrip(t *testing.T) {
 }
 
 func TestDecompress_LegacyData(t *testing.T) {
-	// Data without a marker byte (legacy blocks) should pass through unchanged.
+	// Daten ohne Marker-Byte (legacy) müssen unverändert durchgereicht werden.
 	legacy := []byte("this is legacy data without marker byte")
 	got, err := Decompress(legacy)
 	if err != nil {
@@ -80,9 +80,7 @@ func TestCompressStream_Roundtrip(t *testing.T) {
 }
 
 func TestCompress_MarkerByte_Uncompressible(t *testing.T) {
-	// Highly random / incompressible data should still get the uncompressed marker.
-	// We simulate this with a byte slice that doesn't compress well.
-	// Generate pseudo-random-looking data that's hard to compress.
+	// Hochzufällige / incompressible Daten sollen trotzdem den Uncompressed-Marker bekommen.
 	data := make([]byte, 1024)
 	for i := range data {
 		data[i] = byte((i*7 + 13) % 256)
@@ -93,7 +91,7 @@ func TestCompress_MarkerByte_Uncompressible(t *testing.T) {
 		t.Fatalf("Compress: %v", err)
 	}
 
-	// Must have a valid marker
+	// Muss einen gültigen Marker haben.
 	if len(compressed) == 0 {
 		t.Fatal("compressed output is empty")
 	}
@@ -101,7 +99,6 @@ func TestCompress_MarkerByte_Uncompressible(t *testing.T) {
 		t.Errorf("unexpected marker 0x%02x", compressed[0])
 	}
 
-	// Roundtrip must still work
 	got, err := Decompress(compressed)
 	if err != nil {
 		t.Fatalf("Decompress: %v", err)
@@ -112,7 +109,7 @@ func TestCompress_MarkerByte_Uncompressible(t *testing.T) {
 }
 
 func TestCompressInPlace_NeverPanics(t *testing.T) {
-	// CompressInPlace must always return valid output that Decompress can handle.
+	// CompressInPlace muss immer gültigen Output liefern, den Decompress verarbeiten kann.
 	inputs := [][]byte{nil, {}, {0x00}, {0xFF}, bytes.Repeat([]byte("x"), 10000)}
 	for i, input := range inputs {
 		out := CompressInPlace(input)

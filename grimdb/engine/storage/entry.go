@@ -2,8 +2,8 @@ package storage
 
 import "time"
 
-// Category classifies a VaultEntry for filterable sidebar views.
-// The string value is the canonical wire identifier used in JSON and IPC.
+// Category klassifiziert einen VaultEntry für filterbare Sidebar-Ansichten.
+// Der String-Wert ist der kanonische Wire-Identifier in JSON und IPC.
 type Category string
 
 const (
@@ -13,8 +13,8 @@ const (
 	CategoryFileVault   Category = "FILE_VAULT"
 )
 
-// CategoryFromType maps the legacy UI "type" string to the formal Category enum.
-// Used during ENTRY.CREATE to back-fill the Category field from older-style requests.
+// CategoryFromType mapped den legacy UI-"type"-String auf die formale Category-Enum.
+// Wird bei ENTRY.CREATE verwendet, um das Category-Feld aus älteren Requests zu befüllen.
 func CategoryFromType(t string) Category {
 	switch t {
 	case "password":
@@ -30,9 +30,9 @@ func CategoryFromType(t string) Category {
 	}
 }
 
-// VaultEntry is the formal schema for all vault entries.
-// Mandatory fields: ID, Title, Category.
-// Fields holds the entry-type-specific key/value pairs (e.g. "username", "password").
+// VaultEntry ist das formale Schema für alle Vault-Einträge.
+// Pflichtfelder: ID, Title, Category.
+// Fields hält die Entry-Typ-spezifischen Key/Value-Paare (z.B. "username", "password").
 type VaultEntry struct {
 	ID        string            `json:"id"`
 	Title     string            `json:"title"`
@@ -44,9 +44,9 @@ type VaultEntry struct {
 	UpdatedAt int64             `json:"updated_at"`
 }
 
-// NewVaultEntry creates a VaultEntry with mandatory fields pre-filled.
-// now is injected by callers (typically time.Now().UnixNano()) so tests
-// can pass a deterministic timestamp.
+// NewVaultEntry erzeugt einen VaultEntry mit vorausgefüllten Pflichtfeldern.
+// now wird von Callern injiziert (typischerweise time.Now().UnixNano()), damit Tests
+// einen deterministischen Timestamp mitgeben können.
 func NewVaultEntry(id, title string, category Category, now int64) VaultEntry {
 	if now == 0 {
 		now = time.Now().UnixNano()
@@ -55,7 +55,7 @@ func NewVaultEntry(id, title string, category Category, now int64) VaultEntry {
 		ID:        id,
 		Title:     title,
 		Category:  category,
-		Type:      string(category), // keep legacy compat field in sync
+		Type:      string(category),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}

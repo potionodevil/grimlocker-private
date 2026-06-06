@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for the main window.",
-  "windows": ["main"],
+  "windows": ["main", "autofill"],
   "permissions": [
     "core:default",
     "core:tray:allow-new",
@@ -10,6 +10,10 @@
     "core:tray:allow-set-visible",
     "core:menu:allow-new",
     "core:menu:allow-append",
-    "core:menu:allow-popup"
+    "core:menu:allow-popup",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-is-registered",
+    "core:window:allow-create",
+    "core:webview:allow-create-webview-window"
   ]
 }

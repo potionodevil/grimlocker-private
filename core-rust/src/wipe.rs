@@ -1,3 +1,28 @@
+//! Sicheres Löschen von Dateien — 7-Pass-Überschreiben + Truncate + Unlink.
+//!
+//! # Warum?
+//! Ein `rm` oder `Remove-Item` löscht nur die Directory-Entry,
+//! die Daten bleiben auf der Platte lesbar (Forensik).
+//! Dieses Modul überschreibt die Datei mehrfach mit Zufallsdaten,
+//! bevor sie gelöscht wird.
+//!
+//! # Threat Model
+//! - Recovery-Tools (PhotoRec, TestDisk) können gelöschte Dateien
+//!   wiederherstellen → 7 Passes mit CSPRNG-Daten machen das unmöglich.
+//! - SSD-Controller haben internen Cache → `sync_all()` nach jedem Pass
+//!   zwingt die Daten auf das Medium.
+//! - Datei-Metadaten (Name, Timestamps) bleiben erhalten → das ist
+//!   akzeptiert; für vollständige Vernichtung müsste man den ganzen
+//!   Speicherblock überschreiben (jenseits von Rusts Möglichkeiten).
+//!
+//! # Design Trade-offs
+//! - 7 Passes = guter Kompromiss zwischen Sicherheit und Geschwindigkeit
+//!   (NIST SP 800-88 empfiehlt 1 Pass mit Zufallsdaten, wir gehen
+//!   auf Nummer sicher)
+//! - 64KB Buffer → reduziert Syscall-Overhead bei großen Dateien
+//! - `secure_wipe_file_contents` überschreibt nur den Inhalt, löscht
+//!   die Datei nicht (für laufende Dateihandles gedacht)
+
 use crate::Error;
 use rand::RngCore;
 use std::fs::OpenOptions;

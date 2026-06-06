@@ -1,20 +1,20 @@
-// Package errors provides the unified typed error system for Grimlocker Omega+.
+// Package errors bietet das einheitliche getypte Error-System für Grimlocker Omega+.
 //
-// Every module returns *GrimlockError instead of plain Go errors.
-// This gives each failure a numeric code, structured context (block ID,
-// operation name, key-value details), an optional stacktrace captured at the
-// error creation site, and an HTTP status mapping for the REST/WebSocket API.
+// Jedes Module gibt *GrimlockError zurück statt plain Go-Fehler.
+// Damit bekommt jeder Fehler einen numerischen Code, strukturierten Kontext
+// (Block-ID, Operation-Name, Key-Value-Details), optional einen Stacktrace
+// am Error-Entstehungsort und ein HTTP-Status-Mapping für die REST/WebSocket-API.
 //
-// Error code ranges:
+// Error-Code-Bereiche:
 //
-//	1000–1999  Vault / Authentication  (ErrCodeVaultLocked, ErrCodeAuthInvalid …)
-//	2000–2999  Storage / GrimDB        (ErrCodeStorageIO, ErrCodeStorageCorruption …)
-//	3000–3999  Cryptography            (ErrCodeCryptoDecryption, ErrCodeCryptoInvalidKey …)
-//	4000–4999  Security / Lockdown     (ErrCodeSecurityMemlock, ErrCodeSecurityLockdown …)
-//	5000–5999  Kernel / Bus            (ErrCodeBusTimeout, ErrCodeBusGated …)
-//	6000–6999  API / Protocol          (ErrCodeProtocolInvalid …)
+//	1000–1999  Vault / Authentication
+//	2000–2999  Storage / GrimDB
+//	3000–3999  Cryptography
+//	4000–4999  Security / Lockdown
+//	5000–5999  Kernel / Bus
+//	6000–6999  API / Protocol
 //
-// Quick usage:
+// Kurz-Usage:
 //
 //	return gerrors.NewStorageIOError("read_block", blockID, err)
 //
@@ -24,8 +24,8 @@
 //
 //	wrapped := gerrors.Wrap(gerrors.ErrCodeStorageIO, "blockstore failed", err)
 //
-// See docs/ERROR_CODES.md for a full per-code reference with recovery steps.
-// See docs/API_REFERENCE.md for the complete GrimlockError struct/method docs.
+// Siehe docs/ERROR_CODES.md für eine vollständige Code-Referenz mit Recovery-Schritten.
+// Siehe docs/API_REFERENCE.md für die komplette GrimlockError-Struct/Methoden-Doku.
 package errors
 
 import (
@@ -35,7 +35,7 @@ import (
 
 const maxStackFrames = 20
 
-// StackFrame is a single call-stack frame.
+// StackFrame ist ein einzelner Call-Stack-Frame.
 type StackFrame struct {
 	File     string `json:"file"`
 	Line     int    `json:"line"`
@@ -46,13 +46,12 @@ func (f StackFrame) String() string {
 	return fmt.Sprintf("%s:%d in %s", f.File, f.Line, f.Function)
 }
 
-// CaptureStacktrace captures up to maxStackFrames of call stack,
-// skipping `skip` additional frames above the caller.
-// skip=0 → first frame is the direct caller of CaptureStacktrace.
-// skip=1 → first frame is the caller's caller (use this from error constructors).
+// CaptureStacktrace erfasst bis zu maxStackFrames des Call-Stacks,
+// überspringt dabei `skip` zusätzliche Frames oberhalb des Callers.
+// skip=0 → erster Frame ist der direkte Caller von CaptureStacktrace.
+// skip=1 → erster Frame ist der Caller des Callers (nutze das von Error-Constructors).
 func CaptureStacktrace(skip int) []StackFrame {
 	pcs := make([]uintptr, maxStackFrames)
-	// +2: skip runtime.Callers itself and this function
 	n := runtime.Callers(skip+2, pcs)
 	if n == 0 {
 		return nil

@@ -31,7 +31,6 @@ func TestWithRecovery_CatchesPanic(t *testing.T) {
 		panic("deliberate test panic")
 	}).WithRecovery("[test]").Build()
 
-	// Should NOT panic out of the test; should return an error instead.
 	err := h(kernel.Event{Type: "TEST.PANIC"})
 	if err == nil {
 		t.Error("expected a non-nil error from a recovered panic")
@@ -98,7 +97,6 @@ func TestChaining_RecoveryAndLogging(t *testing.T) {
 }
 
 func TestChaining_PanicWithLogging(t *testing.T) {
-	// Recovery should still work when logging is also applied.
 	h := kernel.NewHandlerBuilder(func(e kernel.Event) error {
 		panic("chained panic")
 	}).

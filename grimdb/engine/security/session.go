@@ -1,21 +1,20 @@
-// Package security (session.go) implements SessionContext — the global
-// vault-unlock state shared between the security module, the storage adapter,
-// and the API translator.
+// Package security (session.go) implementiert SessionContext — den globalen
+// Vault-Unlock-State, der zwischen Security-Modul, Storage-Adapter und API-Translator geteilt wird.
 //
-// SessionContext answers one question: "Is the vault currently unlocked?"
-// It is the authoritative source of truth for the active MVK handle and
-// is consulted by HandshakeStatus so reconnecting WebSocket clients can
-// re-attach to an already-unlocked vault without re-entering their password.
+// SessionContext beantwortet genau eine Frage: "Ist der Vault gerade unlocked?"
+// Es ist die autoritative Quelle für den aktiven MVK-Handle und wird von
+// HandshakeStatus konsultiert, damit sich reconnectende WebSocket-Clients wieder
+// an einen bereits geöffneten Vault anhängen können — ohne Passwort-Neu eingabe.
 //
-// Thread-safe: all exported methods acquire the internal mutex.
+// Thread-safe: alle exportierten Methoden holen das interne Mutex.
 //
 // Lifecycle:
 //
-//	NewSessionContext()          // create (vault starts locked)
-//	sessionCtx.Unlock(handle)   // called after AUTH.KEY_READY
-//	sessionCtx.IsUnlocked()     // polled by storage adapter gate check
-//	sessionCtx.Lock()           // called on AUTH.LOGOUT
-//	sessionCtx.SessionDestroy() // called during graceful shutdown
+//	NewSessionContext()          // erzeugen (Vault startet locked)
+//	sessionCtx.Unlock(handle)   // aufgerufen nach AUTH.KEY_READY
+//	sessionCtx.IsUnlocked()     // vom Storage-Adapter für Gate-Checks gepollt
+//	sessionCtx.Lock()           // aufgerufen bei AUTH.LOGOUT
+//	sessionCtx.SessionDestroy() // bei Graceful-Shutdown
 package security
 
 import (
@@ -28,8 +27,8 @@ import (
 	"github.com/grimlocker/grimdb/engine/kernel"
 )
 
-// SessionContext holds the runtime authentication state.
-// It never stores plaintext passwords — only the derived MVK handle.
+// SessionContext hält den Runtime-Auth-State.
+// Speichert NIE Plaintext-Passwörter — nur den abgeleiteten MVK-Handle.
 // Thread-safe via RWMutex.
 type SessionContext struct {
 	mu              sync.RWMutex
@@ -42,23 +41,23 @@ type SessionContext struct {
 	lastActivity    time.Time
 }
 
-// NewSessionContext creates an empty session context.
+// NewSessionContext erzeugt einen leeren Session-Kontext (Vault locked).
 func NewSessionContext() *SessionContext {
 	return &SessionContext{
-		autoLockMinutes: 15, // default: 15 minutes
+		autoLockMinutes: 15, // default: 15 Minuten
 	}
 }
 
-// SetAutoLockMinutes configures the inactivity auto-lock interval.
-// Set to 0 to disable auto-lock entirely.
+// SetAutoLockMinutes konfiguriert das Inactivity-Auto-Lock-Intervall.
+// Auf 0 setzen, um Auto-Lock komplett zu deaktivieren.
 func (s *SessionContext) SetAutoLockMinutes(minutes int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autoLockMinutes = minutes
 }
 
-// ResetActivity restarts the auto-lock timer on API activity.
-// Called by the translator on every non-heartbeat message.
+// ResetActivity restartet den Auto-Lock-Timer bei API-Aktivität.
+// Vom Translator bei jeder Nicht-Heartbeat-Nachricht aufgerufen.
 func (s *SessionContext) ResetActivity() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -67,16 +66,16 @@ func (s *SessionContext) ResetActivity() {
 	}
 }
 
-// SetDispatcher injects the bus dispatcher for emitting events.
+// SetDispatcher injiziert den Bus-Dispatcher fürs Emittieren von Events.
 func (s *SessionContext) SetDispatcher(d kernel.Dispatcher) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dispatcher = d
 }
 
-// Unlock marks the session as active with the given MVK handle.
-// Emits AUTH.READY to signal the vault is usable.
-// Starts the auto-lock inactivity timer if configured.
+// Unlock markiert die Session als aktiv mit dem gegebenen MVK-Handle.
+// Emittiert AUTH.READY, um zu signalisieren, dass der Vault nutzbar ist.
+// Startet den Auto-Lock-Inactivity-Timer, falls konfiguriert.
 func (s *SessionContext) Unlock(mvkHandle string) {
 	s.mu.Lock()
 	s.active = true
@@ -84,7 +83,6 @@ func (s *SessionContext) Unlock(mvkHandle string) {
 	s.unlockedAt = time.Now()
 	s.lastActivity = time.Now()
 
-	// Cancel any existing timer before creating a new one
 	if s.autoLockTimer != nil {
 		s.autoLockTimer.Stop()
 	}
@@ -99,8 +97,8 @@ func (s *SessionContext) Unlock(mvkHandle string) {
 	log.Printf("[session] Vault unlocked (handle=<redacted>)")
 
 	if s.dispatcher != nil {
-		// Do NOT include mvkHandle in the event payload — it would propagate
-		// through the event bus and potentially end up in logs.
+		// mvkHandle darf NICHT im Event-Payload landen — sonst wandert es durch
+		// den Event-Bus und könnte in Logs auftauchen.
 		payload, _ := json.Marshal(map[string]interface{}{
 			"unlocked":    true,
 			"unlocked_at": s.unlockedAt.Unix(),
@@ -110,9 +108,9 @@ func (s *SessionContext) Unlock(mvkHandle string) {
 	}
 }
 
-// Lock clears the session, revoking the active handle reference.
-// Emits AUTH.LOGOUT for downstream cleanup.
-// Stops the auto-lock timer.
+// Lock löscht die Session und entzieht den aktiven Handle.
+// Emittiert AUTH.LOGOUT fürs Downstream-Cleanup.
+// Stoppt den Auto-Lock-Timer.
 func (s *SessionContext) Lock() {
 	s.mu.Lock()
 	wasActive := s.active
@@ -135,22 +133,22 @@ func (s *SessionContext) Lock() {
 	}
 }
 
-// IsUnlocked reports whether the vault is currently unlocked.
+// IsUnlocked gibt zurück, ob der Vault gerade unlocked ist.
 func (s *SessionContext) IsUnlocked() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.active
 }
 
-// MVKHandle returns the active MVK handle, or "" if locked.
+// MVKHandle gibt den aktiven MVK-Handle zurück, oder "" wenn locked.
 func (s *SessionContext) MVKHandle() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.mvkHandle
 }
 
-// ActiveHandle returns the MVK handle if the session is unlocked,
-// or "" if locked. Reads both fields under one lock to prevent TOCTOU.
+// ActiveHandle gibt den MVK-Handle zurück, wenn die Session unlocked ist,
+// oder "" wenn locked. Liest beide Felder unter einem Lock — verhindert TOCTOU.
 func (s *SessionContext) ActiveHandle() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -160,7 +158,7 @@ func (s *SessionContext) ActiveHandle() string {
 	return s.mvkHandle
 }
 
-// RequireUnlocked returns nil if unlocked, otherwise an error event payload.
+// RequireUnlocked gibt nil zurück wenn unlocked, sonst einen Error.
 func (s *SessionContext) RequireUnlocked() error {
 	if !s.IsUnlocked() {
 		return fmt.Errorf("vault locked: no active session")
@@ -168,7 +166,7 @@ func (s *SessionContext) RequireUnlocked() error {
 	return nil
 }
 
-// Health returns a JSON-serializable health check result.
+// Health gibt ein JSON-serialisierbares Health-Check-Ergebnis zurück.
 func (s *SessionContext) Health() map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

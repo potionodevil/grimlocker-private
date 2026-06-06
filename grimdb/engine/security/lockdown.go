@@ -1,20 +1,20 @@
-// Package security (lockdown.go) implements the LockdownManager — a state
-// machine that enforces progressive authentication lockout.
+// Package security (lockdown.go) implementiert den LockdownManager — eine State
+// Machine für progressives Auth-Lockout.
 //
 // States:
 //
-//	LockdownNone → normal operation, up to Threshold failures allowed.
-//	LockdownSoft → threshold exceeded; soft lockout for LockdownMinutes,
-//	               up to MaxOverrides additional attempts permitted.
-//	LockdownHard → MaxOverrides exhausted (or TriggerHard called directly);
-//	               the OnHard callback is invoked (zeroise keys + os.Exit).
+//	LockdownNone → normaler Betrieb, bis zu Threshold Fehler erlaubt.
+//	LockdownSoft → Threshold überschritten; Soft-Lockout für LockdownMinutes,
+//	               bis zu MaxOverrides zusätzliche Versuche erlaubt.
+//	LockdownHard → MaxOverrides erschöpft (oder TriggerHard direkt aufgerufen);
+//	               der OnHard-Callback wird aufgerufen (Keys zeroisieren + os.Exit).
 //
-// Thread-safe: all methods lock m.mu before reading/writing state.
+// Thread-safe: alle Methoden locken m.mu vor State-Lese/Schreibzugriffen.
 //
-// Default values (used when config fields are ≤ 0):
-//   - Threshold: 3 failures before soft lockdown
-//   - MaxOverrides: 4 additional attempts during soft lockdown
-//   - LockdownMinutes: 200 minutes soft lockdown duration
+// Default-Werte (wenn Config-Felder ≤ 0):
+//   - Threshold: 3 Fehler vor Soft-Lockdown
+//   - MaxOverrides: 4 zusätzliche Versuche während Soft-Lockdown
+//   - LockdownMinutes: 200 Minuten Soft-Lockdown-Dauer
 package security
 
 import (
@@ -24,25 +24,25 @@ import (
 	gerrors "github.com/grimlocker/grimdb/engine/errors"
 )
 
-// LockdownState describes the current lockout level.
+// LockdownState beschreibt die aktuelle Lockout-Stufe.
 type LockdownState int
 
 const (
-	LockdownNone LockdownState = 0 // normal operation
-	LockdownSoft LockdownState = 1 // attempt limit hit, timer active
-	LockdownHard LockdownState = 2 // wipe triggered, daemon must exit
+	LockdownNone LockdownState = 0 // normaler Betrieb
+	LockdownSoft LockdownState = 1 // Limit erreicht, Timer läuft
+	LockdownHard LockdownState = 2 // Wipe getriggert, Daemon muss exit
 )
 
-// LockdownManager tracks failed authentication attempts and manages the
-// progressive lockdown state machine.
+// LockdownManager trackt fehlgeschlagene Auth-Versuche und managed die
+// progressive Lockdown-State-Machine.
 type LockdownManager interface {
 	RecordFailure() (LockdownState, error)
 	RecordSuccess()
 	State() LockdownState
 	RemainingAttempts() int
 	LockdownUntil() time.Time
-	// TriggerHard immediately transitions to LockdownHard.
-	// The caller is responsible for zeroising secrets and exiting.
+	// TriggerHard geht sofort in LockdownHard.
+	// Der Caller ist für das Zeroisieren von Secrets und den Exit verantwortlich.
 	TriggerHard() error
 }
 
@@ -55,18 +55,18 @@ type lockdownManager struct {
 	lockdownUntil   time.Time
 	lockdownMinutes int
 	state           LockdownState
-	onHard          func() // callback invoked on hard lockdown (e.g. zeroize + exit)
+	onHard          func() // callback bei Hard-Lockdown (z.B. zeroize + exit)
 }
 
-// LockdownConfig configures the manager.
+// LockdownConfig konfiguriert den Manager.
 type LockdownConfig struct {
-	Threshold       int    // failed attempts before soft lockdown
-	MaxOverrides    int    // override attempts during soft lockdown
-	LockdownMinutes int    // soft lockdown duration
-	OnHard          func() // called when hard lockdown is triggered
+	Threshold       int    // Fehlversuche vor Soft-Lockdown
+	MaxOverrides    int    // Override-Versuche während Soft-Lockdown
+	LockdownMinutes int    // Soft-Lockdown-Dauer in Minuten
+	OnHard          func() // wird bei Hard-Lockdown aufgerufen
 }
 
-// NewLockdownManager creates a LockdownManager from the given config.
+// NewLockdownManager erzeugt einen LockdownManager aus der Config.
 func NewLockdownManager(cfg LockdownConfig) LockdownManager {
 	if cfg.Threshold <= 0 {
 		cfg.Threshold = 3
@@ -133,7 +133,7 @@ func (m *lockdownManager) State() LockdownState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Auto-expire soft lockdown after the timer elapses.
+	// Soft-Lockdown nach Timer-Ablauf automatisch auslaufen lassen.
 	if m.state == LockdownSoft && time.Now().After(m.lockdownUntil) {
 		m.state = LockdownNone
 		m.failures = 0
