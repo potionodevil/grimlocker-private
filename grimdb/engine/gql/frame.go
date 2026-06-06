@@ -5,8 +5,8 @@ import (
 	"fmt"
 )
 
-// Frame is the wire-format representation of a GQL message.
-// It contains the 8-byte header and the optional binary payload.
+// Frame ist die Wire-Format-Repräsentation einer GQL-Nachricht.
+// Enthält den 8-Byte-Header und den optionalen Binary-Payload.
 type Frame struct {
 	Version     byte
 	Opcode      Opcode
@@ -15,7 +15,7 @@ type Frame struct {
 	Payload     []byte
 }
 
-// Encode serializes a Frame into its wire-format byte representation.
+// Encode serialisiert ein Frame in sein Wire-Format.
 func (f *Frame) Encode() []byte {
 	buf := make([]byte, FrameHeaderSize+len(f.Payload))
 	buf[0] = f.Version
@@ -26,9 +26,8 @@ func (f *Frame) Encode() []byte {
 	return buf
 }
 
-// DecodeFrame deserializes a byte slice into a Frame.
-// Returns an error if the data is too short, version is wrong, or payload size
-// doesn't match the actual data length.
+// DecodeFrame deserialisiert ein Byte-Slice in ein Frame.
+// Fehler bei: zu kurzen Daten, falscher Version, oder wenn PayloadSize nicht zur Datenlänge passt.
 func DecodeFrame(data []byte) (*Frame, error) {
 	if len(data) < FrameHeaderSize {
 		return nil, fmt.Errorf("gql: frame too short: %d bytes (min %d)", len(data), FrameHeaderSize)
@@ -71,7 +70,7 @@ func DecodeFrame(data []byte) (*Frame, error) {
 	}, nil
 }
 
-// NewQueryFrame creates a Frame from a GQLQuery and operation.
+// NewQueryFrame erzeugt ein Frame aus einem GQLQuery und der Operation.
 func NewQueryFrame(query *GQLQuery) *Frame {
 	payload := query.Encode()
 	opcode := OpcodeQuery
@@ -87,7 +86,7 @@ func NewQueryFrame(query *GQLQuery) *Frame {
 	}
 }
 
-// NewResultFrame creates a Frame for a successful result.
+// NewResultFrame erzeugt ein Frame für ein erfolgreiches Result.
 func NewResultFrame(result *GQLResult) *Frame {
 	payload, _ := result.EncodeResult()
 	return &Frame{
@@ -99,7 +98,7 @@ func NewResultFrame(result *GQLResult) *Frame {
 	}
 }
 
-// NewErrorFrame creates a Frame for an error response.
+// NewErrorFrame erzeugt ein Frame für eine Error-Response.
 func NewErrorFrame(code int32, msg string) *Frame {
 	result := &GQLResult{
 		Success:   false,

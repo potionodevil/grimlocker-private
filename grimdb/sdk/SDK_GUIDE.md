@@ -4,6 +4,16 @@ Grimlocker provides native SDKs for **12 languages**, all communicating
 with the Grimlocker local daemon. Every SDK abstracts the wire protocol
 (HTTP JSON or GQL Binary over WebSocket) behind a typed, idiomatic API.
 
+> **What's New (v2.0)**
+> - **Resilience**: Every SDK now has automatic retry (3x, exponential backoff)
+>   and circuit breaker (5 failures → 30s open circuit) built-in.
+> - **Batch Operations**: `createEntriesBatch()` and `deleteEntriesBatch()`
+>   across all 12 SDKs for efficient bulk workloads.
+> - **Streaming Events**: WebSocket SDKs support live event streaming
+>   (`entry_changed`, `sync_complete`, `connected`, `disconnected`).
+> - **Full API Parity**: All SDKs expose the same ~34 operations — no
+>   second-class citizens.
+
 ---
 
 ## Quick Comparison Table
@@ -32,13 +42,17 @@ with the Grimlocker local daemon. Every SDK abstracts the wire protocol
 ```go
 package main
 
-import "github.com/grimlocker/grimdb/sdk"
+import (
+    "context"
+    "fmt"
+    "github.com/grimlocker/grimdb/sdk"
+)
 
 func main() {
-    client, _ := sdk.NewClient(sdk.Config{Addr: "localhost:9707", Token: "my-token"})
+    client, _ := sdk.DialGQL(context.Background(), "ws://127.0.0.1:11003/ws?token=my-token")
     defer client.Close()
-    entries, _ := client.Entries.List(context.Background(), "vault-id", sdk.ListOpts{Limit: 10})
-    fmt.Println(entries.Total)
+    entries, _ := client.ListEntries(context.Background(), "default")
+    fmt.Println(len(entries))
 }
 ```
 
@@ -47,10 +61,9 @@ func main() {
 ```python
 from grimlocker import Client
 
-client = Client("localhost:9707", token="my-token")
-entries = client.entries.list("vault-id", limit=10)
-print(entries.total)
-client.close()
+with Client.connect("127.0.0.1", 41753, token="my-token") as client:
+    entries = client.list_entries()
+    print(len(entries))
 ```
 
 ### Java
@@ -58,9 +71,9 @@ client.close()
 ```java
 import com.grimlocker.sdk.*;
 
-var client = new GrimlockerClient("localhost", 9707, "my-token");
-var result = client.entries().list("vault-id", ListOpts.builder().limit(10).build());
-System.out.println(result.total());
+var client = GrimlockerClient.connect("127.0.0.1", 41753, "my-token");
+var entries = client.listEntries().namespace("default").execute();
+System.out.println(entries.size());
 client.close();
 ```
 
@@ -69,22 +82,21 @@ client.close();
 ```typescript
 import { GrimlockerClient } from "@grimlocker/sdk";
 
-const client = new GrimlockerClient({ host: "localhost", port: 9707, token: "my-token" });
-const entries = await client.entries.list("vault-id", { limit: 10 });
-console.log(entries.total);
-client.close();
+const client = new GrimlockerClient("http://127.0.0.1:36353", "my-token");
+const entries = await client.listEntries();
+console.log(entries.length);
 ```
 
 ### Rust
 
 ```rust
-use grimlocker_sdk::Client;
+use grimlocker_sdk::GrimlockerClient;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = Client::connect("localhost:9707", "my-token").await?;
-    let entries = client.entries().list("vault-id").limit(10).send().await?;
-    println!("{}", entries.total);
+async fn main() -> Result<(), grimlocker_sdk::Error> {
+    let mut client = GrimlockerClient::connect("ws://127.0.0.1:36352/ws", "my-token").await?;
+    let entries = client.list_entries(None).await?;
+    println!("{}", entries.len());
     Ok(())
 }
 ```
@@ -92,12 +104,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### C# / .NET
 
 ```csharp
-using Grimlocker.SDK;
+using Grimlocker;
 
-var client = new GrimlockerClient("localhost", 9707, "my-token");
-var entries = await client.Entries.ListAsync("vault-id", new ListOptions { Limit = 10 });
-Console.WriteLine(entries.Total);
-client.Dispose();
+await using var client = new GrimlockerClient("http://127.0.0.1:36353", "my-token");
+var entries = await client.ListEntriesAsync();
+Console.WriteLine(entries.Count);
 ```
 
 ### C++
@@ -106,11 +117,9 @@ client.Dispose();
 #include <grimlocker/client.hpp>
 
 int main() {
-    auto client = grimlocker::Client("localhost", 9707, "my-token");
-    client.connect();
-    auto entries = client.entries().list("vault-id", grimlocker::ListOpts{10, 0});
-    std::cout << entries.total << std::endl;
-    client.close();
+    grimlocker::Client client("http://127.0.0.1:36353", "my-token");
+    auto entries = client.list_entries();
+    std::cout << entries.size() << std::endl;
 }
 ```
 
@@ -119,10 +128,9 @@ int main() {
 ```ruby
 require "grimlocker"
 
-client = Grimlocker::Client.new(host: "localhost", port: 9707, token: "my-token")
-entries = client.entries.list("vault-id", limit: 10)
-puts entries.total
-client.close
+client = Grimlocker::Client.new(base_url: "http://127.0.0.1:36353", token: "my-token")
+entries = client.list_entries
+puts entries.length
 ```
 
 ### PHP
@@ -131,10 +139,9 @@ client.close
 <?php
 require 'vendor/autoload.php';
 
-$client = new Grimlocker\Client('localhost', 9707, 'my-token');
-$entries = $client->entries()->list('vault-id', ['limit' => 10]);
-echo $entries->total;
-$client->close();
+$client = new Grimlocker\Client('http://127.0.0.1:36353', 'my-token');
+$entries = $client->listEntries();
+echo count($entries);
 ```
 
 ### Swift
@@ -142,10 +149,9 @@ $client->close();
 ```swift
 import GrimlockerSDK
 
-let client = GrimlockerClient(host: "localhost", port: 9707, token: "my-token")
-let entries = try await client.entries.list(vaultId: "vault-id", limit: 10)
-print(entries.total)
-client.close()
+let client = GrimlockerClient(baseURL: URL(string: "http://127.0.0.1:36353")!, token: "my-token")
+let entries = try await client.listEntries()
+print(entries.count)
 ```
 
 ### Kotlin
@@ -153,9 +159,9 @@ client.close()
 ```kotlin
 import com.grimlocker.sdk.*
 
-val client = GrimlockerClient("localhost", 9707, "my-token")
-val entries = client.entries.list("vault-id", ListOpts(limit = 10))
-println(entries.total)
+val client = GrimlockerClient("http://127.0.0.1:36353", "my-token")
+val entries = client.listEntries()
+println(entries.size)
 client.close()
 ```
 
@@ -165,9 +171,9 @@ client.close()
 import 'package:grimlocker_sdk/grimlocker_sdk.dart';
 
 void main() async {
-  final client = GrimlockerClient('localhost', 9707, token: 'my-token');
-  final entries = await client.entries.list('vault-id', limit: 10);
-  print(entries.total);
+  final client = GrimlockerClient('http://127.0.0.1:36353', 'my-token');
+  final entries = await client.listEntries();
+  print(entries.length);
   client.close();
 }
 ```
@@ -176,82 +182,174 @@ void main() async {
 
 ## Full API Surface
 
-Every SDK exposes the same logical operations divided into **namespaces**.
+Every SDK exposes the same logical operations. The exact method name varies by
+language convention (camelCase, snake_case, PascalCase).
 
-### Client Lifecycle
-
-| Operation | Description |
-|---|---|
-| `connect()` / constructor | Open connection to daemon. For WebSocket SDKs this performs the WebSocket handshake. For HTTP SDKs the connection is lazy (established on first request). |
-| `close()` / `dispose()` | Gracefully close the connection and release resources. |
-| `ping()` | Health-check. Returns latency in milliseconds. Available in all SDKs. |
-| `version()` | Returns daemon version string and protocol version. |
-
-### Vault
+### Auth
 
 | Operation | Parameters | Returns | Description |
 |---|---|---|---|
-| `vault.unlock` | `vault_id`, `passphrase` | `{}` | Unlock a vault for the session. |
-| `vault.lock` | `vault_id` | `{}` | Lock a vault, clearing decrypted keys from memory. |
-| `vault.status` | `vault_id` | `VaultStatus` | Get vault metadata: locked state, entry/file counts, storage usage. |
-| `vault.recovery_phrase` | `vault_id` | `RecoveryPhrase` | Retrieve the BIP39 recovery mnemonic (requires elevated token scope). |
+| `unlockVault` / `unlock_vault` | `password` | void | Unlock the vault with the master password. |
+| `lockVault` / `lock_vault` | — | void | Lock the vault (logout). |
+| `vaultStatus` / `vault_status` | — | `VaultStatus` | Returns `{ initialized, unlocked, status }`. |
+| `getRecoveryPhrase` / `recovery_phrase` | `password` | `string` | Retrieve the BIP39 recovery mnemonic. |
 
-### Entry
-
-| Operation | Parameters | Returns | Description |
-|---|---|---|---|
-| `entry.list` | `vault_id`, `limit`, `offset` | `EntryListResult` | Paginated list of entry summaries (excludes secrets). |
-| `entry.read` | `vault_id`, `entry_id` | `Entry` | Read full entry including decrypted password. |
-| `entry.create` | `vault_id`, `title`, `url?`, `username?`, `password?`, `tags?`, `notes?` | `Entry` | Create a new entry. |
-| `entry.update` | `vault_id`, `entry_id`, + optional fields | `Entry` | Update one or more fields of an existing entry. Unset fields are left unchanged. |
-| `entry.delete` | `vault_id`, `entry_id` | `{}` | Permanently delete an entry. |
-| `entry.query` | `vault_id`, `filter`, `limit`, `offset` | `EntryQueryResult` | Search entries with structured field/operator/value filters. |
-| `entry.search` | `vault_id`, `query`, `limit` | `EntrySearchResult` | Full-text search across all entry fields. |
-
-### File
+### Entries
 
 | Operation | Parameters | Returns | Description |
 |---|---|---|---|
-| `file.list_folder` | `vault_id`, `path` | `FileListResult` | List files and subfolders at a path. |
-| `file.create_folder` | `vault_id`, `path` | `{}` | Create a new folder (and any missing ancestors). |
-| `file.rename_folder` | `vault_id`, `path`, `new_name` | `{}` | Rename a folder in-place. |
-| `file.delete_folder` | `vault_id`, `path`, `recursive?` | `{}` | Delete a folder. Set `recursive: true` to delete non-empty folders. |
-| `file.move` | `vault_id`, `source`, `destination` | `{}` | Move or rename a file or folder. |
-| `file.ingest` | `vault_id`, `path`, `content` (bytes), `mime_type?` | `{}` | Upload (encrypt and store) a file into the vault. |
-| `file.download` | `vault_id`, `path` | `FileDownloadResult` | Download a file (returns decrypted bytes). |
+| `listEntries` / `list_entries` | `category?` | `VaultEntry[]` | List all entries. Pass `category` to filter. |
+| `getEntry` / `get_entry` | `id` | `VaultEntry` | Read a single entry by ID. |
+| `createEntry` / `create_entry` | `title`, `category`, `fields` | `VaultEntry` | Create a new generic entry. |
+| `updateEntry` / `update_entry` | `id`, `fields` | void | Update an existing entry. |
+| `deleteEntry` / `delete_entry` | `id` | void | Permanently delete an entry. |
+| `searchEntries` / `search_entries` | `query`, `category?` | `VaultEntry[]` | Full-text search across entries. |
 
-> **Note:** For HTTP JSON SDKs, `content` in ingest/download is Base64-encoded
-> in the JSON body. GQL Binary SDKs transmit raw bytes directly over the
-> WebSocket message frame.
+### Typed Helpers
 
-### Workspace
+| Operation | Returns | Description |
+|---|---|---|
+| `listPasswords` | `PasswordEntry[]` | Shorthand for `listEntries(category: "PASSWORD")`. |
+| `createPassword` | `string` (ID) | Create a password entry from a `PasswordEntry` object. |
+| `listSshKeys` | `SshKeyEntry[]` | Shorthand for `listEntries(category: "SSH_KEY")`. |
+| `createSshKey` | `string` (ID) | Create an SSH key entry from an `SshKeyEntry` object. |
+| `listCertificates` | `CertificateEntry[]` | Shorthand for `listEntries(category: "CERTIFICATE")`. |
+| `createCertificate` | `string` (ID) | Create a certificate entry from a `CertificateEntry` object. |
+
+### File Vault
 
 | Operation | Parameters | Returns | Description |
 |---|---|---|---|
-| `workspace.list` | _none_ | `WorkspaceListResult` | List all configured workspaces. |
-| `workspace.create` | `name`, `vault_id` | `Workspace` | Create a new workspace linked to a vault. |
-| `workspace.switch` | `workspace_id` | `{}` | Set the active workspace for the current session. |
-| `workspace.rename` | `workspace_id`, `name` | `{}` | Rename a workspace. |
-| `workspace.delete` | `workspace_id` | `{}` | Delete a workspace (does not delete the underlying vault). |
+| `listFolder` / `list_folder` | `folder_id?` | `FolderListing` | List files and subfolders. Empty ID = root. |
+| `createFolder` / `create_folder` | `name`, `parent_id?` | `FolderItem` | Create a new folder. |
+| `renameFolder` / `rename_folder` | `id`, `name` | void | Rename a folder. |
+| `deleteFolder` / `delete_folder` | `id` | void | Delete a folder. |
+| `moveFile` / `move_file` | `manifest_block_id`, `folder_id` | void | Move a file to a different folder. |
+| `uploadFile` / `upload_file` | `data`, `file_name`, `mime_type?`, `folder_id?`, `on_progress?` | `FileEntry` | Upload a file (Base64-encoded for HTTP). |
+| `downloadFile` / `download_file` | `manifest_block_id` | `bytes` | Download and decode a file. |
+
+### Workspaces
+
+| Operation | Parameters | Returns | Description |
+|---|---|---|---|
+| `listWorkspaces` / `list_workspaces` | — | `Workspace[]` | List all workspaces. |
+| `createWorkspace` / `create_workspace` | `name` | `Workspace` | Create a new workspace. |
+| `switchWorkspace` / `switch_workspace` | `id` | void | Set the active workspace. |
+| `renameWorkspace` / `rename_workspace` | `id`, `name` | void | Rename a workspace. |
+| `deleteWorkspace` / `delete_workspace` | `id` | void | Delete a workspace. |
 
 ### Sync
 
 | Operation | Parameters | Returns | Description |
 |---|---|---|---|
-| `sync.list_peers` | _none_ | `SyncPeerListResult` | List registered sync peers and their online status. |
-| `sync.trigger` | `peer_id` | `SyncTriggerResult` | Trigger an immediate sync with a peer. |
+| `listSyncPeers` / `list_sync_peers` | — | `SyncStatus` | List peers and sync metadata. |
+| `triggerSync` / `trigger_sync` | — | void | Trigger an immediate sync. |
 
 ### Audit
 
 | Operation | Parameters | Returns | Description |
 |---|---|---|---|
-| `audit.list` | `vault_id`, `limit`, `offset` | `AuditListResult` | Paginated audit trail for a vault. |
+| `listAuditEvents` / `list_audit_events` | `n=50` | `AuditEvent[]` | Last n audit events. |
 
 ### Tools
 
 | Operation | Parameters | Returns | Description |
 |---|---|---|---|
-| `tool.ssh_keygen` | `algorithm`, `bits?`, `comment?`, `passphrase?` | `SSHKeygenResult` | Generate an SSH key pair. The private key never leaves the SDK; only the public key and fingerprint are returned. |
+| `generateSSHKey` / `generate_ssh_key` | `comment?`, `save_to_vault?` | `{public_key, fingerprint, entry_id?}` | Generate an SSH key pair. |
+| `getRecoveryPhrase` / `recovery_phrase` | `password` | `string` | Retrieve the BIP39 recovery phrase. |
+
+### Health
+
+| Operation | Returns | Description |
+|---|---|
+| `healthCheck` / `health_check` | `VaultStatus` | Alias for `vaultStatus()`. |
+
+---
+
+## Resilience Features
+
+All SDKs ship with **Retry + Circuit Breaker** built into the transport layer.
+
+### Retry Behaviour
+
+| Parameter | Value |
+|---|---|
+| Max retries | 3 (4 total attempts) |
+| Base delay | 100 ms |
+| Backoff | Exponential (100 → 200 → 400 ms) |
+| Cap | 2 seconds |
+| Retryable errors | 5xx, network timeouts, connection drops |
+| Non-retryable | 4xx client errors (immediately thrown) |
+
+### Circuit Breaker
+
+| Parameter | Value |
+|---|---|
+| Failure threshold | 5 consecutive retryable errors |
+| Open duration | 30 seconds |
+| Half-open | One probe request allowed after timeout |
+| On success | Circuit closes immediately |
+
+> **Usage:** Zero configuration required. The SDKs handle retries and circuit
+> breaking transparently on every request.
+
+### Batch Operations
+
+All SDKs support efficient bulk creation and deletion:
+
+| Operation | Input | Output |
+|---|---|---|
+| `createEntriesBatch` | `List<{title, category, fields}>` | `List<entry_id>` |
+| `deleteEntriesBatch` | `List<entry_id>` | void / error |
+
+**Go:**
+```go
+ids, err := client.CreateEntriesBatch(ctx, "default", []sdk.BatchEntry{
+    {Title: "GitHub", Category: "PASSWORD", Fields: map[string]string{"username": "alice"}},
+    {Title: "AWS", Category: "PASSWORD", Fields: map[string]string{"username": "bob"}},
+})
+```
+
+**TypeScript:**
+```typescript
+const ids = await client.createEntriesBatch([
+    { title: "GitHub", category: "PASSWORD", fields: { username: "alice" } },
+    { title: "AWS", category: "PASSWORD", fields: { username: "bob" } },
+]);
+```
+
+### Streaming Events (WebSocket SDKs)
+
+Go, Python, TypeScript, Java, Rust, and C# support live daemon event streaming:
+
+| Event | Description |
+|---|---|
+| `connected` | WebSocket handshake completed. |
+| `disconnected` | Connection lost or closed. |
+| `entry_changed` | An entry was created, updated, or deleted. |
+| `sync_complete` | A sync cycle finished successfully. |
+
+**Go:**
+```go
+events, _ := client.SubscribeEvents(ctx)
+for evt := range events {
+    switch evt.Type {
+    case sdk.EventEntryChanged:
+        fmt.Println("Entry changed:", evt.EntryID)
+    case sdk.EventSyncComplete:
+        fmt.Println("Sync done")
+    }
+}
+```
+
+**TypeScript:**
+```typescript
+for await (const evt of client.events()) {
+    if (evt.event === "entry_changed") {
+        console.log("Entry changed:", evt.data.entry_id);
+    }
+}
+```
 
 ---
 
@@ -290,58 +388,67 @@ All SDKs expose a typed error class. Every error carries a **machine-readable**
 
 **Go:**
 ```go
-entries, err := client.Entries.List(ctx, "vault-id", sdk.ListOpts{})
+entries, err := client.ListEntries(ctx, "default")
 if err != nil {
-    var ge *sdk.GrimlockerError
-    if errors.As(err, &ge) {
-        fmt.Printf("code=%s msg=%s\n", ge.Code, ge.Message)
+    if strings.Contains(err.Error(), "circuit breaker open") {
+        log.Println("circuit breaker is open — backing off")
+    } else {
+        log.Printf("error: %v", err)
     }
 }
 ```
 
 **Python:**
 ```python
-from grimlocker import GrimlockerError
+from grimlocker import GrimlockerError, CircuitBreakerOpenError
 
 try:
-    entries = client.entries.list("vault-id")
+    entries = client.list_entries()
+except CircuitBreakerOpenError:
+    print("circuit breaker open — backing off")
 except GrimlockerError as e:
-    print(f"code={e.code} msg={e.message}")
+    print(f"code={e.error_code} msg={e}")
 ```
 
 **Java:**
 ```java
 try {
-    var result = client.entries().list("vault-id", opts);
+    var entries = client.listEntries().namespace("default").execute();
 } catch (GrimlockerException e) {
-    System.err.printf("code=%s msg=%s%n", e.getCode(), e.getMessage());
+    System.err.printf("code=%d msg=%s%n", e.getErrorCode(), e.getMessage());
 }
 ```
 
 **TypeScript:**
 ```typescript
 try {
-    const entries = await client.entries.list("vault-id");
-} catch (e) {
-    if (e instanceof GrimlockerError) {
-        console.error(`code=${e.code} msg=${e.message}`);
+    const entries = await client.listEntries();
+} catch (e: any) {
+    if (e instanceof CircuitBreakerOpenError) {
+        console.error("circuit breaker open — backing off");
+    } else {
+        console.error(`code=${e.status_code} msg=${e.message}`);
     }
 }
 ```
 
 **Rust:**
 ```rust
-match client.entries().list("vault-id").send().await {
-    Ok(entries) => println!("{}", entries.total),
-    Err(GrimlockerError { code, message, .. }) => eprintln!("{code}: {message}"),
-    Err(e) => eprintln!("transport error: {e}"),
+match client.list_entries(None).await {
+    Ok(entries) => println!("{}", entries.len()),
+    Err(grimlocker_sdk::Error::WebSocket(ref msg)) if msg.contains("circuit breaker") => {
+        eprintln!("circuit breaker open");
+    }
+    Err(e) => eprintln!("error: {e}"),
 }
 ```
 
 **C#:**
 ```csharp
 try {
-    var entries = await client.Entries.ListAsync("vault-id");
+    var entries = await client.ListEntriesAsync();
+} catch (CircuitBreakerOpenException) {
+    Console.WriteLine("circuit breaker open — backing off");
 } catch (GrimlockerException e) {
     Console.WriteLine($"code={e.Code} msg={e.Message}");
 }
@@ -350,8 +457,10 @@ try {
 **C++:**
 ```cpp
 try {
-    auto entries = client.entries().list("vault-id");
-} catch (const grimlocker::Error& e) {
+    auto entries = client.list_entries();
+} catch (const grimlocker::CircuitBreakerOpenException& e) {
+    std::cerr << "circuit breaker open" << std::endl;
+} catch (const grimlocker::GrimlockerError& e) {
     std::cerr << "code=" << e.code() << " msg=" << e.what() << std::endl;
 }
 ```
@@ -359,8 +468,10 @@ try {
 **Ruby:**
 ```ruby
 begin
-  entries = client.entries.list("vault-id")
-rescue Grimlocker::Error => e
+  entries = client.list_entries
+rescue Grimlocker::CircuitBreakerOpenError => e
+  puts "circuit breaker open"
+rescue Grimlocker::GrimlockerError => e
   puts "code=#{e.code} msg=#{e.message}"
 end
 ```
@@ -368,25 +479,33 @@ end
 **PHP:**
 ```php
 try {
-    $entries = $client->entries()->list('vault-id');
-} catch (\Grimlocker\Error $e) {
-    fprintf(STDERR, "code=%s msg=%s\n", $e->getCode(), $e->getMessage());
+    $entries = $client->listEntries();
+} catch (\Grimlocker\CircuitBreakerOpenException $e) {
+    fprintf(STDERR, "circuit breaker open\n");
+} catch (\Grimlocker\GrimlockerException $e) {
+    fprintf(STDERR, "code=%d msg=%s\n", $e->getCode(), $e->getMessage());
 }
 ```
 
 **Swift:**
 ```swift
 do {
-    let entries = try await client.entries.list(vaultId: "vault-id")
+    let entries = try await client.listEntries()
 } catch let error as GrimlockerError {
-    print("code=\(error.code) msg=\(error.message)")
+    if case .circuitBreakerOpen = error {
+        print("circuit breaker open")
+    } else {
+        print("code=\(error.errorDescription ?? "")")
+    }
 }
 ```
 
 **Kotlin:**
 ```kotlin
 try {
-    val entries = client.entries.list("vault-id")
+    val entries = client.listEntries()
+} catch (e: CircuitBreakerOpenException) {
+    System.err.println("circuit breaker open")
 } catch (e: GrimlockerException) {
     System.err.println("code=${e.code} msg=${e.message}")
 }
@@ -395,7 +514,9 @@ try {
 **Dart:**
 ```dart
 try {
-    final entries = await client.entries.list('vault-id');
+    final entries = await client.listEntries();
+} on CircuitBreakerOpenException catch (e) {
+    print('circuit breaker open');
 } on GrimlockerException catch (e) {
     print('code=${e.code} msg=${e.message}');
 }

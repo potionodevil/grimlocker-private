@@ -169,6 +169,35 @@ module Grimlocker
       @calls << ['vault.recovery_phrase', { password: password }]
       'abandon ability able about above absent absorb abstract...'
     end
+
+    def batch_create_entries(items)
+      items.map do |title, category|
+        create_entry(title: title, category: category).id
+      end
+    end
+
+    def batch_delete_entries(ids)
+      ids.each { |id| delete_entry!(id) }
+    end
+  end
+
+  class CircuitBreaker
+    attr_reader :state, :failure_count
+
+    def initialize(threshold: 3)
+      @threshold = threshold
+      @failure_count = 0
+      @state = :closed
+    end
+
+    def call
+      raise GrimlockerError.new('circuit open', -200) if @state == :open
+      yield
+    rescue GrimlockerError
+      @failure_count += 1
+      @state = :open if @failure_count >= @threshold
+      raise
+    end
   end
 
   class ErrorTestClient < Client
@@ -383,5 +412,36 @@ class GrimlockerClientTest < Minitest::Test
       client.unlock_vault!('wrong')
     end
     assert_match(/invalid password/, err.message)
+  end
+
+  def test_batch_create_entries
+    ids = @client.batch_create_entries([['A', 'PASSWORD'], ['B', 'SSH_KEY']])
+    assert_equal(2, ids.length)
+    assert_equal('new1', ids[0])
+    assert_equal('new1', ids[1])
+    assert_equal('entry.create', @client.calls[0][0])
+    assert_equal('entry.create', @client.calls[1][0])
+  end
+
+  def test_batch_delete_entries
+    @client.batch_delete_entries(['e1', 'e2'])
+    assert_equal(2, @client.calls.length)
+    assert_equal('entry.delete', @client.calls[0][0])
+    assert_equal('entry.delete', @client.calls[1][0])
+  end
+
+  def test_circuit_breaker_opens
+    cb = Grimlocker::CircuitBreaker.new(threshold: 3)
+    3.times do
+      assert_raises(Grimlocker::GrimlockerError) do
+        cb.call { raise Grimlocker::GrimlockerError.new('fail', -1) }
+      end
+    end
+    assert_equal(:open, cb.state)
+    assert_equal(3, cb.failure_count)
+    err = assert_raises(Grimlocker::GrimlockerError) do
+      cb.call {}
+    end
+    assert_match(/circuit open/, err.message)
   end
 end

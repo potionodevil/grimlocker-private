@@ -1,8 +1,8 @@
 package storage
 
-// Block is the opaque unit the storage layer reads and writes.
-// It contains encrypted bytes that the storage layer NEVER decrypts —
-// all decryption happens in the crypto module.
+// Block ist die opaque Einheit, die das Storage-Layer liest und schreibt.
+// Sie enthält verschlüsselte Bytes, die das Storage-Layer NIEMALS entschlüsselt —
+// alles läuft im Crypto-Modul.
 type Block struct {
 	ID        string   `json:"id"`
 	Nonce     []byte   `json:"nonce"`             // 12 bytes
@@ -13,7 +13,7 @@ type Block struct {
 	UpdatedAt int64    `json:"updated_at"`
 }
 
-// BlockMeta contains only the non-secret metadata about a block.
+// BlockMeta enthält nur die nicht-geheimen Metadaten über einen Block.
 type BlockMeta struct {
 	ID        string   `json:"id"`
 	Size      int64    `json:"size"`

@@ -1,5 +1,27 @@
 #![allow(dead_code)]
 
+//! CGO-Export-Fassade für den Grimlocker Core.
+//!
+//! # Warum?
+//! Go (grimdb-go/grimext) kann Rust-Code nur über C ABI (`extern "C"`) aufrufen.
+//! Dieses Modul definiert alle `#[no_mangle]` FFI-Funktionen, die Go sehen kann,
+//! und delegiert an die internen Module.
+//!
+//! # Threat Model
+//! - Go stellt die Rohdaten (Pointer, Lengths) — Rust validiert alles
+//!   (null-Checks, Buffer-Sizes, Encoding)
+//! - Keys werden nur via Handle zwischen Go und Rust ausgetauscht
+//!   (MVK/Session-Keys). Rohe Key-Bytes verlassen das Enclave-Modul nie
+//!   (außer bei `session_create`, wo der Key einmalig fürs Frontend
+//!   ausgegeben wird).
+//! - Jede `extern "C"` Funktion returned einen C-String ("OK" oder "ERROR: ...")
+//!   — der Caller muss `free_cstring` aufrufen, sonst Memory-Leak.
+//!
+//! # Design
+//! - Kein Unsafe-Code außerhalb der Pointer-Konvertierung
+//! - Sorgfältige null-pointer und length validation vor jedem FFI-Call
+//! - Zeroize auf allen Key-Buffern, bevor sie den Scope verlassen
+
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 use std::ptr;
@@ -17,7 +39,7 @@ use coordinates::{Coordinate, CoordinateResult};
 use enclave::Enclave;
 
 // ---------------------------------------------------------------------------
-// Global enclave instance — initialized once, holds all key material.
+// Globale Enclave-Instanz — wird einmal initialisiert, hält alle Keys.
 // ---------------------------------------------------------------------------
 lazy_static::lazy_static! {
     static ref ENCLAVE: Mutex<Enclave> = Mutex::new(Enclave::new());
@@ -60,7 +82,7 @@ const ENTROPY_CHARSET: &[u8] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+[]{}|;:,.<>?/~ ";
 
 // ===========================================================================
-// Phase 1: Existing CGO exports (preserved for backward compatibility)
+// Phase 1: Bestehende CGO-Exports (Backward Compatibility)
 // ===========================================================================
 
 #[no_mangle]
@@ -347,11 +369,12 @@ pub extern "C" fn grimcore_derive_workspace_key(
 }
 
 // ===========================================================================
-// Phase 1.1: Secure wipe CGO export
+// Phase 1.1: Secure-Wipe-CGO-Export
 // ===========================================================================
 
-/// grimcore_secure_wipe performs a 7-pass secure file wipe via the Rust core.
-/// Returns "OK" on success or "ERROR: ..." on failure.
+/// Überschreibt die Datei 7-mal mit CSPRNG-Zufallsdaten, truncatet sie auf 0
+/// und löscht sie. Auf Unix werden die Dateirechte vorher auf 0600 gesetzt
+/// (nur Owner darf lesen). Returns "OK" oder "ERROR: ...".
 #[no_mangle]
 pub extern "C" fn grimcore_secure_wipe(path: *const c_char) -> *mut c_char {
     if path.is_null() {
@@ -370,13 +393,13 @@ pub extern "C" fn grimcore_secure_wipe(path: *const c_char) -> *mut c_char {
 }
 
 // ===========================================================================
-// Phase 1.2: Encrypt/Decrypt CGO exports (raw key, for backward compat)
+// Phase 1.2: Encrypt/Decrypt-CGO-Exports (raw key, backward compat)
 // ===========================================================================
 
-/// grimcore_encrypt_raw encrypts plaintext with a 32-byte key using
-/// ChaCha20-Poly1305. Returns nonce(12) + ciphertext+tag.
-/// ciphertext_out must be at least plaintext_len + 28 bytes.
-/// ciphertext_len_out is set to the actual output length.
+/// Verschlüsselt mit ChaCha20-Poly1305 und einem expliziten 32-Byte Key + 12-Byte Nonce.
+/// Output-Format: nonce(12) + ciphertext + tag(16).
+/// `ciphertext_out` muss mindestens `plaintext_len + 28` Bytes fassen.
+/// Der Key wird nach der Operation gezeroit.
 #[no_mangle]
 pub extern "C" fn grimcore_encrypt_raw(
     key: *const u8,
@@ -435,9 +458,9 @@ pub extern "C" fn grimcore_encrypt_raw(
     }
 }
 
-/// grimcore_decrypt_raw decrypts nonce(12)+ciphertext+tag with a 32-byte key.
-/// plaintext_out must be at least ciphertext_len bytes.
-/// plaintext_len_out is set to the actual output length.
+/// Entschlüsselt nonce(12) + ciphertext + tag mit einem 32-Byte Key.
+/// `plaintext_out` muss mindestens `ciphertext_len` Bytes fassen.
+/// Der Key wird nach der Operation gezeroit.
 #[no_mangle]
 pub extern "C" fn grimcore_decrypt_raw(
     key: *const u8,
@@ -479,7 +502,7 @@ pub extern "C" fn grimcore_decrypt_raw(
     let mut key_arr = [0u8; 32];
     key_arr.copy_from_slice(key_bytes);
 
-    // Combine nonce + ciphertext for decrypt function
+    // Nonce + Ciphertext zusammenbauen — decrypt() erwartet beides in einem Slice
     let mut blob = Vec::with_capacity(12 + ciphertext_len);
     blob.extend_from_slice(nonce_bytes);
     blob.extend_from_slice(ciphertext_bytes);
@@ -503,11 +526,11 @@ pub extern "C" fn grimcore_decrypt_raw(
 }
 
 // ===========================================================================
-// Phase 2: Enclave lifecycle CGO exports
+// Phase 2: Enclave-Lifecycle-CGO-Exports
 // ===========================================================================
 
-/// grimcore_init initializes the secure enclave. Must be called before any
-/// other grimcore_* function. Returns "OK" or "ERROR: ...".
+/// Initialisiert die Secure Enclave. Muss aufgerufen werden, bevor irgendeine
+/// andere `grimcore_*` Funktion verwendet wird. Returns "OK" oder "ERROR: ...".
 #[no_mangle]
 pub extern "C" fn grimcore_init() -> *mut c_char {
     let mut enclave = match ENCLAVE.lock() {
@@ -521,7 +544,7 @@ pub extern "C" fn grimcore_init() -> *mut c_char {
     }
 }
 
-/// grimcore_shutdown destroys the secure enclave, zeroing all key material.
+/// Fährt die Enclave herunter und zeroized alle Key-Materialien.
 #[no_mangle]
 pub extern "C" fn grimcore_shutdown() {
     let mut enclave = match ENCLAVE.lock() {
@@ -532,13 +555,13 @@ pub extern "C" fn grimcore_shutdown() {
 }
 
 // ===========================================================================
-// Phase 2.3: Session key management via enclave
+// Phase 2.3: Session-Key-Management via Enclave
 // ===========================================================================
 
-/// grimcore_session_create creates a per-session encryption key and stores it
-/// in the enclave under the given handle. The session key bytes are copied
-/// to session_key_out (32 bytes) for transmission to the frontend.
-/// Returns "OK" or "ERROR: ...".
+/// Erzeugt einen Session-Key (32 Byte via OsRng) und speichert ihn in der Enclave.
+/// Die Key-Bytes werden in `session_key_out` kopiert (fürs Frontend).
+/// Returns das Handle als C-String (Caller muss mit `free_cstring` freigeben)
+/// oder "ERROR: ...".
 #[no_mangle]
 pub extern "C" fn grimcore_session_create(
     session_key_out: *mut u8,
@@ -561,7 +584,7 @@ pub extern "C" fn grimcore_session_create(
             unsafe {
                 ptr::copy_nonoverlapping(key_bytes.as_ptr(), session_key_out, 32);
             }
-            // Return handle as C string — caller must free with free_cstring
+            // Handle als C-String zurück — Caller muss free_cstring() aufrufen, sonst leak
             match CString::new(handle) {
                 Ok(c) => c.into_raw(),
                 Err(_) => cstr_result("ERROR: handle conversion failed"),
@@ -571,7 +594,7 @@ pub extern "C" fn grimcore_session_create(
     }
 }
 
-/// grimcore_session_destroy removes a session key from the enclave.
+/// Entfernt einen Session Key aus der Enclave und zeroized ihn.
 #[no_mangle]
 pub extern "C" fn grimcore_session_destroy(handle: *const c_char) {
     if handle.is_null() {
@@ -591,13 +614,12 @@ pub extern "C" fn grimcore_session_destroy(handle: *const c_char) {
 }
 
 // ===========================================================================
-// Phase 2.4: Handle-based encrypt/decrypt via enclave
+// Phase 2.4: Handle-basierte Ver-/Entschlüsselung via Enclave
 // ===========================================================================
 
-/// grimcore_encrypt_handle encrypts plaintext using a key stored in the
-/// enclave under the given handle. The handle can be an MVK handle
-/// ("mvk:<hex>") or a session key handle ("ske:<hex>").
-/// Returns: nonce(12) + ciphertext+tag written to ciphertext_out.
+/// Verschlüsselt mit einem Key aus der Enclave (identifiziert durch Handle).
+/// Handle-Prefixe: `"mvk:<hex>"` (MVK) oder `"ske:<hex>"` (Session Key).
+/// Output: nonce(12) + ciphertext + tag(16) in `ciphertext_out`.
 #[no_mangle]
 pub extern "C" fn grimcore_encrypt_handle(
     handle: *const c_char,
@@ -646,8 +668,8 @@ pub extern "C" fn grimcore_encrypt_handle(
     }
 }
 
-/// grimcore_decrypt_handle decrypts nonce(12)+ciphertext+tag using a key
-/// stored in the enclave under the given handle.
+/// Entschlüsselt nonce(12) + ciphertext + tag mit einem Key aus der Enclave
+/// (identifiziert durch Handle). Siehe `grimcore_encrypt_handle`.
 #[no_mangle]
 pub extern "C" fn grimcore_decrypt_handle(
     handle: *const c_char,
@@ -697,11 +719,11 @@ pub extern "C" fn grimcore_decrypt_handle(
 }
 
 // ===========================================================================
-// Phase 2.5: SKE (Session Key Encryption) via enclave
+// Phase 2.5: SKE (Session Key Encryption) via Enclave
 // ===========================================================================
 
-/// grimcore_ske_encrypt encrypts plaintext with the session key identified
-/// by the handle. Returns nonce(12) + ciphertext+tag.
+/// Verschlüsselt mit einem Session Key (ohne AAD).
+/// Kurzform von `grimcore_encrypt_handle` — identisches Ergebnis.
 #[no_mangle]
 pub extern "C" fn grimcore_ske_encrypt(
     handle: *const c_char,
@@ -710,7 +732,7 @@ pub extern "C" fn grimcore_ske_encrypt(
     ciphertext_out: *mut u8,
     ciphertext_len_out: *mut usize,
 ) -> *mut c_char {
-    // SKE is just encrypt_handle without AAD
+    // SKE = encrypt_handle ohne AAD — reiner Bequemlichkeits-Wrapper
     grimcore_encrypt_handle(
         handle,
         plaintext,
@@ -722,8 +744,8 @@ pub extern "C" fn grimcore_ske_encrypt(
     )
 }
 
-/// grimcore_ske_decrypt decrypts nonce(12)+ciphertext+tag with the session
-/// key identified by the handle.
+/// Entschlüsselt mit einem Session Key (ohne AAD).
+/// Kurzform von `grimcore_decrypt_handle` — identisches Ergebnis.
 #[no_mangle]
 pub extern "C" fn grimcore_ske_decrypt(
     handle: *const c_char,
@@ -732,7 +754,7 @@ pub extern "C" fn grimcore_ske_decrypt(
     plaintext_out: *mut u8,
     plaintext_len_out: *mut usize,
 ) -> *mut c_char {
-    // SKE is just decrypt_handle without AAD
+    // SKE = decrypt_handle ohne AAD — reiner Bequemlichkeits-Wrapper
     grimcore_decrypt_handle(
         handle,
         ciphertext,
@@ -745,13 +767,13 @@ pub extern "C" fn grimcore_ske_decrypt(
 }
 
 // ===========================================================================
-// Phase 2: MVK handle management via enclave
+// Phase 2: MVK-Handle-Management via Enclave
 // ===========================================================================
 
-/// grimcore_mvk_store stores a 32-byte MVK in the enclave and returns a
-/// handle string. The MVK is held in locked memory (mlock/VirtualLock)
-/// and is zeroized when removed.
-/// Returns a C string handle (caller must free with free_cstring).
+/// Speichert einen 32-Byte MVK in der Enclave und gibt ein Handle zurück.
+/// Der MVK wird in locked memory gehalten (mlock/VirtualLock) und
+/// beim Entfernen gezeroit. Returns das Handle als C-String
+/// (Caller muss mit `free_cstring` freigeben).
 #[no_mangle]
 pub extern "C" fn grimcore_mvk_store(mvk: *const u8, mvk_len: usize) -> *mut c_char {
     if mvk.is_null() {
@@ -777,7 +799,7 @@ pub extern "C" fn grimcore_mvk_store(mvk: *const u8, mvk_len: usize) -> *mut c_c
     }
 }
 
-/// grimcore_mvk_revoke removes and zeroizes an MVK from the enclave.
+/// Entfernt einen MVK aus der Enclave und zeroized ihn.
 #[no_mangle]
 pub extern "C" fn grimcore_mvk_revoke(handle: *const c_char) {
     if handle.is_null() {
@@ -797,14 +819,15 @@ pub extern "C" fn grimcore_mvk_revoke(handle: *const c_char) {
 }
 
 // ===========================================================================
-// Phase 1.3: BLAKE3 coordinate derivation (direct CGO export)
+// Phase 1.3: BLAKE3-Koordinaten-Ableitung (direkter CGO-Export)
 // ===========================================================================
 
-/// grimcore_derive_coordinate extracts bytes at offsets from entropy data
-/// and derives a 32-byte key using BLAKE3 → HKDF-SHA256.
-/// This is the CORRECT implementation (Rust uses real BLAKE3, Go uses SHA-256
-/// as a workaround which produces different keys).
-/// offsets_json is a JSON array of integers [offset1, offset2, ...].
+/// Extrahiert Bytes aus Entropy-Daten an gegebenen Offsets und leitet
+/// daraus einen 32-Byte Key via BLAKE3 → HKDF-SHA256 ab.
+///
+/// ⚠️ Das ist die KORREKTE Implementierung (Rust nutzt echtes BLAKE3).
+/// Go verwendet SHA-256 als Workaround — das produziert andere Keys.
+/// `offsets_json` ist ein JSON-Array: `[offset1, offset2, ...]`.
 #[no_mangle]
 pub extern "C" fn grimcore_derive_coordinate(
     entropy_data: *const u8,
@@ -831,7 +854,7 @@ pub extern "C" fn grimcore_derive_coordinate(
         Err(e) => return cstr_result(&format!("ERROR: parse offsets: {}", e)),
     };
 
-    // Extract bytes at offsets from entropy data
+    // Bytes an den gegebenen Offsets aus der Entropy-Datei extrahieren
     let mut extracted = Vec::with_capacity(offsets.len());
     for &offset in &offsets {
         if offset < 0 || (offset as usize) >= entropy.len() {
@@ -844,7 +867,7 @@ pub extern "C" fn grimcore_derive_coordinate(
         extracted.push(entropy[offset as usize]);
     }
 
-    // BLAKE3 → HKDF-SHA256 derivation (matches coordinates.rs derive_key)
+    // BLAKE3 → HKDF-SHA256 (muss mit coordinates.rs::derive_key identisch sein)
     match coordinates::derive_key_from_extracted(&extracted) {
         Ok(key) => {
             unsafe {
@@ -857,11 +880,11 @@ pub extern "C" fn grimcore_derive_coordinate(
 }
 
 // ===========================================================================
-// Argon2id key derivation via Rust
+// Argon2id-Key-Derivation via Rust (Phase 3)
 // ===========================================================================
 
-/// grimcore_derive_argon2id derives a key from password using Argon2id.
-/// This is intended to replace Go's argon2.IDKey for phase 3.
+/// Leitet einen Key aus einem Passwort via Argon2id ab.
+/// Soll in Phase 3 Go's `argon2.IDKey` ersetzen.
 #[no_mangle]
 pub extern "C" fn grimcore_derive_argon2id(
     password: *const u8,
@@ -899,7 +922,7 @@ pub extern "C" fn grimcore_derive_argon2id(
 }
 
 // ===========================================================================
-// Utilities
+// Hilfsfunktionen — C-String-Konvertierung und Speicher-Freigabe
 // ===========================================================================
 
 fn cstr_result(msg: &str) -> *mut c_char {

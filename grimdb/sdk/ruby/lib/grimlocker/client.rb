@@ -20,6 +20,11 @@ module Grimlocker
   #   client.unlock_vault!('master-password')
   #   client.passwords.each { |p| puts "#{p.title}: #{p.username}" }
   class Client
+    MAX_RETRIES = 3
+    BASE_DELAY_MS = 100
+    CIRCUIT_FAILURE_THRESHOLD = 5
+    CIRCUIT_OPEN_SECONDS = 30
+
     # @param base_url [String] e.g. "http://127.0.0.1:36353"
     # @param token    [String] GRIMLOCKER_TOKEN from daemon stdout
     # @param timeout  [Integer] request timeout in seconds
@@ -31,6 +36,8 @@ module Grimlocker
       @http.read_timeout  = timeout
       @http.open_timeout  = timeout
       @http.use_ssl       = @uri.scheme == 'https'
+      @failure_count = 0
+      @circuit_open_until = nil
     end
 
     # ── Auth ────────────────────────────────────────────────────────────────
@@ -39,6 +46,9 @@ module Grimlocker
     def lock_vault!                 = call!('vault.logout', {})
     def vault_status                = call!('vault.status', {})
     def recovery_phrase(password)   = call!('vault.recovery_phrase', { password: password })
+    def generate_ssh_key(comment: '', save_to_vault: true)
+      call!('tool.ssh_keygen', { comment: comment, save_to_vault: save_to_vault })
+    end
 
     # ── Entries ─────────────────────────────────────────────────────────────
 
@@ -62,6 +72,20 @@ module Grimlocker
 
     def search_entries(query, category: nil)
       parse_entries(call!('entry.search', { query: query, category: category }.compact))
+    end
+
+    def create_entries_batch(entries)
+      entries.map do |entry|
+        title    = entry[:title]    || entry['title']
+        category = entry[:category] || entry['category']
+        fields   = entry[:fields]   || entry['fields'] || {}
+        create_entry(title: title, category: category, fields: fields).id
+      end
+    end
+
+    def delete_entries_batch(ids)
+      ids.each { |id| delete_entry!(id) }
+      true
     end
 
     # ── Typed helpers ────────────────────────────────────────────────────────
@@ -158,25 +182,81 @@ module Grimlocker
     private
 
     def call!(action, payload)
-      req = Net::HTTP::Post.new('/api/v1')
-      req['Content-Type']       = 'application/json'
-      req['X-Grimlocker-Token'] = @token
-      req.body = JSON.generate({ action: action, payload: payload })
+      now = Time.now.to_f
 
-      res = @http.request(req)
-      body = JSON.parse(res.body)
-
-      unless res.is_a?(Net::HTTPSuccess)
-        code = body['error_code'] || 0
-        msg  = body['error'] || "HTTP #{res.code}"
-        raise GrimlockerError.new("#{GrimlockerError.name_of(code)}: #{msg}", code)
+      if @circuit_open_until
+        if now < @circuit_open_until
+          raise CircuitBreakerOpenError.new('Circuit breaker is open')
+        end
+        @circuit_open_until = nil
       end
 
-      body
-    rescue JSON::ParserError => e
-      raise GrimlockerError.new("Invalid JSON response: #{e.message}")
-    rescue Errno::ECONNREFUSED, Errno::ETIMEDOUT => e
-      raise GrimlockerError.new("Connection failed: #{e.message}")
+      last_error = nil
+
+      (0..MAX_RETRIES).each do |attempt|
+        begin
+          req = Net::HTTP::Post.new('/api/v1')
+          req['Content-Type']       = 'application/json'
+          req['X-Grimlocker-Token'] = @token
+          req.body = JSON.generate({ action: action, payload: payload })
+
+          res = @http.request(req)
+          body = JSON.parse(res.body)
+
+          unless res.is_a?(Net::HTTPSuccess)
+            code = body['error_code'] || 0
+            msg  = body['error'] || "HTTP #{res.code}"
+            last_error = GrimlockerError.new("#{GrimlockerError.name_of(code)}: #{msg}", code)
+
+            status = res.code.to_i
+
+            if status >= 400 && status < 500
+              @failure_count = 0
+              raise last_error
+            end
+
+            if status >= 500
+              record_failure
+              if attempt == MAX_RETRIES
+                raise last_error
+              end
+              delay = [BASE_DELAY_MS * (1 << attempt), 2000].min
+              sleep(delay / 1000.0)
+              next
+            end
+
+            raise last_error
+          end
+
+          @failure_count = 0
+          return body
+        rescue JSON::ParserError => e
+          record_failure
+          last_error = GrimlockerError.new("Invalid JSON response: #{e.message}")
+          if attempt == MAX_RETRIES
+            raise last_error
+          end
+          delay = [BASE_DELAY_MS * (1 << attempt), 2000].min
+          sleep(delay / 1000.0)
+        rescue Errno::ECONNREFUSED, Errno::ETIMEDOUT, Errno::ECONNRESET, SocketError, Net::OpenTimeout, Net::ReadTimeout, EOFError => e
+          record_failure
+          last_error = GrimlockerError.new("Connection failed: #{e.message}")
+          if attempt == MAX_RETRIES
+            raise last_error
+          end
+          delay = [BASE_DELAY_MS * (1 << attempt), 2000].min
+          sleep(delay / 1000.0)
+        end
+      end
+
+      raise last_error || GrimlockerError.new('Request failed after retries')
+    end
+
+    def record_failure
+      @failure_count += 1
+      if @failure_count >= CIRCUIT_FAILURE_THRESHOLD
+        @circuit_open_until = Time.now.to_f + CIRCUIT_OPEN_SECONDS
+      end
     end
 
     def parse_entries(data)

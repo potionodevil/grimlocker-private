@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// newID generates a random UUID v4 string without external dependencies.
+// newID erzeugt eine zufällige UUID v4 — ohne externe Dependencies.
 func newID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])

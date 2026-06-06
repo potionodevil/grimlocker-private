@@ -81,7 +81,7 @@ export function BentoGrid() {
       </div>
 
       <div className="max-w-7xl mx-auto grid grid-cols-4 grid-rows-4 gap-4 h-[calc(100vh-8rem)]">
-        {/* Secrets Vault - 2x2 */}
+        {/* Secrets Vault — 2×2, der grösste Tile, zeigt Passwort-Einträge */}
         <div
           ref={el => tilesRef.current[0] = el}
           className={`col-span-2 row-span-2 ${panelClass}`}
@@ -89,7 +89,7 @@ export function BentoGrid() {
           <SecretsVault />
         </div>
 
-        {/* Core Node Orb - 1x1 */}
+        {/* Core Node Orb — 1×1, 3D-Orb-Animation des Vault-Status */}
         <div
           ref={el => tilesRef.current[1] = el}
           className={`col-span-1 row-span-1 ${panelClass} relative`}
@@ -105,7 +105,7 @@ export function BentoGrid() {
           </Suspense>
         </div>
 
-        {/* Entropy Integrity - 1x1 */}
+        {/* Entropy Integrity — 1×1, zeigt Entropy- und Override-Status an */}
         <div
           ref={el => tilesRef.current[2] = el}
           className={`col-span-1 row-span-1 ${panelClass}`}
@@ -113,7 +113,7 @@ export function BentoGrid() {
           <EntropyIntegrity />
         </div>
 
-        {/* Crypto Generator - 2x1 Wide */}
+        {/* Crypto Generator — 2×1 breit, erzeugt sichere Zufallspasswörter */}
         <div
           ref={el => tilesRef.current[3] = el}
           className={`col-span-2 row-span-1 ${panelClass}`}
@@ -121,7 +121,7 @@ export function BentoGrid() {
           <CryptoGenerator />
         </div>
 
-        {/* Throughput Panel - 1x1 */}
+        {/* Throughput Panel — 1×1, Live-Diagramm der kryptografischen Durchsatzrate */}
         <div
           ref={el => tilesRef.current[4] = el}
           className={`col-span-1 row-span-1 ${panelClass}`}
@@ -129,7 +129,7 @@ export function BentoGrid() {
           <ThroughputPanel />
         </div>
 
-        {/* Operations Log - 1x1 */}
+        {/* Operations Log — 1×1, zeigt die letzten Daemon-Operationen an */}
         <div
           ref={el => tilesRef.current[5] = el}
           className={`col-span-1 row-span-1 ${panelClass}`}

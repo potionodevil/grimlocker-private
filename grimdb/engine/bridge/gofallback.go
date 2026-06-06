@@ -9,7 +9,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// GoSecureZero overwrites b with zeros in a way the compiler cannot elide.
+// GoSecureZero überschreibt b mit Nullen — der Compiler kann das nicht wegoptimieren.
 func GoSecureZero(b []byte) {
 	for i := range b {
 		b[i] = 0
@@ -17,8 +17,8 @@ func GoSecureZero(b []byte) {
 	_ = *(*byte)(unsafe.Pointer(&b))
 }
 
-// GoDeriveCoordinate extracts bytes at given offsets from entropyData,
-// then runs SHA-256→HKDF to produce a 32-byte key.
+// GoDeriveCoordinate extrahiert Bytes an den gegebenen Offsets aus EntropyData
+// und durchläuft SHA-256→HKDF für einen 32-Byte-Key.
 func GoDeriveCoordinate(entropyData []byte, offsets []int64) ([]byte, error) {
 	extracted := make([]byte, len(offsets))
 	for i, off := range offsets {
@@ -36,7 +36,7 @@ func GoDeriveCoordinate(entropyData []byte, offsets []int64) ([]byte, error) {
 	return key, nil
 }
 
-// GoDeriveWorkspaceKey derives a workspace-specific key using HKDF-SHA256.
+// GoDeriveWorkspaceKey leitet einen Workspace-spezifischen Key via HKDF-SHA256 ab.
 func GoDeriveWorkspaceKey(masterKey []byte, workspaceID string) ([32]byte, error) {
 	var key [32]byte
 	r := hkdf.New(sha256.New, masterKey, nil, []byte("grimlocker-workspace-v1:"+workspaceID))

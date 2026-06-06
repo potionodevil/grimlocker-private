@@ -1,3 +1,20 @@
+//! Zeit-Integritätsprüfungen — erkennt Clock-Manipulation und VM-Snapshots.
+//!
+//! # Warum?
+//! Ein Angreifer könnte die Systemzeit zurückdrehen, um Lockdown-Fristen
+//! zu umgehen oder "alte" erfolgreiche Logins zu replizieren.
+//!
+//! # Threat Model
+//! - Wallclock zurückgedreht → sofortiger Alarm + Vault-Wipe
+//! - Wallclock >1 Jahr nach vorne → Anomalie (VM Suspend/Resume?)
+//! - Monotonic-Check: wenn die gemessene Laufzeit kleiner ist als
+//!   beim letzten Mal, wurde die VM zurückgesetzt
+//!
+//! # Design
+//! Kombiniert zwei unabhängige Zeitquellen:
+//! 1. `SystemTime` (Wallclock) — anfällig für manuelle Änderungen
+//! 2. `Instant` (monotonic) — resistent gegen Rückwärts-Manipulation
+
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::Error;

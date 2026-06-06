@@ -1,23 +1,23 @@
-// Package kernel implements the event bus that is the central nervous system of
-// the Grimlocker daemon. All inter-module communication MUST go through the
-// Dispatcher — modules never import or call each other directly.
+// Package kernel implementiert den Event-Bus — das zentrale Nervensystem
+// des Grimlocker-Daemons. Die gesamte Inter-Module-Kommunikation MUSS über den
+// Dispatcher laufen — Module importieren oder rufen sich nie direkt auf.
 //
-// Core concepts:
+// Core-Konzepte:
 //
-//   - Event: the unit of communication (typed JSON payload with TTL and ID).
-//   - Dispatcher: routes events to registered handlers by channel prefix.
-//   - Module: a stateful component that owns one or more channels (e.g. "CRYPTO").
-//   - Handler: a func(Event) error called in a dedicated goroutine per event.
-//   - Gate: the STORAGE channel is blocked until AUTH.KEY_READY is received,
-//     preventing any block reads/writes before the vault is unlocked.
+//   - Event: die Kommunikationseinheit (getypter JSON-Payload mit TTL und ID).
+//   - Dispatcher: routet Events per Channel-Präfix zu registrierten Handlern.
+//   - Module: eine zustandsbehaftete Komponente, die einen oder mehrere Channels besitzt.
+//   - Handler: eine func(Event) error, die in einer eigenen Goroutine pro Event läuft.
+//   - Gate: der STORAGE-Channel ist blockiert, bis AUTH.KEY_READY eintrifft —
+//     verhindert Block-Reads/Writes, bevor der Vault unlocked ist.
 //
-// Bus lifecycle:
+// Bus-Lifecycle:
 //
-//  1. NewBus(opts...) — create the bus (with optional gated channels).
-//  2. Register(module) — subscribe a Module to its declared channels.
-//  3. StartAll(ctx) — call Start() on every registered Module in order.
-//  4. Dispatch(event) / Request(ctx, event) — send events.
-//  5. Shutdown(ctx) — drain and stop all modules.
+//  1. NewBus(opts...) — Bus erzeugen (mit optionalen Gated-Channels).
+//  2. Register(module) — Module auf seine Channels subscriben.
+//  3. StartAll(ctx) — Start() auf jedem registrierten Module in Reihenfolge.
+//  4. Dispatch(event) / Request(ctx, event) — Events senden.
+//  5. Shutdown(ctx) — drainen und alle Module stoppen.
 package kernel
 
 import (
@@ -30,29 +30,22 @@ import (
 	"time"
 )
 
-// defaultTTL is the starting hop count for every event.
+// defaultTTL ist der Start-Hop-Count für jedes Event.
 const defaultTTL = 8
 
-// bus is the concrete Dispatcher. It routes events by channel prefix,
-// runs each handler in its own goroutine, and supports synchronous
-// Request/response via per-event reply channels.
+// bus ist der konkrete Dispatcher. Er routet Events per Channel-Präfix,
+// führt jeden Handler in seiner eigenen Goroutine aus und unterstützt
+// synchrones Request/Response via Per-Event-Reply-Channels.
 type bus struct {
 	mu sync.RWMutex
 
-	// modules maps module ID → Module
-	modules map[string]Module
-
-	// channelHandlers maps channel prefix → ordered list of handlers
+	modules        map[string]Module
 	channelHandlers map[string][]namedHandler
+	typeHandlers   map[EventType][]namedHandler
 
-	// typeHandlers maps exact EventType → extra handlers (from Subscribe calls)
-	typeHandlers map[EventType][]namedHandler
-
-	// pending holds reply channels for in-flight Request calls, keyed by event ID
 	pending   map[string]chan Event
 	pendingMu sync.Mutex
 
-	// gateBlocks events whose channel matches a prefix until the gate is lifted.
 	gateMu        sync.RWMutex
 	gatedChannels map[string]bool
 	gateOpen      bool
@@ -61,11 +54,11 @@ type bus struct {
 	cancel context.CancelFunc
 }
 
-// BusOption configures a bus.
+// BusOption konfiguriert einen Bus.
 type BusOption func(*bus)
 
-// WithGatedChannels returns a BusOption that marks the given channel prefixes
-// as gated. Gated events are silently dropped until OpenGate() is called.
+// WithGatedChannels gibt eine BusOption zurück, die die angegebenen Channel-Präfixe
+// als gated markiert. Gated-Events werden silent gedroppt, bis OpenGate() aufgerufen wird.
 func WithGatedChannels(channels ...string) BusOption {
 	return func(b *bus) {
 		b.gatedChannels = make(map[string]bool)
@@ -80,7 +73,7 @@ type namedHandler struct {
 	handler Handler
 }
 
-// NewBus constructs and returns a ready-to-use Dispatcher.
+// NewBus konstruiert und gibt einen fertigen Dispatcher zurück.
 func NewBus(opts ...BusOption) Dispatcher {
 	ctx, cancel := context.WithCancel(context.Background())
 	b := &bus{
@@ -97,7 +90,7 @@ func NewBus(opts ...BusOption) Dispatcher {
 	return b
 }
 
-// OpenGate lifts the gate, allowing previously gated events to flow.
+// OpenGate hebt das Gate, sodass vorher gated Events jetzt durchfließen.
 func (b *bus) OpenGate() {
 	b.gateMu.Lock()
 	b.gateOpen = true
@@ -105,7 +98,7 @@ func (b *bus) OpenGate() {
 	log.Printf("[bus] Gate opened — gated channels now flow")
 }
 
-// CloseGate drops the gate, blocking gated channels again.
+// CloseGate senkt das Gate und blockiert gated Channels wieder.
 func (b *bus) CloseGate() {
 	b.gateMu.Lock()
 	b.gateOpen = false
@@ -196,7 +189,7 @@ func (b *bus) Dispatch(e Event) error {
 		e.Timestamp = time.Now().UnixNano()
 	}
 
-	// If this event is a response (has ReplyTo), signal any waiting Request.
+	// Wenn das Event eine Response ist (ReplyTo gesetzt), signalisiere den wartenden Request.
 	if e.ReplyTo != "" {
 		b.pendingMu.Lock()
 		ch, found := b.pending[e.ReplyTo]
@@ -211,7 +204,7 @@ func (b *bus) Dispatch(e Event) error {
 
 	channel := e.Type.Channel()
 
-	// Gate check: drop events for gated channels until the gate is open.
+	// Gate-Check: Events für gated Channels droppen, bis das Gate offen ist.
 	b.gateMu.RLock()
 	isGated := b.gatedChannels[channel]
 	open := b.gateOpen
@@ -315,7 +308,7 @@ func (b *bus) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// NewEvent creates an outbound event with a fresh UUID and current timestamp.
+// NewEvent erzeugt ein Outbound-Event mit frischer UUID und aktuellem Timestamp.
 func NewEvent(origin string, t EventType, payload []byte) Event {
 	return Event{
 		ID:        newID(),
@@ -327,7 +320,7 @@ func NewEvent(origin string, t EventType, payload []byte) Event {
 	}
 }
 
-// ReplyEvent creates a response event for a given request event.
+// ReplyEvent erzeugt ein Response-Event für ein gegebenes Request-Event.
 func ReplyEvent(origin string, t EventType, req Event, payload []byte) Event {
 	e := NewEvent(origin, t, payload)
 	e.ReplyTo = req.ID

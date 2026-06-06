@@ -4,18 +4,18 @@ import { invoke } from '@tauri-apps/api/core'
 import { tauriBridge } from '../../services/tauriBridge'
 
 /**
- * FileVaultViewer — decrypts and displays/edits vault files.
+ * FileVaultViewer — Entschlüsselt und zeigt/editiert Vault-Dateien im Frontend an.
  *
- * File types:
- *   Images (jpg/png/gif/webp/svg/bmp) → inline preview
- *   DOCX → simple text editor (mammoth for extraction, save creates new blob)
- *   All others → OS default app via temp file
+ * Dateitypen:
+ *   Bilder (jpg/png/gif/webp/svg/bmp) → Inline-Vorschau
+ *   DOCX → Einfacher Texteditor (mammoth für Extraktion, Speichern erzeugt neuen Blob)
+ *   Alles andere → OS-Standard-App via Temp-Datei (wird nach 30s sicher gelöscht)
  *
  * Props:
- *   entry    object   — vault entry: {id, title, fields: {file_name, mime_type, manifest_block_id}}
+ *   entry    object   — Vault-Eintrag: {id, title, fields: {file_name, mime_type, manifest_block_id}}
  *   isOpen   boolean
  *   onClose  function
- *   onSave   function(newManifestBlockId, fileName, mimeType) — called after saving an edited file
+ *   onSave   function(newManifestBlockId, fileName, mimeType) — wird nach Speichern aufgerufen
  */
 export function FileVaultViewer({ entry, isOpen, onClose, onSave }) {
   const [status, setStatus]       = useState('idle')

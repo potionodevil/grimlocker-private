@@ -97,7 +97,7 @@ export interface GrimlockerError {
   status_code: number
 }
 
-export type GrimlockerEvent = 'connected' | 'disconnected' | 'entry_changed' | 'error'
+export type GrimlockerEvent = 'connected' | 'disconnected' | 'entry_changed' | 'sync_complete' | 'error'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -126,12 +126,23 @@ function _fromBase64(b64: string): Uint8Array {
   return bytes
 }
 
+export class CircuitBreakerOpenError extends Error {
+  constructor() {
+    super('Circuit breaker is open')
+    this.name = 'CircuitBreakerOpenError'
+  }
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 export class GrimlockerClient {
   private readonly baseUrl: string
   private readonly token:   string
   private readonly _listeners: Map<string, Set<Function>>
+  private _consecutiveFailures = 0
+  private _circuitOpenUntil = 0
+  private _isProbe = false
+  private _ws?: WebSocket
 
   /**
    * @param baseUrl  Base URL of the daemon (e.g. "http://127.0.0.1:36353")
@@ -143,10 +154,32 @@ export class GrimlockerClient {
     this._listeners = new Map()
   }
 
+  private _onSuccess() {
+    this._consecutiveFailures = 0
+    this._circuitOpenUntil = 0
+    this._isProbe = false
+  }
+
+  private _onFailure() {
+    if (this._isProbe) {
+      this._circuitOpenUntil = Date.now() + 30_000
+      this._isProbe = false
+      return
+    }
+    this._consecutiveFailures++
+    if (this._consecutiveFailures >= 5) {
+      this._circuitOpenUntil = Date.now() + 30_000
+      this._consecutiveFailures = 0
+    }
+  }
+
   // ── Event system ──────────────────────────────────────────────────────────
 
   /** Register an event listener. */
   on(event: GrimlockerEvent, listener: (...args: any[]) => void): void {
+    if (event === 'entry_changed' || event === 'sync_complete' || event === 'error') {
+      this._connectWs()
+    }
     if (!this._listeners.has(event)) {
       this._listeners.set(event, new Set())
     }
@@ -156,6 +189,72 @@ export class GrimlockerClient {
   /** Remove an event listener. */
   off(event: string, listener: Function): void {
     this._listeners.get(event)?.delete(listener)
+  }
+
+  /** Async iterator over streaming events. */
+  async *events(): AsyncIterableIterator<{ event: string; data: any }> {
+    this._connectWs()
+    const queue: { event: string; data: any }[] = []
+    let notify: (() => void) | null = null
+
+    const push = (ev: string, data: any) => {
+      queue.push({ event: ev, data })
+      notify?.()
+    }
+
+    const handlers = new Map<string, (...args: any[]) => void>()
+    for (const ev of ['connected', 'disconnected', 'entry_changed', 'sync_complete', 'error']) {
+      const fn = (...args: any[]) => push(ev, args[0])
+      handlers.set(ev, fn)
+      this.on(ev as GrimlockerEvent, fn)
+    }
+
+    try {
+      while (true) {
+        if (queue.length) {
+          yield queue.shift()!
+        } else {
+          await new Promise<void>((r) => { notify = r })
+          notify = null
+        }
+      }
+    } finally {
+      for (const [ev, fn] of handlers) {
+        this.off(ev, fn)
+      }
+    }
+  }
+
+  private _connectWs() {
+    if (this._ws) return
+    const WS = (globalThis as any).WebSocket
+    if (!WS) return
+    const url = new URL(this.baseUrl)
+    const wsUrl = `ws://${url.host}/ws?token=${encodeURIComponent(this.token)}`
+    const ws: WebSocket = new WS(wsUrl)
+    this._ws = ws
+
+    ws.onopen = () => {
+      this._emit('connected')
+    }
+    ws.onclose = () => {
+      this._emit('disconnected')
+      this._ws = undefined
+    }
+    ws.onerror = () => {
+      this._emit('error', { message: 'WebSocket error' })
+    }
+    ws.onmessage = (msg) => {
+      try {
+        const data = JSON.parse(msg.data)
+        const ev = data.event ?? 'message'
+        if (ev === 'entry_changed' || ev === 'sync_complete' || ev === 'error') {
+          this._emit(ev, data.payload ?? data)
+        }
+      } catch {
+        this._emit('error', { message: 'Invalid WebSocket message' })
+      }
+    }
   }
 
   private _emit(event: string, ...args: any[]): void {
@@ -197,6 +296,15 @@ export class GrimlockerClient {
     return this._call('entry.read', { id })
   }
 
+  /** Create a generic vault entry. */
+  async createEntry(
+    title:    string,
+    category: EntryCategory,
+    fields:   Record<string, string>,
+  ): Promise<VaultEntry> {
+    return this._call('entry.create', { title, category, fields })
+  }
+
   /** Create a new password entry. */
   async createPassword(
     title:    string,
@@ -236,6 +344,21 @@ export class GrimlockerClient {
     await this._call('entry.delete', { id })
   }
 
+  /** Create multiple entries in parallel. */
+  async createEntriesBatch(
+    entries: Array<{ title: string; category: EntryCategory; fields: Record<string, string> }>,
+  ): Promise<string[]> {
+    const ids = await Promise.all(
+      entries.map((e) => this.createEntry(e.title, e.category, e.fields).then((entry) => entry.id)),
+    )
+    return ids
+  }
+
+  /** Delete multiple entries in parallel. */
+  async deleteEntriesBatch(ids: string[]): Promise<void> {
+    await Promise.all(ids.map((id) => this.deleteEntry(id)))
+  }
+
   // ── Certificates ──────────────────────────────────────────────────────────
 
   /** Create a new certificate entry with domain, cert, and private key. */
@@ -250,6 +373,16 @@ export class GrimlockerClient {
       title,
       fields: { domain, certificate: cert, private_key: privateKey },
     })
+  }
+
+  /** List all password entries. */
+  async listPasswords(): Promise<VaultEntry[]> {
+    return this.listEntries('PASSWORD')
+  }
+
+  /** List all SSH key entries. */
+  async listSshKeys(): Promise<VaultEntry[]> {
+    return this.listEntries('SSH_KEY')
   }
 
   /** List all certificate entries. */
@@ -411,28 +544,66 @@ export class GrimlockerClient {
   // ── Internal ──────────────────────────────────────────────────────────────
 
   private async _call<T = unknown>(action: string, payload: unknown): Promise<T> {
-    const res = await fetch(`${this.baseUrl}/api/v1`, {
-      method:  'POST',
-      headers: {
-        'Content-Type':      'application/json',
-        'X-Grimlocker-Token': this.token,
-      },
-      body: JSON.stringify({ action, payload }),
-    })
-
-    const body = await res.json().catch(() => ({ error: res.statusText }))
-
-    if (!res.ok) {
-      const err: GrimlockerError = {
-        message:     body?.error ?? body?.message ?? `HTTP ${res.status}`,
-        action,
-        status_code: res.status,
+    if (this._circuitOpenUntil > 0) {
+      if (Date.now() < this._circuitOpenUntil) {
+        throw new CircuitBreakerOpenError()
       }
-      this._emit('error', err)
-      throw err
+      this._isProbe = true
     }
 
-    return body as T
+    let attempt = 0
+    let delayMs = 100
+    let lastError: any
+
+    while (true) {
+      try {
+        const res = await fetch(`${this.baseUrl}/api/v1`, {
+          method:  'POST',
+          headers: {
+            'Content-Type':      'application/json',
+            'X-Grimlocker-Token': this.token,
+          },
+          body: JSON.stringify({ action, payload }),
+        })
+
+        const body = await res.json().catch(() => ({ error: res.statusText }))
+
+        if (res.status >= 400 && res.status < 500) {
+          const err: GrimlockerError = {
+            message:     body?.error ?? body?.message ?? `HTTP ${res.status}`,
+            action,
+            status_code: res.status,
+          }
+          this._emit('error', err)
+          throw err
+        }
+
+        if (!res.ok) {
+          lastError = {
+            message:     body?.error ?? body?.message ?? `HTTP ${res.status}`,
+            action,
+            status_code: res.status,
+          }
+        } else {
+          this._onSuccess()
+          return body as T
+        }
+      } catch (e: any) {
+        if (e?.status_code >= 400 && e?.status_code < 500) {
+          this._onFailure()
+          throw e
+        }
+        lastError = e
+      }
+
+      if (attempt >= 3) break
+      await new Promise(r => setTimeout(r, Math.min(delayMs, 2000)))
+      delayMs *= 2
+      attempt++
+    }
+
+    this._onFailure()
+    throw lastError ?? new Error('Request failed after retries')
   }
 }
 

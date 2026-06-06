@@ -1,15 +1,15 @@
-// Package engine is the domain core of Grimlocker.
+// Package engine ist das Domain-Core von Grimlocker.
 //
-// It contains only pure data-logic: cryptography, storage abstractions,
-// security primitives, the GQL protocol, the kernel event bus, error types,
-// and cryptographic tools. It has ZERO knowledge of:
+// Es enthält NUR reine Data-Logik: Kryptografie, Storage-Abstraktionen,
+// Security-Primitives, das GQL-Protokoll, den Kernel-Event-Bus, Error-Types
+// und kryptografische Tools. Es hat NULL Wissen von:
 //
-//   - Passwords (received as pre-hashed []byte via the adapter)
-//   - OS file I/O (abstracted behind FileSystem interface)
-//   - Network protocols (HTTP, WebSocket, IPC)
-//   - OS signals, process lifecycle, or Tauri integration
+//   - Passwörtern (werden als pre-gehashte []byte über den Adapter empfangen)
+//   - OS-File-I/O (abstrahiert hinter FileSystem-Interface)
+//   - Netzwerk-Protokollen (HTTP, WebSocket, IPC)
+//   - OS-Signalen, Process-Lifecycle oder Tauri-Integration
 //
-// The daemon/ package imports engine/ through these public interfaces.
+// Das daemon/-Package importiert engine/ durch diese öffentlichen Interfaces.
 package engine
 
 import (

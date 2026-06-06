@@ -8,7 +8,7 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// DeriveHKDF expands secret into keyLen bytes using HKDF-SHA256.
+// DeriveHKDF expandiert ein Secret via HKDF-SHA256 auf keyLen Bytes.
 func (p *provider) DeriveHKDF(secret, salt, info []byte, keyLen int) ([]byte, error) {
 	if keyLen <= 0 {
 		return nil, fmt.Errorf("hkdf: keyLen must be > 0")

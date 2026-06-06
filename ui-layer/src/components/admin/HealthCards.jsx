@@ -49,6 +49,7 @@ export function HealthCards() {
 
       <div className="mt-6 pt-4 border-t border-border">
         <h3 className="text-sm font-semibold text-red-400 mb-2">Danger Zone</h3>
+        {/* Danger Zone — hier ist Vorsicht geboten */}
         <p className="text-xs text-text-tertiary mb-3">
           Panic Wipe destroys all vault files and zeros key material. This action is irreversible.
         </p>

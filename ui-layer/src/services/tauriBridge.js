@@ -1,18 +1,22 @@
 /**
- * TauriBridge — Binary WebSocket client for the Grimlocker Go daemon.
+ * TauriBridge — Binary WebSocket-Client für den Grimlocker Go-Daemon.
  *
- * Manages the full lifecycle: token discovery → WS connect → handshake
- * (INIT.READY → AUTH.TOKEN_SUBMIT → KERNEL.STATE_READY) → request/response
- * over the binary protocol, plus auto-reconnect with exponential backoff.
+ * Das hier ist so ziemlich das Herzstück des Frontends. Es managed den gesamten
+ * Lebenszyklus: Token finden → WS-Verbindung aufbauen → 3-Wege-Handshake
+ * (INIT.READY → AUTH.TOKEN_SUBMIT → KERNEL.STATE_READY) → Request/Response
+ * übers binäre Protokoll. Plus Auto-Reconnect mit exponentiellem Backoff,
+ * falls die Verbindung reisst.
  *
- * Wire format: [4-byte big-endian length][1-byte msgType][payload]
- * All methods return Promises that resolve on the daemon's ACK (or matching
- * response type) and reject on MSG_ERROR.
+ * Wire-Format: [4-Byte Big-Endian Länge][1-Byte msgType][Payload]
+ * Alle Methoden geben Promises zurück, die entweder auf das ACK des Daemons
+ * (oder den passenden Response-Typ) resolven oder mit MSG_ERROR rejecten.
  */
 import { useGrimStore } from '../store/useGrimStore'
 import { decryptSKE, base64ToBytes } from './crypto'
 
-// ─── Message type constants (binary protocol) ───────────────────────────────
+// ─── Nachrichtentyp-Konstanten (binäres Protokoll) ────────────────────────────
+// Jeder Message-Type ist ein einzelnes Byte. Die namen spiegeln die Go-Seite.
+// Wichtig fürs Debugging: die hex-Werte müssen mit dem Daemon übereinstimmen.
 
 const MSG_GET_HEADER            = 0x01
 const MSG_HEADER                = 0x02
@@ -58,21 +62,22 @@ const MSG_WORKSPACE_SWITCH      = 0x29
 const MSG_WORKSPACE_DELETE      = 0x2A
 const MSG_WORKSPACES_RESULT     = 0x2B
 
-// Session-key encrypted data (SKE) — the daemon encrypts sensitive entry
-// data with a per-session ChaCha20-Poly1305 key before sending it over WebSocket.
-// The frontend holds the same key in RAM and decrypts locally.
+// Session-Key Encrypted Data (SKE) – Der Daemon verschlüsselt sensitive
+// Entry-Daten mit einem Pro-Session-ChaCha20-Poly1305-Key, bevor er sie
+// übers WebSocket schickt. Das Frontend hat den gleichen Key im RAM
+// (nie persisted!) und entschlüsselt lokal.
 const MSG_DECRYPT_ENTRY   = 0x33
 const MSG_DECRYPTED_DATA  = 0x34
 
-// Category-filtered entry queries (Omega+)
+// Kategorie-gefilterte Entry-Queries (Omega+ Feature)
 const MSG_ENTRY_QUERY        = 0x35
 const MSG_ENTRY_QUERY_RESULT = 0x36
 
-// SSH key generation — TOOL channel (Omega+)
+// SSH-Key-Generierung — TOOL-Channel (Omega+)
 const MSG_SSH_KEY_GEN    = 0x37
 const MSG_SSH_KEY_RESULT = 0x38
 
-// Handshake protocol
+// Handshake-Protokoll — die ersten Messages nach dem WebSocket-Connect
 const MSG_INIT_READY            = 0x2C
 const MSG_AUTH_TOKEN_SUBMIT     = 0x2D
 const MSG_KERNEL_STATE_READY    = 0x2E
@@ -80,23 +85,23 @@ const MSG_SYSTEM_HEARTBEAT      = 0x2F
 const MSG_SYSTEM_ERROR          = 0x30
 const MSG_SYSTEM_LOG            = 0x31
 
-// Auth lifecycle
+// Auth-Lifecycle — Logout, um den Session-Key zu killen
 const MSG_AUTH_LOGOUT           = 0x3F
 const MSG_AUTH_LOGOUT_ACK       = 0x40
 
-// FileVault download (Phase 1)
+// FileVault-Download — Chunked Download, analog zum Upload-Protokoll
 const MSG_FILE_DOWNLOAD_REQUEST = 0x41
 const MSG_FILE_CHUNK_DATA       = 0x42
 const MSG_FILE_DOWNLOAD_END     = 0x43
 
-// Workspace rename
+// Workspace umbenennen
 const MSG_WORKSPACE_RENAME      = 0x44
 
-// Enterprise panic button
+// Enterprise-Panic-Button — einmal gedrückt, ist alles weg
 const MSG_PANIC_BUTTON          = 0x45
 const MSG_SYSTEM_HEALTH_CHECK   = 0x32
 
-// FileVault folder system (Phase 2)
+// FileVault-Ordnersystem — hierarchische Ordner, analog zu Dateisystemen
 const MSG_FOLDER_CREATE         = 0x60 // {name, parent_id}
 const MSG_FOLDER_LIST           = 0x61 // {parent_id}
 const MSG_FOLDER_RENAME         = 0x62 // {id, name}
@@ -104,16 +109,16 @@ const MSG_FOLDER_DELETE         = 0x63 // {id}
 const MSG_FOLDER_RESULT         = 0x64 // server response
 const MSG_FILE_MOVE_TO_FOLDER   = 0x65 // {manifest_block_id, folder_id}
 
-// LAN Sync IPC
+// LAN Sync — Peer-Discovery und Sync über das lokale Netzwerk
 const MSG_SYNC_LIST_PEERS       = 0x70 // {} — list discovered peers + sync metadata
 const MSG_SYNC_TRIGGER          = 0x71 // {} — trigger immediate sync cycle
 const MSG_SYNC_RESULT           = 0x72 // SKE-encrypted JSON sync state
 
-// Audit log IPC
+// Audit-Log — Security-Events aus dem Daemon abrufen
 const MSG_AUDIT_LIST            = 0x73 // [2-byte big-endian n] — request last n audit entries
 const MSG_AUDIT_RESULT          = 0x74 // SKE-encrypted JSON []SecurityEvent
 
-/** Human-readable names for each message type, used in throughput logging. */
+/** Menschenlesbare Namen für jeden Message-Type — wird fürs Throughput-Logging gebraucht. */
 const OP_NAMES = {
   0x01: 'GET_HEADER',
   0x02: 'HEADER',
@@ -179,16 +184,16 @@ class TauriBridge {
     this.connected = false
     this.token = null
     this.port = null
-    /** @type {Map<number|string, Function[]>} Message-type → handler list */
+    /** @type {Map<number|string, Function[]>} Message-Type → Handler-Liste */
     this.handlers = new Map()
-    /** @type {{ resolve: Function, reject: Function }|null} Pending generate-matrix promise */
+    /** @type {{ resolve: Function, reject: Function }|null} Hängt pending generateMatrix-Promise hier dran */
     this.pendingGenerate = null
 
-    // Per-session ChaCha20-Poly1305 key for SKE encryption.
-    // Set once on unlock, held only in RAM, zeroed on disconnect/lock.
-    this.sessionKey = null  // Uint8Array(32) or null
+    // Per-Session-ChaCha20-Poly1305-Key für SKE-Entschlüsselung.
+    // Wird einmal beim Unlock gesetzt, lebt NUR im RAM, wird bei Disconnect/Lock genullt.
+    this.sessionKey = null  // Uint8Array(32) oder null
 
-    // Handshake & stability
+    // Handshake-Status & Stabilität
     this.handshakeState = 'DISCONNECTED'
     this.isConnecting = false
     this.heartbeatTimer = null
@@ -204,9 +209,9 @@ class TauriBridge {
       this.disconnect()
     })
 
-    // When the window becomes visible again (e.g. after being minimized),
-    // reset the heartbeat watchdog so the accumulated pause doesn't trigger
-    // a false disconnect. WebView2 throttles JS timers when the window is hidden.
+    // Visibility-Change-Hack: WebView2 pausiert JS-Timer, wenn das Fenster minimiert ist.
+    // Wenn der User zurückkommt, darf der Heartbeat nicht sofort glauben, der Daemon sei weg.
+    // Also resetten wir den Watchdog bei VisibilityChange → 'visible'.
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible' && this.connected) {
         this._resetHeartbeatWatchdog()
@@ -215,11 +220,12 @@ class TauriBridge {
   }
 
   // ─── Connection & Handshake ──────────────────────────────────────────────
+  // Die wichtigste Phase: Token finden → Verbinden → Handshake → Ready.
 
   /**
-   * Discover the session token and IPC port.
-   * Tries Tauri IPC first (desktop app), then URL query params (dev/browser).
-   * @returns {Promise<string|null>} The discovered token, or null if not yet available.
+   * Findet Session-Token und IPC-Port.
+   * Versucht zuerst Tauri IPC (Desktop-App), dann URL-Query-Params (Dev/Browser).
+   * @returns {Promise<string|null>} Der gefundene Token oder null, falls der Daemon noch nicht bereit ist.
    */
   async discoverToken() {
     if (typeof window !== 'undefined' && (window.__TAURI_INTERNALS__ || window.__TAURI__)) {
@@ -249,10 +255,10 @@ class TauriBridge {
   }
 
   /**
-   * Open a WebSocket connection to the Go daemon.
-   * If a token is supplied it's used directly; otherwise discoverToken() is called first.
-   * If no token is found, starts polling via _waitForToken().
-   * @param {string} [token] — Optional pre-known session token.
+   * Öffnet eine WebSocket-Verbindung zum Go-Daemon.
+   * Wenn ein Token mitgegeben wird, wird der direkt benutzt; sonst wird erst discoverToken()
+   * aufgerufen. Falls kein Token existiert, wird über _waitForToken() alle 1s gepollt.
+   * @param {string} [token] — Optionaler, bereits bekannter Session-Token.
    * @returns {Promise<void>}
    */
   async connect(token = null) {
@@ -277,7 +283,7 @@ class TauriBridge {
   }
 
   /**
-   * Poll discoverToken() every second until a token is found or maxAttempts reached.
+   * Pollt discoverToken() jede Sekunde, bis ein Token auftaucht oder wir aufgeben.
    * @returns {Promise<void>}
    */
   _waitForToken() {
@@ -309,11 +315,11 @@ class TauriBridge {
   }
 
   /**
-   * Establish the WebSocket and perform the 3-way handshake:
-   *   1. WS connect
-   *   2. Receive INIT.READY → send AUTH.TOKEN_SUBMIT
-   *   3. Receive KERNEL.STATE_READY → connection is READY
-   * Includes 5s timeouts for each handshake phase.
+   * Baut die WebSocket-Verbindung auf und führt den 3-Wege-Handshake durch:
+   *   1. WS connect (synchron)
+   *   2. INIT.READY empfangen → AUTH.TOKEN_SUBMIT senden
+   *   3. KERNEL.STATE_READY empfangen → Verbindung ist READY
+   * Jede Phase hat ein 5s-Timeout — wenn der Daemon nicht antwortet, fliegt ein Fehler.
    * @returns {Promise<void>}
    */
   _doConnect() {
@@ -454,8 +460,8 @@ class TauriBridge {
   }
 
   /**
-   * Attempt to reconnect with exponential backoff (2s → 4s → 8s).
-   * Gives up after maxReconnectAttempts (15).
+   * Versucht Reconnect mit exponentiellem Backoff (2s → 4s → 8s, max 15 Versuche).
+   * Danach wird aufgegeben und 'reconnect_failed' emittiert.
    */
   _attemptReconnect() {
     if (this.isConnecting || this.handshakeState === 'READY' || this.reconnectAttempts >= this.maxReconnectAttempts) {
@@ -481,10 +487,10 @@ class TauriBridge {
     }, delay)
   }
 
-  /** Reset the heartbeat watchdog. Called on every incoming message.
-   * Timeout is 30s to survive:
-   *   - File uploads (server skips heartbeats via TryLock while busy)
-   *   - Brief WebView2 throttling when window is minimized
+  /** Reset vom Heartbeat-Watchdog. Wird bei jeder eingehenden Message aufgerufen.
+   * Timeout ist 30s, damit wir folgende Szenarien überleben:
+   *   - File-Uploads (der Server skippt Heartbeats via TryLock während er beschäftigt ist)
+   *   - Kurze WebView2-Throttling-Phasen (Fenster minimiert)
    */
   _resetHeartbeatWatchdog() {
     if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer)
@@ -494,7 +500,7 @@ class TauriBridge {
     }, 30000)
   }
 
-  /** Clear the heartbeat watchdog timer. */
+  /** Löscht den Heartbeat-Watchdog-Timer. Wird beim Disconnect aufgerufen. */
   _clearHeartbeatWatchdog() {
     if (this.heartbeatTimer) {
       clearTimeout(this.heartbeatTimer)
@@ -502,7 +508,7 @@ class TauriBridge {
     }
   }
 
-  /** Close the socket and trigger _attemptReconnect(). Used on heartbeat timeout. */
+  /** Schliesst den Socket und triggert _attemptReconnect() — sanfter Reconnect nach Heartbeat-Timeout. */
   _softReconnect() {
     if (this.socket) {
       this.socket.close()
@@ -514,7 +520,7 @@ class TauriBridge {
     this._emit('disconnected', { reason: 'heartbeat_timeout' })
   }
 
-  /** Bind the WebSocket onmessage handler to _processMessage. */
+  /** Hängt den onmessage-Handler an den WebSocket. Extra-Methode, weil wir auch den Session-Key-Fallback brauchen. */
   _attachMessageHandler() {
     if (this._sessionKeyFallback) {
       this._sessionKeyFallback()
@@ -543,8 +549,9 @@ class TauriBridge {
   }
 
   /**
-   * Parse a binary message frame: [4-byte length][1-byte type][payload].
-   * Routes SYSTEM events immediately, then dispatches all others.
+   * Parst einen binären Message-Frame: [4-Byte Länge][1-Byte Type][Payload].
+   * SYSTEM-Events werden sofort geroutet (und nicht ans normale Dispatch weitergereicht),
+   * alle anderen gehen durch den normalen _dispatch.
    */
   _processMessage(buffer) {
     const data = new Uint8Array(buffer)
@@ -602,7 +609,7 @@ class TauriBridge {
     this._dispatch(msgType, payload)
   }
 
-  /** Invoke all registered handlers for a message type, plus any 'any' wildcards. */
+  /** Ruft alle registrierten Handler für einen Message-Type auf, plus etwaige 'any'-Wildcard-Handler. */
   _dispatch(msgType, payload) {
     const handlers = this.handlers.get(msgType) || []
     handlers.forEach(fn => {
@@ -624,10 +631,10 @@ class TauriBridge {
   }
 
   /**
-   * Register a handler for a specific message type (or a named event like 'connected').
-   * @param {number|string} msgType — Numeric message type or event name string.
-   * @param {Function} handler — Callback receiving the payload.
-   * @returns {Function} Unsubscribe function.
+   * Registriert einen Handler für einen bestimmten Message-Type (oder ein Named-Event wie 'connected').
+   * @param {number|string} msgType — Numerischer Message-Type oder Event-Name-String.
+   * @param {Function} handler — Callback, der das Payload kriegt.
+   * @returns {Function} Unsubscribe-Funktion (einfach aufrufen zum Deregistrieren).
    */
   on(msgType, handler) {
     if (!this.handlers.has(msgType)) {
@@ -644,17 +651,17 @@ class TauriBridge {
     }
   }
 
-  /** Emit a named event to all registered handlers. */
+  /** Emittiert ein Named-Event an alle registrierten Handler. */
   _emit(event, data) {
     const handlers = this.handlers.get(event) || []
     handlers.forEach(fn => fn(data))
   }
 
   /**
-   * Build the binary wire frame: [4-byte big-endian length][1-byte type][payload].
-   * @param {number} msgType — Message type byte.
-   * @param {Uint8Array} [payload] — Optional payload bytes.
-   * @returns {Uint8Array} Framed message ready to send.
+   * Baut den binären Wire-Frame: [4-Byte Big-Endian Länge][1-Byte Type][Payload].
+   * @param {number} msgType — Message-Type-Byte.
+   * @param {Uint8Array} [payload] — Optionale Payload-Bytes.
+   * @returns {Uint8Array} Fertig gerahmte Message zum Senden.
    */
   _frameMessage(msgType, payload = new Uint8Array(0)) {
     const msgData = new Uint8Array(1 + payload.length)
@@ -671,10 +678,10 @@ class TauriBridge {
   }
 
   /**
-   * Send a framed binary message over the WebSocket.
-   * @param {number} msgType — Message type byte.
-   * @param {Uint8Array} [payload] — Optional payload bytes.
-   * @throws {Error} If the socket is not open.
+   * Sendet eine gerahmte binäre Message übers WebSocket.
+   * @param {number} msgType — Message-Type-Byte.
+   * @param {Uint8Array} [payload] — Optionale Payload-Bytes.
+   * @throws {Error} Wenn der Socket nicht offen ist.
    */
   _send(msgType, payload = new Uint8Array(0)) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
@@ -685,17 +692,18 @@ class TauriBridge {
   }
 
   /**
-   * Store the per-session ChaCha20-Poly1305 key used for SKE decryption.
-   * Called once after a successful unlock. The key is held only in JS RAM
-   * and is zeroed on disconnect/lock.
-   * @param {Uint8Array} key — 32-byte session key
+   * Speichert den Per-Session-ChaCha20-Poly1305-Key für SKE-Entschlüsselung.
+   * Wird einmal nach erfolgreichem Unlock aufgerufen. Der Key lebt nur im JS-RAM
+   * und wird bei Disconnect/Lock sicher genullt (siehe clearSessionKey).
+   * @param {Uint8Array} key — 32-Byte Session-Key
    */
   setSessionKey(key) {
     this.sessionKey = key
   }
 
   /**
-   * Clear the session key. Called on disconnect, lock, or page unload.
+   * Löscht den Session-Key sicher. Wird bei Disconnect, Lock oder Page-Unload aufgerufen.
+   * Nutzt Two-Pass-Zeroization (Random → Zero), damit V8 den fill(0) nicht wegoptimiert.
    */
   clearSessionKey() {
     if (this.sessionKey) {
@@ -708,11 +716,12 @@ class TauriBridge {
     }
   }
 
-  // ─── Vault Operations ────────────────────────────────────────────────────
+  // ─── Vault-Operationen ────────────────────────────────────────────────────
+  // Alle direkten Interaktionen mit dem Vault: Status, Init, Unlock, CRUD.
 
   /**
-   * Send MSG_CHECK_VAULT_STATUS to the daemon.
-   * @returns {Promise<{initialized: boolean, isV5: boolean}>} Vault status flags.
+   * Fragt den Vault-Status beim Daemon an.
+   * @returns {Promise<{initialized: boolean, isV5: boolean}>} Vault-Status-Flags.
    */
   checkVaultStatus() {
     return new Promise((resolve, reject) => {
@@ -749,10 +758,10 @@ class TauriBridge {
   }
 
   /**
-   * Initialize a new vault with the given password.
-   * The daemon creates salt, sentinel, entropy file and returns a 200-char recovery phrase.
-   * @param {string} password — Master password for the new vault.
-   * @returns {Promise<string>} The generated recovery phrase (shown once).
+   * Initialisiert einen neuen Vault mit dem gegebenen Passwort.
+   * Der Daemon erstellt Salt, Sentinel, Entropy-File und gibt eine 200-Zeichen-Recovery-Phrase zurück.
+   * @param {string} password — Master-Passwort für den neuen Vault.
+   * @returns {Promise<string>} Die generierte Recovery-Phrase (wird nur EINMAL angezeigt!).
    */
   initializeVault(password) {
     return new Promise((resolve, reject) => {
@@ -780,10 +789,10 @@ class TauriBridge {
   }
 
   /**
-   * Unlock the vault with the given password.
-   * On success, extracts the session key from the response and stores it
-   * for SKE decryption of subsequent entry data.
-   * @param {string} password — Master password to unlock the vault.
+   * Entsperrt den Vault mit dem gegebenen Passwort.
+   * Bei Erfolg wird der Session-Key aus der Response extrahiert und gespeichert —
+   * der wird dann für die SKE-Entschlüsselung aller folgenden Entry-Daten gebraucht.
+   * @param {string} password — Master-Passwort zum Entsperren.
    * @returns {Promise<{success: boolean, sessionKeyB64?: string}>}
    */
   unlockVault(password) {
@@ -826,14 +835,13 @@ class TauriBridge {
   }
 
   /**
-   * Save an entry to the encrypted vault.
-   * Accepts a single entry object { type, title, username, password, ... } and
-   * transforms it into { type, data: { title, username, ... } } that the Go
-   * translator's wsSaveEntry expects. The daemon generates the ID and encrypts
-   * the payload with the MVK before writing to the block store.
-   * @param {Object} entry — Entry object with at least a `type` field and
-   *   arbitrary data fields (title, username, password, url, notes, etc.).
-   * @returns {Promise<void>} Resolves on ACK from the daemon.
+   * Speichert einen neuen Eintrag im verschlüsselten Vault.
+   * Nimmt ein Entry-Object { type, title, username, password, ... } entgegen und
+   * transformiert es in { type, data: { title, username, ... } } — das erwartet
+   * der Go-Translator in wsSaveEntry. Der Daemon generiert die ID und verschlüsselt
+   * den Payload mit dem MVK, bevor er in den Block-Store schreibt.
+   * @param {Object} entry — Entry-Object mit mindestens einem `type`-Feld.
+   * @returns {Promise<void>} Resolved beim ACK vom Daemon.
    */
   saveEntry(entry) {
     return new Promise((resolve, reject) => {
@@ -865,12 +873,12 @@ class TauriBridge {
   }
 
   /**
-    * Update an existing vault entry.
-    * Sends the full entry object (with id, type, category, and changed fields)
-    * via MSG_ENTRY_UPDATE. The daemon merges the fields into the existing entry.
-    * @param {string} id — The entry's unique identifier.
-    * @param {Object} updates — Fields to update { title, username, password, url, notes, ... }.
-    * @returns {Promise<void>} Resolves on ENTRY_RESULT ACK from the daemon.
+    * Updated einen existierenden Vault-Eintrag.
+    * Schickt das komplette Entry-Object (mit id, type, category, und geänderten Feldern)
+    * via MSG_ENTRY_UPDATE. Der Daemon merged die Felder in den existierenden Eintrag.
+    * @param {string} id — Die eindeutige ID des Eintrags.
+    * @param {Object} updates — Felder zum Updaten { title, username, password, url, notes, ... }.
+    * @returns {Promise<void>} Resolved beim ENTRY_RESULT-ACK vom Daemon.
     */
   updateEntry(id, updates) {
     return new Promise((resolve, reject) => {
@@ -899,9 +907,9 @@ class TauriBridge {
   }
 
 /**
-   * Request the list of all vault entries from the daemon.
-   * The daemon returns SKE-encrypted metadata. This method decrypts
-   * the data locally using the session key and returns the plaintext list.
+   * Fordert die Liste aller Vault-Einträge vom Daemon an.
+   * Der Daemon schickt SKE-verschlüsselte Metadaten — diese Methode entschlüsselt
+   * lokal mit dem Session-Key und gibt die Klartext-Liste zurück.
    * @returns {Promise<Array<{id, type, title, created_at, updated_at}>>}
    */
   listEntries() {
@@ -947,11 +955,11 @@ class TauriBridge {
   }
 
   /**
-   * Retrieve metadata for a single vault entry by its ID.
-   * The daemon returns SKE-encrypted metadata (no sensitive data).
-   * Decrypts locally with the session key.
-   * @param {string} id — The entry's unique identifier (UUID).
-   * @returns {Promise<Object>} Decrypted entry metadata {id, type, title, created_at, updated_at}.
+   * Holt die Metadaten eines einzelnen Vault-Eintrags per ID.
+   * Der Daemon schickt SKE-verschlüsselte Metadaten (keine sensitiven Daten).
+   * Entschlüsselung lokal mit dem Session-Key.
+   * @param {string} id — UUID des Eintrags.
+   * @returns {Promise<Object>} Entschlüsselte Metadaten {id, type, title, created_at, updated_at}.
    */
   getEntry(id) {
     return new Promise((resolve, reject) => {
@@ -996,12 +1004,12 @@ class TauriBridge {
   }
 
   /**
-   * Request full decryption of a vault entry by its ID.
-   * The daemon decrypts the entry with the MVK, then re-encrypts with the
-   * session key (SKE) before sending. The frontend decrypts SKE locally.
-   * This is the ONLY path that reveals passwords, SSH keys, etc.
-   * @param {string} id — The entry's unique identifier (UUID).
-   * @returns {Promise<Object>} Decrypted entry with all fields {id, type, data: {...}, ...}.
+   * Fordert die vollständige Entschlüsselung eines Vault-Eintrags an.
+   * Achtung, das ist der EINZIGE Pfad, der Passwörter, SSH-Keys etc. im Klartext zeigt:
+   * Der Daemon entschlüsselt mit dem MVK, verschlüsselt dann mit dem Session-Key (SKE)
+   * neu und schickt es rüber. Das Frontend entschlüsselt SKE lokal.
+   * @param {string} id — UUID des Eintrags.
+   * @returns {Promise<Object>} Komplett entschlüsselter Eintrag {id, type, data: {...}, ...}.
    */
   decryptEntry(id) {
     return new Promise((resolve, reject) => {
@@ -1047,9 +1055,9 @@ class TauriBridge {
   }
 
   /**
-   * Delete an entry from the vault by its ID.
-   * @param {string} id — The entry's unique identifier (UUID).
-   * @returns {Promise<void>} Resolves on ACK from the daemon.
+   * Löscht einen Eintrag aus dem Vault.
+   * @param {string} id — UUID des Eintrags.
+   * @returns {Promise<void>} Resolved beim ACK vom Daemon.
    */
   deleteEntry(id) {
     return new Promise((resolve, reject) => {
@@ -1077,9 +1085,9 @@ class TauriBridge {
   }
 
   /**
-   * Reset (destroy) the vault using the recovery phrase.
-   * Wipes all vault files and resets metadata to uninitialized state.
-   * @param {string} phrase — The 200-character recovery phrase.
+   * Setzt (zerstört) den Vault mit der Recovery-Phrase zurück.
+   * Löscht alle Vault-Dateien und setzt Metadaten auf nicht-initialisiert.
+   * @param {string} phrase — Die 200-Zeichen-Recovery-Phrase.
    * @returns {Promise<void>}
    */
   resetVault(phrase) {
@@ -1107,13 +1115,15 @@ class TauriBridge {
     })
   }
 
-  // ─── Matrix / Entropy Generation ─────────────────────────────────────────
+  // ─── Matrix / Entropy-Generierung ─────────────────────────────────────────
+  // Die Entropy-Matrix ist das Herz der Coordinate-basierten Authentifizierung.
+  // 400.000 Zeilen kryptografischer Zufall, aus dem später Schlüssel abgeleitet werden.
 
   /**
-   * Request generation of an entropy matrix file from the daemon.
-   * @param {number} [lineCount=400000] — Number of lines to generate.
-   * @param {string} [entropyPath=''] — Custom path for the entropy file.
-   * @returns {Promise<Object>} Generation result with key_hex, coordinates, etc.
+   * Fordert die Generierung einer Entropy-Matrix-Datei vom Daemon an.
+   * @param {number} [lineCount=400000] — Wie viele Zeilen generiert werden sollen.
+   * @param {string} [entropyPath=''] — Optionaler eigener Pfad für die Entropy-Datei.
+   * @returns {Promise<Object>} Generierungsergebnis mit key_hex, Koordinaten, etc.
    */
   generateMatrix(lineCount = 400000, entropyPath = '') {
     return new Promise((resolve, reject) => {
@@ -1132,9 +1142,9 @@ class TauriBridge {
   }
 
   /**
-   * Register a handler for generation progress updates.
-   * @param {Function} handler — Callback receiving {progress, stage, message}.
-   * @returns {Function} Unsubscribe function.
+   * Registriert einen Handler für Generierungs-Fortschritts-Updates.
+   * @param {Function} handler — Callback kriegt {progress, stage, message}.
+   * @returns {Function} Unsubscribe-Funktion.
    */
   onProgress(handler) {
     return this.on(MSG_PROGRESS, (payload) => {
@@ -1149,10 +1159,10 @@ class TauriBridge {
   }
 
   /**
-   * Register a handler for generation results.
-   * Also resolves the pending generateMatrix() promise.
-   * @param {Function} handler — Callback receiving the result object.
-   * @returns {Function} Unsubscribe function.
+   * Registriert einen Handler für Generierungsergebnisse.
+   * Resolved auch das pending generateMatrix()-Promise.
+   * @param {Function} handler — Callback kriegt das Result-Object.
+   * @returns {Function} Unsubscribe-Funktion.
    */
   onGenerationResult(handler) {
     return this.on(MSG_GENERATION_RESULT, (payload) => {
@@ -1176,10 +1186,10 @@ class TauriBridge {
   }
 
   /**
-   * Register a handler for error messages from the daemon.
-   * Also rejects the pending generateMatrix() promise if active.
-   * @param {Function} handler — Callback receiving the error message string.
-   * @returns {Function} Unsubscribe function.
+   * Registriert einen Handler für Fehlermeldungen vom Daemon.
+   * Rejected auch das pending generateMatrix()-Promise, falls aktiv.
+   * @param {Function} handler — Callback kriegt den Error-String.
+   * @returns {Function} Unsubscribe-Funktion.
    */
   onError(handler) {
     return this.on(MSG_ERROR, (payload) => {
@@ -1194,18 +1204,21 @@ class TauriBridge {
     })
   }
 
-  // ─── Security Operations ─────────────────────────────────────────────────
+  // ─── Security-Operationen ─────────────────────────────────────────────────
+  // Zeroize und Panic Wipe – die harten Geschütze. Zeroize bestätigt dem Daemon,
+  // dass wir seinen Wipe-Befehl verarbeitet haben; Panic Wipe zerstört alles.
 
   /**
-   * Send a zeroize confirmation to the daemon.
-   * Used to confirm secure memory wipe after a panic wipe.
+   * Sendet Zeroize-Bestätigung an den Daemon.
+   * Bestätigt, dass das Frontend den Speicher-Wipe nach einem Panic Wipe abgeschlossen hat.
    */
   zeroizeConfirm() {
     this._send(MSG_ZEROIZE_CONFIRM)
   }
 
   /**
-   * Initiate a panic wipe — securely destroys all vault data files.
+   * Löst einen Panic Wipe aus — zerstört alle Vault-Daten sicher.
+   * Der Daemon überschreibt alle Dateien mit Rauschen und löscht die Schlüssel.
    * @returns {Promise<void>}
    */
   panicWipe() {
@@ -1233,10 +1246,11 @@ class TauriBridge {
   }
 
 /**
-    * Retrieve the encrypted recovery phrase using the master password.
-    * If the daemon returns SKE-encrypted data, decrypt locally.
-    * @param {string} password — Master password to decrypt the stored phrase.
-    * @returns {Promise<string>} The decrypted 200-character recovery phrase.
+    * Holt die verschlüsselte Recovery-Phrase mit dem Master-Passwort.
+    * Falls der Daemon SKE-verschlüsselte Daten schickt (was er in neueren Versionen tut),
+    * entschlüsseln wir lokal.
+    * @param {string} password — Master-Passwort zum Entschlüsseln der gespeicherten Phrase.
+    * @returns {Promise<string>} Die 200-Zeichen-Recovery-Phrase im Klartext.
     */
   getRecoveryPhrase(password) {
     return new Promise((resolve, reject) => {
@@ -1277,12 +1291,12 @@ class TauriBridge {
     })
   }
 
-  // ─── Log & Diagnostics ───────────────────────────────────────────────────
+  // ─── Log & Diagnose ──────────────────────────────────────────────────────
 
   /**
-   * Register a handler for broadcast log messages from the daemon.
-   * @param {Function} handler — Callback receiving the log text string.
-   * @returns {Function} Unsubscribe function.
+   * Registriert einen Handler für Broadcast-Log-Messages vom Daemon.
+   * @param {Function} handler — Callback kriegt den Log-Text.
+   * @returns {Function} Unsubscribe-Funktion.
    */
   onLog(handler) {
     return this.on(MSG_LOG_BROADCAST, (payload) => {
@@ -1296,16 +1310,16 @@ class TauriBridge {
   }
 
   /**
-   * Request the security header from the daemon (failed attempts, lockdown info).
-   * Fires a one-shot request; the response arrives via MSG_HEADER handler.
+   * Fordert den Security-Header vom Daemon an (fehlgeschlagene Versuche, Lockdown-Info).
+   * One-Shot-Request; die Antwort kommt über den MSG_HEADER-Handler.
    */
   requestHeader() {
     this._send(MSG_GET_HEADER)
   }
 
   /**
-   * Parse a 26-byte binary header payload into a structured object.
-   * @param {Uint8Array} payload — Raw 26-byte header data.
+   * Parst ein 26-Byte-binäres Header-Payload in ein strukturiertes Object.
+   * @param {Uint8Array} payload — Rohdaten (26 Bytes).
    * @returns {{failedAttempts: number, lockdownTimestamp: number,
    *   overrideAttemptsLeft: number, monotonicBootTicks: number,
    *   wallclockLastSeen: number}}
@@ -1325,8 +1339,8 @@ class TauriBridge {
   }
 
   /**
-   * Signal the daemon to lock the vault immediately.
-   * Used by the frontend auto-lock timer and manual logout.
+   * Signalisiert dem Daemon, den Vault sofort zu sperren.
+   * Wird vom Auto-Lock-Timer und manuellem Logout benutzt.
    * @returns {Promise<void>}
    */
   sendAuthLogout() {
@@ -1344,9 +1358,9 @@ class TauriBridge {
   }
 
   /**
-   * Activates the PANIC BUTTON — triggers immediate hard lockdown.
-   * Requires admin passphrase as confirmation. Admin-only.
-   * @param {string} passphrase — Admin's passphrase for verification
+   * Aktiviert den PANIC BUTTON — sofortiger Hard-Lockdown.
+   * Braucht Admin-Passphrase zur Bestätigung. Nur für Admins.
+   * @param {string} passphrase — Admin-Passphrase zur Verifikation.
    * @returns {Promise<void>}
    */
   activatePanicButton(passphrase) {
@@ -1376,10 +1390,12 @@ class TauriBridge {
     })
   }
 
-  // ─── Workspace Management ─────────────────────────────────────────────────
+  // ─── Workspace-Management ─────────────────────────────────────────────────
+  // Workspaces sind isolierte Vault-Umgebungen — wie separate Profile.
+  // Jeder Workspace hat eigene Einträge und Einstellungen.
 
   /**
-   * List all workspaces from the daemon.
+   * Listet alle Workspaces vom Daemon auf.
    * @returns {Promise<Array<{id: string, name: string, active: boolean}>>}
    */
   listWorkspaces() {
@@ -1413,9 +1429,9 @@ class TauriBridge {
   }
 
   /**
-   * Create a new workspace with the given name.
-   * @param {string} name — Display name for the new workspace.
-   * @returns {Promise<Object>} The created workspace object.
+   * Erstellt einen neuen Workspace.
+   * @param {string} name — Anzeigename für den neuen Workspace.
+   * @returns {Promise<Object>} Das erstellte Workspace-Object.
    */
   createWorkspace(name) {
     return new Promise((resolve, reject) => {
@@ -1449,10 +1465,11 @@ class TauriBridge {
   }
 
   /**
-   * Switch to a different workspace by ID.
-   * Dispatches AUTH.LOGOUT after switch to force re-login.
-   * @param {string} id — UUID of the workspace to switch to.
-   * @returns {Promise<Object>} The switched-to workspace object.
+   * Wechselt zu einem anderen Workspace per ID.
+   * Schickt nach dem Switch ein AUTH.LOGOUT, damit der User sich neu einloggen muss
+   * (sonst hätte der neue Workspace noch den alten Session-Key).
+   * @param {string} id — UUID des Ziel-Workspace.
+   * @returns {Promise<Object>} Das Workspace-Object, zu dem gewechselt wurde.
    */
   switchWorkspace(id) {
     return new Promise((resolve, reject) => {
@@ -1485,8 +1502,8 @@ class TauriBridge {
   }
 
   /**
-   * Delete a workspace by ID.
-   * @param {string} id — UUID of the workspace to delete.
+   * Löscht einen Workspace (inklusive aller darin enthaltenen Daten!).
+   * @param {string} id — UUID des zu löschenden Workspace.
    * @returns {Promise<void>}
    */
   deleteWorkspace(id) {
@@ -1515,10 +1532,10 @@ class TauriBridge {
   }
 
   /**
-   * Rename a workspace.
-   * @param {string} id      — UUID of the workspace to rename.
-   * @param {string} name    — New display name.
-   * @returns {Promise<Array>} Updated workspace list.
+   * Benennt einen Workspace um.
+   * @param {string} id      — UUID des umzubenennenden Workspace.
+   * @param {string} name    — Neuer Anzeigename.
+   * @returns {Promise<Array>} Aktualisierte Workspace-Liste.
    */
   renameWorkspace(id, name) {
     return new Promise((resolve, reject) => {
@@ -1551,9 +1568,9 @@ class TauriBridge {
   }
 
   /**
-   * Download a file from the FileVault by its manifest block ID.
-   * Streams decrypted chunks and assembles them into an ArrayBuffer.
-   * @param {string} manifestBlockId — e.g. "blob-{uuid}-manifest"
+   * Lädt eine Datei aus dem FileVault per Manifest-Block-ID herunter.
+   * Streamt ent-schlüsselte Chunks und setzt sie zu einem ArrayBuffer zusammen.
+   * @param {string} manifestBlockId — z.B. "blob-{uuid}-manifest"
    * @returns {Promise<{data: ArrayBuffer, fileName: string, mimeType: string, sha256: string}>}
    */
   downloadFile(manifestBlockId) {
@@ -1617,11 +1634,12 @@ class TauriBridge {
   }
 
   /**
-   * Opens a file externally using the system default application.
-   * Writes data to a temporary file, opens it, then schedules secure deletion.
-   * @param {ArrayBuffer} data      — file contents
-   * @param {string}      filename  — suggested filename
-   * @param {string}      mimeType  — MIME type (unused on OS level, for reference)
+   * Öffnet eine Datei extern mit der Standard-App des Systems.
+   * Schreibt die Daten in eine Temp-Datei, öffnet sie, und löscht die Temp-Datei
+   * nach 30 Sekunden sicher (der User hatte ja Zeit, sie in der App zu öffnen).
+   * @param {ArrayBuffer} data      — Dateiinhalt
+   * @param {string}      filename  — Vorgeschlagener Dateiname
+   * @param {string}      mimeType  — MIME-Type (nur zur Info, OS-Level egal)
    * @returns {Promise<void>}
    */
   async openFileExternally(data, filename, mimeType) {
@@ -1630,8 +1648,7 @@ class TauriBridge {
     const tmpPath = await invoke('save_temp_file', { filename, data: bytes })
     await invoke('open_with_default_app', { path: tmpPath })
 
-    // Schedule secure deletion after 30 seconds.
-    // The user has had time to open the file in the default app.
+    // Nach 30s sichere Löschung der Temp-Datei — der User hatte Zeit zum Öffnen.
     setTimeout(async () => {
       try {
         await invoke('secure_delete_temp', { path: tmpPath })
@@ -1643,11 +1660,13 @@ class TauriBridge {
     return tmpPath
   }
 
-  // ─── Omega+ Operations ───────────────────────────────────────────────────
+  // ─── Omega+ Operationen ──────────────────────────────────────────────────
+  // Diese Features sind in der Omega+-Edition verfügbar: Entry-Queries,
+  // SSH-Key-Generierung, FileVault und mehr.
 
   /**
-   * Query vault entries by category.
-   * @param {string} category — "PASSWORD"|"SSH_KEY"|"CERTIFICATE"|"FILE_VAULT"|"" (all)
+   * Fragt Vault-Einträge nach Kategorie gefiltert ab.
+   * @param {string} category — "PASSWORD"|"SSH_KEY"|"CERTIFICATE"|"FILE_VAULT"|"" (alle)
    * @returns {Promise<{category: string, entries: Array, count: number}>}
    */
   queryEntries(category = '') {
@@ -1686,12 +1705,12 @@ class TauriBridge {
   }
 
   /**
-   * Generate an Ed25519 SSH key pair and optionally save it to the vault.
-   * @param {string} [comment] — Key comment (e.g. "user@host" or a label).
-   * @param {boolean} [saveToVault=true] — Whether to persist the key pair in the vault.
-   * @param {string} [passphrase=''] — Optional passphrase to encrypt the private key PEM.
-   * @param {boolean} [autoPassphrase=false] — If true, the daemon generates a secure random passphrase.
-   *   The generated passphrase is returned once in the response and never stored in the vault.
+   * Generiert ein Ed25519-SSH-Keypair und speichert es optional im Vault.
+   * @param {string} [comment] — Key-Kommentar (z.B. "user@host" oder ein Label).
+   * @param {boolean} [saveToVault=true] — Ob das Keypair im Vault persistiert werden soll.
+   * @param {string} [passphrase=''] — Optionale Passphrase für den Private-Key-PEM.
+   * @param {boolean} [autoPassphrase=false] — Wenn true, generiert der Daemon eine sichere Zufallspassphrase.
+   *   Die generierte Passphrase wird EINMAL in der Response zurückgegeben und nie im Vault gespeichert.
    * @returns {Promise<{public_key: string, fingerprint: string, entry_id: string, passphrase?: string}>}
    */
   generateSSHKey(comment = 'grimlocker-generated', saveToVault = true, passphrase = '', autoPassphrase = false) {
@@ -1735,11 +1754,12 @@ class TauriBridge {
   }
 
   /**
-   * Ingest a File object into the FileVault.
-   * Uses the 3-message streaming protocol: BEGIN → CHUNK(s) → END.
-   * @param {File} file — The File object to ingest.
-   * @param {Function} [onProgress] — Called with 0..1 progress fraction.
-   * @returns {Promise<Object>} The BlobManifest returned by the daemon.
+   * Lädt ein File-Object in den FileVault hoch (verschlüsselt).
+   * Nutzt das 3-Message-Streaming-Protokoll: BEGIN → CHUNK(s) → END.
+   * Die Chunks werden auf dem Weg cha-cha-verschlüsselt.
+   * @param {File} file — Das File-Object zum Hochladen.
+   * @param {Function} [onProgress] — Wird mit 0..1 Fortschritt aufgerufen.
+   * @returns {Promise<Object>} Das BlobManifest, das der Daemon zurückgibt.
    */
   ingestFile(file, onProgress = null, folderId = '') {
     return new Promise((resolve, reject) => {
@@ -1841,10 +1861,11 @@ class TauriBridge {
   }
 
   // ─── Lifecycle ─────────────────────────────────────────────────────────────
+  // Sauberes Aufräumen: Socket zu, Timer killen, Session-Key nullen.
 
   /**
-   * Close the WebSocket connection and clean up all timers and handlers.
-   * Safe to call multiple times.
+   * Schliesst die WebSocket-Verbindung und räumt alle Timer und Handler auf.
+   * Kann mehrfach aufgerufen werden — ist idempotent.
    */
   disconnect() {
     this._clearHeartbeatWatchdog()
@@ -1870,12 +1891,13 @@ class TauriBridge {
     }
   }
 
-  // ── FileVault Folder API ──────────────────────────────────────────────────
+  // ── FileVault-Ordner-API ──────────────────────────────────────────────────
+  // Hierarchische Ordnerstruktur für Dateien im Vault.
 
   /**
-   * Create a folder in the FileVault hierarchy.
+   * Erstellt einen Ordner in der FileVault-Hierarchie.
    * @param {string} name
-   * @param {string} parentId  — "" for root
+   * @param {string} parentId  — "" für Root
    * @returns {Promise<object>} FolderEntry
    */
   createFolder(name, parentId = '') {
@@ -1896,8 +1918,8 @@ class TauriBridge {
   }
 
   /**
-   * List contents (folders + files) of a folder.
-   * @param {string} parentId  — "" for root
+   * Listet den Inhalt (Ordner + Dateien) eines Ordners auf.
+   * @param {string} parentId  — "" für Root
    * @returns {Promise<{parent_id, folders: [], files: []}>}
    */
   listFolder(parentId = '') {
@@ -1917,7 +1939,7 @@ class TauriBridge {
   }
 
   /**
-   * Rename a folder.
+   * Benennt einen Ordner um.
    * @param {string} id
    * @param {string} name
    */
@@ -1937,7 +1959,7 @@ class TauriBridge {
   }
 
   /**
-   * Delete a folder. Files in the folder are moved to its parent.
+   * Löscht einen Ordner. Dateien im Ordner werden in den Parent verschoben (kein Datenverlust).
    * @param {string} id
    */
   deleteFolder(id) {
@@ -1956,9 +1978,9 @@ class TauriBridge {
   }
 
   /**
-   * Move a file to a different folder.
+   * Verschiebt eine Datei in einen anderen Ordner.
    * @param {string} manifestBlockId
-   * @param {string} folderId  — "" for root
+   * @param {string} folderId  — "" für Root
    */
   moveFileToFolder(manifestBlockId, folderId = '') {
     return new Promise((resolve, reject) => {
@@ -1978,9 +2000,9 @@ class TauriBridge {
   }
 
   /**
-   * List discovered LAN sync peers and sync metadata (last_sync_at, device_id).
-   * Returns SKE-decrypted { peers: DiscoveredPeer[], last_sync_at: number, device_id: string }.
-   * Resolves with empty peers array if sync is not available on the daemon.
+   * Listet entdeckte LAN-Sync-Peers und Sync-Metadaten auf (last_sync_at, device_id).
+   * Gibt SKE-entschlüsselt { peers: DiscoveredPeer[], last_sync_at: number, device_id: string } zurück.
+   * Falls Sync nicht verfügbar ist, wird mit leerem peers-Array resolved (kein fataler Fehler).
    */
   listSyncPeers() {
     return new Promise((resolve, reject) => {
@@ -2019,8 +2041,8 @@ class TauriBridge {
   }
 
   /**
-   * Trigger an immediate LAN sync cycle.
-   * Non-blocking on the daemon side; resolves once the daemon ACKs the trigger.
+   * Löst sofort einen LAN-Sync-Zyklus aus.
+   * Non-blocking auf Daemon-Seite; resolved, sobald der Daemon das Trigger-ACK schickt.
    */
   triggerSync() {
     return new Promise((resolve, reject) => {
@@ -2043,9 +2065,9 @@ class TauriBridge {
   }
 
   /**
-   * Fetch the last n entries from the security audit log.
-   * Returns SKE-decrypted SecurityEvent[] sorted oldest-first.
-   * @param {number} n — Number of entries to fetch (default 50, max 500).
+   * Holt die letzten n Einträge aus dem Security-Audit-Log.
+   * Gibt SKE-entschlüsselte SecurityEvent[] sortiert oldest-first zurück.
+   * @param {number} n — Anzahl Einträge (default 50, max 500).
    */
   listAuditEntries(n = 50) {
     return new Promise((resolve, reject) => {
@@ -2080,7 +2102,7 @@ class TauriBridge {
     })
   }
 
-  /** Decode a MsgFolderResult payload — handles SKE-encrypted and plain JSON. */
+  /** Decodiert ein MsgFolderResult-Payload — verarbeitet sowohl SKE-verschlüsseltes als auch reines JSON. */
   _decodeFolderResult(payload) {
     try {
       const text = new TextDecoder().decode(payload)

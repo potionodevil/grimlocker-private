@@ -8,7 +8,8 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// DeriveArgon2id derives a key from password using Argon2id.
+// DeriveArgon2id wandelt ein Passwort in einen sicheren Schlüssel um — mit Argon2id,
+// dem Goldstandard für Memory-Hard-KDFs.
 func (p *provider) DeriveArgon2id(password []byte, opts KDFOptions) ([]byte, error) {
 	if len(opts.Salt) == 0 {
 		return nil, fmt.Errorf("argon2id: salt is required")
@@ -30,7 +31,7 @@ func (p *provider) DeriveArgon2id(password []byte, opts KDFOptions) ([]byte, err
 	return key, nil
 }
 
-// HMACKey derives a 32-byte HMAC key from mvk using HMAC-SHA256.
+// HMACKey leitet einen 32-Byte-HMAC-Key aus dem MVK via HMAC-SHA256 ab.
 func (p *provider) HMACKey(mvk []byte) [32]byte {
 	h := hmac.New(sha256.New, mvk)
 	h.Write([]byte("grimlocker-hmac-v1"))

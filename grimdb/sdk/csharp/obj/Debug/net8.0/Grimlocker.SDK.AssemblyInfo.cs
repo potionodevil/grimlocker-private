@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("C#/.NET SDK for the Grimlocker Zero-Trust Vault daemon")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+04020e8a46d6a6a1d5b9fcb96763ca6b84b341de")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+23f8f759470789b3ec54da9a7e8e3df834b8da7c")]
 [assembly: System.Reflection.AssemblyProductAttribute("Grimlocker.SDK")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Grimlocker.SDK")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

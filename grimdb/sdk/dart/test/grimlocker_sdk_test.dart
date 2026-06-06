@@ -133,6 +133,27 @@ void main() {
       expect(body['payload']['id'], 'e1');
     });
 
+    test('createEntriesBatch creates entries and returns ids', () async {
+      mockHttp.whenJson('entry.create', 200, {'id': 'new1', 'title': 'A', 'category': 'PASSWORD'});
+      mockHttp.whenJson('entry.create', 200, {'id': 'new2', 'title': 'B', 'category': 'PASSWORD'});
+      final ids = await client.createEntriesBatch([
+        {'title': 'A', 'category': 'PASSWORD', 'fields': <String, String>{}},
+        {'title': 'B', 'category': 'PASSWORD', 'fields': <String, String>{}},
+      ]);
+      expect(ids, ['new1', 'new2']);
+    });
+
+    test('deleteEntriesBatch deletes entries', () async {
+      mockHttp.whenJson('entry.delete', 200, {'success': true});
+      mockHttp.whenJson('entry.delete', 200, {'success': true});
+      await client.deleteEntriesBatch(['e1', 'e2']);
+      final deleteRequests = mockHttp.requests.where((r) {
+        final body = jsonDecode(r.body) as Map<String, dynamic>;
+        return body['action'] == 'entry.delete';
+      }).toList();
+      expect(deleteRequests.length, 2);
+    });
+
     test('searchEntries returns results', () async {
       mockHttp.whenJson('entry.search', 200, [
         {'id': 'e1', 'title': 'GitHub', 'category': 'PASSWORD'},
@@ -340,6 +361,16 @@ void main() {
     test('throws on 401 unauthorized', () async {
       mockHttp.whenJson('entry.list', 401, {'error': 'Unauthorized'});
       expect(() => client.listEntries(), throwsA(isA<GrimlockerException>()));
+    });
+
+    test('circuitBreakerOpens', () async {
+      for (var i = 0; i < 5; i++) {
+        mockHttp.whenJson('entry.list', 500, {'error': 'Internal Server Error'});
+        try {
+          await client.listEntries();
+        } catch (_) {}
+      }
+      expect(() => client.listEntries(), throwsA(isA<CircuitBreakerOpenException>()));
     });
   });
 

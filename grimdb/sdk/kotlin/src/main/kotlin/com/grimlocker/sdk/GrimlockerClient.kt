@@ -22,6 +22,31 @@ class GrimlockerClient(
 
     private var connection: HttpURLConnection? = null
 
+    // ── Circuit breaker state ─────────────────────────────────────────────────
+
+    private var consecutiveFailures = 0
+    private var circuitOpenUntil: Long = 0
+    private var isProbe = false
+
+    private fun onSuccess() {
+        consecutiveFailures = 0
+        circuitOpenUntil = 0
+        isProbe = false
+    }
+
+    private fun onFailure() {
+        if (isProbe) {
+            circuitOpenUntil = System.currentTimeMillis() + 30_000
+            isProbe = false
+            return
+        }
+        consecutiveFailures++
+        if (consecutiveFailures >= 5) {
+            circuitOpenUntil = System.currentTimeMillis() + 30_000
+            consecutiveFailures = 0
+        }
+    }
+
     // ── Auth ──────────────────────────────────────────────────────────────────
 
     fun unlockVault(password: String) {
@@ -36,12 +61,16 @@ class GrimlockerClient(
         callSingle("vault.status", emptyMap())
 
     fun getRecoveryPhrase(password: String): String? {
-        val body = callRaw("vault.recovery", mapOf("password" to password))
+        val body = callRaw("vault.recovery_phrase", mapOf("password" to password))
         val map = gson.fromJson<Map<String, Any?>>(
             body,
             object : TypeToken<Map<String, Any?>>() {}.type
         )
-        return map["recovery_phrase"] as? String
+        return map["recovery_phrase"] as? String ?: map["phrase"] as? String
+    }
+
+    fun generateSSHKey(comment: String = "", saveToVault: Boolean = true): SSHKeyResult {
+        return callSingle("tool.ssh_keygen", mapOf("comment" to comment, "save_to_vault" to saveToVault))
     }
 
     // ── Entries ───────────────────────────────────────────────────────────────
@@ -73,6 +102,22 @@ class GrimlockerClient(
 
     fun deleteEntry(id: String) {
         call("entry.delete", mapOf("id" to id))
+    }
+
+    fun createEntriesBatch(entries: List<Map<String, Any?>>): List<String> {
+        return entries.map {
+            val title = it["title"] as String
+            val category = it["category"] as String
+            @Suppress("UNCHECKED_CAST")
+            val fields = it["fields"] as Map<String, String>
+            createEntry(title, category, fields).id
+        }
+    }
+
+    fun deleteEntriesBatch(ids: List<String>) {
+        for (id in ids) {
+            deleteEntry(id)
+        }
     }
 
     fun searchEntries(query: String, category: String? = null): List<VaultEntry> {
@@ -109,57 +154,8 @@ class GrimlockerClient(
 
     // ── File Vault ────────────────────────────────────────────────────────────
 
-    fun listFolder(folderId: String = ""): FolderListing =
-        callSingle("file.list_folder", mapOf("folder_id" to folderId))
-
-    fun createFolder(name: String, parentId: String = ""): FolderItem =
-        callSingle("file.create_folder", mapOf("name" to name, "parent_id" to parentId))
-
-    fun renameFolder(id: String, name: String) {
-        call("file.rename_folder", mapOf("id" to id, "name" to name))
-    }
-
-    fun deleteFolder(id: String) {
-        call("file.delete_folder", mapOf("id" to id))
-    }
-
-    fun moveFile(manifestBlockId: String, folderId: String) {
-        call("file.move", mapOf("manifest_block_id" to manifestBlockId, "folder_id" to folderId))
-    }
-
-    fun uploadFile(
-        data: ByteArray,
-        fileName: String,
-        mimeType: String = "application/octet-stream",
-        folderId: String = "",
-        onProgress: ((UploadProgress) -> Unit)? = null
-    ): FileEntry {
-        onProgress?.invoke(UploadProgress(bytesSent = 0, totalBytes = data.size.toLong()))
-        val dataB64 = Base64.getEncoder().encodeToString(data)
-        val entry: FileEntry = callSingle(
-            "file.ingest",
-            mapOf(
-                "file_name" to fileName,
-                "mime_type" to mimeType,
-                "folder_id" to folderId,
-                "data_b64" to dataB64
-            )
-        )
-        onProgress?.invoke(UploadProgress(bytesSent = data.size.toLong(), totalBytes = data.size.toLong()))
-        return entry
-    }
-
-    fun downloadFile(manifestBlockId: String): ByteArray {
-        data class DownloadResponse(
-            @SerializedName("data_b64") val dataB64: String?
-        )
-        val resp: DownloadResponse = callSingle(
-            "file.download",
-            mapOf("manifest_block_id" to manifestBlockId)
-        )
-        val b64 = resp.dataB64
-            ?: throw GrimlockerException("Download returned no data")
-        return Base64.getDecoder().decode(b64)
+    val fileVault: FileVaultClient by lazy {
+        FileVaultClient(baseUrl, token, timeoutMs)
     }
 
     // ── Workspaces ────────────────────────────────────────────────────────────
@@ -232,48 +228,88 @@ class GrimlockerClient(
         doPost(action, payload)
 
     private fun doPost(action: String, payload: Map<String, Any?>): String {
-        val requestBody = mapOf("action" to action, "payload" to payload)
-        val json = gson.toJson(requestBody)
-
-        val url = URL(apiUrl)
-        val conn = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            doOutput = true
-            connectTimeout = timeoutMs
-            readTimeout = timeoutMs
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Accept", "application/json")
-            setRequestProperty("X-Grimlocker-Token", token)
-            setRequestProperty("User-Agent", "GrimlockerSDK-Kotlin/1.0.0")
+        if (circuitOpenUntil > 0) {
+            if (System.currentTimeMillis() < circuitOpenUntil) {
+                throw CircuitBreakerOpenException()
+            }
+            isProbe = true
         }
 
-        this.connection = conn
+        var attempt = 0
+        var delayMs = 100L
+        var lastException: Exception? = null
 
-        try {
-            conn.outputStream.use { os: OutputStream ->
-                os.write(json.toByteArray(Charsets.UTF_8))
-                os.flush()
-            }
+        while (true) {
+            try {
+                val requestBody = mapOf("action" to action, "payload" to payload)
+                val json = gson.toJson(requestBody)
 
-            val status = conn.responseCode
-            val body: String = when {
-                status in 200..299 -> {
-                    conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val url = URL(apiUrl)
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    doOutput = true
+                    connectTimeout = timeoutMs
+                    readTimeout = timeoutMs
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("X-Grimlocker-Token", token)
+                    setRequestProperty("User-Agent", "GrimlockerSDK-Kotlin/1.0.0")
                 }
-                else -> {
+
+                this.connection = conn
+
+                try {
+                    conn.outputStream.use { os: OutputStream ->
+                        os.write(json.toByteArray(Charsets.UTF_8))
+                        os.flush()
+                    }
+
+                    val status = conn.responseCode
+
+                    if (status in 200..299) {
+                        val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                        onSuccess()
+                        return body
+                    }
+
                     val errorBody = try {
                         conn.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
                     } catch (e: Exception) {
                         ""
                     }
-                    parseAndThrow(status, errorBody)
+
+                    if (status in 400..499) {
+                        parseAndThrow(status, errorBody)
+                    }
+
+                    lastException = GrimlockerException("HTTP $status: $errorBody")
+                } finally {
+                    this.connection = null
                 }
+            } catch (e: GrimlockerException) {
+                onFailure()
+                throw e
+            } catch (e: java.net.SocketException) {
+                lastException = e
+            } catch (e: java.net.UnknownHostException) {
+                lastException = e
+            } catch (e: java.net.ConnectException) {
+                lastException = e
+            } catch (e: java.net.SocketTimeoutException) {
+                lastException = e
+            } catch (e: Exception) {
+                onFailure()
+                throw e
             }
 
-            return body
-        } finally {
-            this.connection = null
+            if (attempt >= 3) break
+            Thread.sleep(delayMs.coerceAtMost(2000))
+            delayMs *= 2
+            attempt++
         }
+
+        onFailure()
+        throw lastException ?: Exception("Request failed after retries")
     }
 
     private fun parseAndThrow(httpStatus: Int, body: String): Nothing {

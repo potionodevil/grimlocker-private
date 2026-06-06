@@ -16,8 +16,8 @@ const (
 	OverrideAttempts  = 4
 )
 
-// Header is the 26-byte binary header of the .gdb file.
-// Layout (big-endian):
+// Header ist der 26-Byte-Binary-Header der .gdb-Datei.
+// Layout (Big-Endian):
 //   [0]     failed_attempts       uint8
 //   [1:9]   lockdown_timestamp    int64
 //   [9]     override_attempts_left uint8
@@ -31,8 +31,8 @@ type Header struct {
 	WallclockLastSeen    int64
 }
 
-// GrimDB manages the .gdb file's header and ciphertext payload.
-// It knows nothing about encryption — it treats the body as opaque bytes.
+// GrimDB managed den .gdb-Datei-Header und den Ciphertext-Payload.
+// Es kümmert sich nicht um Encryption — der Body ist für es opaque.
 type GrimDB struct {
 	mu       sync.RWMutex
 	filePath string
@@ -40,7 +40,7 @@ type GrimDB struct {
 	header   Header
 }
 
-// NewGrimDB opens or creates the .gdb file at filePath.
+// NewGrimDB öffnet oder erzeugt die .gdb-Datei an filePath.
 func NewGrimDB(filePath string) (*GrimDB, error) {
 	g := &GrimDB{
 		filePath: filePath,

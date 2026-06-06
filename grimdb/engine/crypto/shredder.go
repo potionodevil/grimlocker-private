@@ -9,9 +9,9 @@ import (
 const shredPasses = 7
 const shredBufSize = 65536
 
-// Shred overwrites the entire content of w with shredPasses passes of random data.
-// The caller is responsible for opening the file, truncating it, and syncing after.
-// This design ensures /crypto performs zero file I/O itself.
+// Shred überschreibt den gesamten Inhalt von w mit shredPasses Durchgängen Zufallsdaten.
+// Der Caller ist für das Öffnen der Datei, Truncaten und Syncen verantwortlich.
+// Dieses Design stellt sicher, dass /crypto selbst NULL File-I/O macht.
 func Shred(w io.WriteSeeker, fileSize int64) error {
 	buf := make([]byte, shredBufSize)
 

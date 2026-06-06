@@ -1,22 +1,22 @@
-// Package storage (entry_module.go) implements EntryHandler — the high-level
-// CRUD layer that maps ENTRY.* events to BlockStore operations.
+// Package storage (entry_module.go) implementiert EntryHandler — die High-Level-CRUD-Layer,
+// die ENTRY.*-Events auf BlockStore-Operationen abbildet.
 //
-// Unlike the raw STORAGE adapter (which works with opaque Blocks), EntryHandler
-// understands VaultEntry semantics: titles, categories, typed fields, timestamps.
-// It is wired as a direct bus subscription (not a Module) so the caller's
-// bus.Request() can receive the ENTRY.RESULT reply synchronously.
+// Anders als der rohe STORAGE-Adapter (der mit opaque Blocks arbeitet), versteht EntryHandler
+// VaultEntry-Semantik: Titel, Category, getypte Felder, Timestamps.
+// Es ist als direkte Bus-Subscription verdrahtet (kein Module), damit der Caller via
+// bus.Request() synchron die ENTRY.RESULT-Reply bekommt.
 //
-// Supported events:
+// Unterstützte Events:
 //
-//	ENTRY.CREATE → creates a new VaultEntry, assigns UUID, writes to BlockStore
-//	ENTRY.READ   → reads raw block data by ID
-//	ENTRY.UPDATE → reads existing entry, merges fields, re-writes block
-//	ENTRY.DELETE → removes block (secure delete via BlockStore.DeleteBlock)
-//	ENTRY.QUERY  → returns []BlockMeta filtered by Category from in-memory index
+//	ENTRY.CREATE → erzeugt neuen VaultEntry, weist UUID zu, schreibt in BlockStore
+//	ENTRY.READ   → liest rohe Block-Daten anhand der ID
+//	ENTRY.UPDATE → liest existierenden Entry, merged Felder, schreibt neu
+//	ENTRY.DELETE → entfernt Block (secure delete via BlockStore.DeleteBlock)
+//	ENTRY.QUERY  → gibt []BlockMeta gefiltert nach Category aus dem In-Memory-Index zurück
 //
-// All error replies include an error_code field (from *errors.GrimlockError)
-// so callers can distinguish not-found (2003) from I/O failure (2001) without
-// string matching on the "error" field.
+// Alle Error-Responses enthalten ein error_code-Feld (aus *errors.GrimlockError),
+// damit Caller not-found (2003) von I/O-Fehler (2001) unterscheiden können, ohne
+// String-Matching auf dem "error"-Feld.
 package storage
 
 import (
@@ -29,25 +29,25 @@ import (
 	"github.com/grimlocker/grimdb/engine/kernel"
 )
 
-// entryHandlerFn is the internal handler type for the entry handler registry.
+// entryHandlerFn ist der interne Handler-Typ für die Entry-Handler-Registry.
 type entryHandlerFn func(kernel.Event, kernel.Dispatcher)
 
-// EntryHandler handles ENTRY.* events for storage.
-// Wired as a direct handler (not a Module) to support synchronous Request/Reply.
+// EntryHandler handled ENTRY.*-Events für das Storage.
+// Als direkter Handler verdrahtet (kein Module), um synchrones Request/Reply zu unterstützen.
 type EntryHandler struct {
 	bs         BlockStore
 	dispatcher kernel.Dispatcher
 	handlers   map[kernel.EventType]entryHandlerFn
 }
 
-// NewEntryHandler creates an EntryHandler for the bus.
+// NewEntryHandler erzeugt einen EntryHandler für den Bus.
 func NewEntryHandler(bs BlockStore) *EntryHandler {
 	h := &EntryHandler{bs: bs}
 	h.handlers = h.buildHandlers()
 	return h
 }
 
-// buildHandlers returns the static handler registry for all ENTRY.* events.
+// buildHandlers gibt die statische Handler-Registry für alle ENTRY.*-Events zurück.
 func (h *EntryHandler) buildHandlers() map[kernel.EventType]entryHandlerFn {
 	return map[kernel.EventType]entryHandlerFn{
 		kernel.EvEntryCreate: h.handleCreate,
@@ -58,13 +58,13 @@ func (h *EntryHandler) buildHandlers() map[kernel.EventType]entryHandlerFn {
 	}
 }
 
-// SetDispatcher sets the bus dispatcher for sending reply events.
+// SetDispatcher setzt den Bus-Dispatcher für Reply-Events.
 func (h *EntryHandler) SetDispatcher(d kernel.Dispatcher) {
 	h.dispatcher = d
 }
 
-// Handle processes ENTRY.* events and dispatches reply events.
-// This is wired as a direct handler, not as a Module.
+// Handle verarbeitet ENTRY.*-Events und dispatche Reply-Events.
+// Ist als direkter Handler verdrahtet, nicht als Module.
 func (h *EntryHandler) Handle(e kernel.Event) error {
 	if h.dispatcher == nil {
 		return fmt.Errorf("dispatcher not initialized")
@@ -77,14 +77,14 @@ func (h *EntryHandler) Handle(e kernel.Event) error {
 	return nil
 }
 
-// entryError is the structured JSON schema for ENTRY.RESULT error replies.
-// Includes error_code so callers can distinguish vault-locked vs not-found vs IO.
+// entryError ist das strukturierte JSON-Schema für ENTRY.RESULT-Error-Responses.
+// Enthält error_code, damit Caller vault-locked vs not-found vs IO unterscheiden können.
 type entryError struct {
 	Error     string `json:"error"`
 	ErrorCode int    `json:"error_code,omitempty"`
 }
 
-// replyErr dispatches a structured error reply for the given event.
+// replyErr dispatche eine strukturierte Error-Reply für das gegebene Event.
 func replyErr(dispatcher kernel.Dispatcher, e kernel.Event, err error) {
 	code := 0
 	if ge, ok := err.(*gerrors.GrimlockError); ok {
@@ -107,7 +107,7 @@ func (h *EntryHandler) handleCreate(e kernel.Event, dispatcher kernel.Dispatcher
 		return
 	}
 
-	// Resolve Category: explicit category > legacy type mapping
+	// Category auflösen: explizite Category > legacy Type-Mapping.
 	cat := Category(req.Category)
 	if cat == "" {
 		cat = CategoryFromType(req.Type)
@@ -159,7 +159,7 @@ func (h *EntryHandler) handleRead(e kernel.Event, dispatcher kernel.Dispatcher) 
 
 	block, err := h.bs.ReadBlock(req.ID)
 	if err != nil {
-		replyErr(dispatcher, e, err) // already *GrimlockError (StorageNotFound etc.)
+		replyErr(dispatcher, e, err)
 		return
 	}
 
@@ -181,14 +181,13 @@ func (h *EntryHandler) handleUpdate(e kernel.Event, dispatcher kernel.Dispatcher
 
 	block, err := h.bs.ReadBlock(req.ID)
 	if err != nil {
-		replyErr(dispatcher, e, err) // *GrimlockError (StorageNotFound)
+		replyErr(dispatcher, e, err)
 		return
 	}
 
-	// Try to unmarshal as a VaultEntry first, fall back to map for legacy entries.
+	// Zuerst versuchen, als VaultEntry zu unmarshalen, bei Legacy-Fällen als map.
 	var entry VaultEntry
 	if err := json.Unmarshal(block.Data, &entry); err == nil && entry.ID != "" {
-		// VaultEntry path: update structured fields.
 		entry.Title = req.Title
 		entry.Fields = req.Fields
 		if req.Category != "" {
@@ -200,7 +199,6 @@ func (h *EntryHandler) handleUpdate(e kernel.Event, dispatcher kernel.Dispatcher
 		block.Data = updatedData
 		block.Category = entry.Category
 	} else {
-		// Legacy map path: preserve existing structure.
 		var existing map[string]interface{}
 		if err := json.Unmarshal(block.Data, &existing); err != nil {
 			replyErr(dispatcher, e, gerrors.NewStorageCorruptionError("entry_update_unmarshal_legacy", req.ID, nil))
@@ -229,7 +227,7 @@ func (h *EntryHandler) handleDelete(e kernel.Event, dispatcher kernel.Dispatcher
 		return
 	}
 
-	// Cascade-delete: if this is a FileVault manifest, delete all chunk blocks first.
+	// Cascade-Delete: Wenn das ein FileVault-Manifest ist, lösche erst alle Chunks.
 	if err := h.deleteFileVaultIfManifest(req.ID); err != nil {
 		replyErr(dispatcher, e, err)
 		return
@@ -244,12 +242,11 @@ func (h *EntryHandler) handleDelete(e kernel.Event, dispatcher kernel.Dispatcher
 	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, respPayload)) //nolint:errcheck
 }
 
-// deleteFileVaultIfManifest checks if the block is a FileVault manifest and deletes
-// all associated chunk blocks before the manifest itself is deleted.
+// deleteFileVaultIfManifest prüft, ob der Block ein FileVault-Manifest ist, und löscht
+// dann alle assoziierten Chunk-Blöcke, bevor das Manifest selbst gelöscht wird.
 func (h *EntryHandler) deleteFileVaultIfManifest(id string) error {
 	block, err := h.bs.ReadBlock(id)
 	if err != nil {
-		// Not found — caller will handle the error on the manifest deletion attempt.
 		return nil
 	}
 
@@ -259,7 +256,6 @@ func (h *EntryHandler) deleteFileVaultIfManifest(id string) error {
 
 	var manifest BlobManifest
 	if err := json.Unmarshal(block.Data, &manifest); err != nil || manifest.ID == "" {
-		// Not a manifest (could be a chunk block or legacy format). Continue.
 		return nil
 	}
 
@@ -273,9 +269,9 @@ func (h *EntryHandler) deleteFileVaultIfManifest(id string) error {
 	return nil
 }
 
-// handleQuery handles ENTRY.QUERY events.
-// Payload: {"category": "PASSWORD"} — empty category returns all entries.
-// Dispatches ENTRY.RESULT with a []BlockMeta payload filtered by category.
+// handleQuery verarbeitet ENTRY.QUERY-Events.
+// Payload: {"category": "PASSWORD"} — leere Category gibt alle Entries zurück.
+// Dispatched ENTRY.RESULT mit einem []BlockMeta-Payload gefiltert nach Category.
 func (h *EntryHandler) handleQuery(e kernel.Event, dispatcher kernel.Dispatcher) {
 	var req struct {
 		Category string `json:"category"`

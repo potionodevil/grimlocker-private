@@ -13,6 +13,7 @@ Usage:
 import base64
 import json
 import threading
+import time
 from typing import Callable, Dict, List, Optional
 
 import websockets.sync.client as _ws
@@ -38,6 +39,11 @@ class GrimlockerError(Exception):
         return cls(f"{name} ({code}): {msg}", error_code=code)
 
 
+class CircuitBreakerOpenError(GrimlockerError):
+    """Raised when the circuit breaker is open and requests are blocked."""
+    pass
+
+
 class Client:
     """
     Synchronous Grimlocker GQL client.
@@ -58,6 +64,9 @@ class Client:
         self._conn = conn
         self._timeout = timeout
         self._lock = threading.Lock()
+        self._cb_lock = threading.Lock()
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
 
     @classmethod
     def connect(cls, host: str, port: int, token: str, timeout: float = 30.0) -> "Client":
@@ -253,7 +262,66 @@ class Client:
             "save_to_vault": str(save_to_vault).lower(),
         })
 
+    # --- Batch Operations ---
+
+    def create_entries_batch(self, entries: List[Dict[str, dict]]) -> List[str]:
+        """Create multiple entries and return their IDs."""
+        ids: List[str] = []
+        for e in entries:
+            entry = self.create_entry(e["title"], e["category"], e.get("fields", {}))
+            ids.append(entry.id)
+        return ids
+
+    def delete_entries_batch(self, ids: List[str]) -> None:
+        """Delete multiple entries by ID."""
+        for entry_id in ids:
+            self.delete_entry(entry_id)
+
+    # --- Streaming Events ---
+
+    def events(self):
+        """Generator yielding daemon events from a background listener.
+        
+        Usage:
+            for evt in client.events():
+                print(evt)
+        """
+        # Note: This is a simplified placeholder. Real implementation would
+        # open a secondary WebSocket connection and decode event frames.
+        raise NotImplementedError("event streaming requires a dedicated WebSocket listener thread")
+
     # --- Internal ---
+
+    def _check_circuit(self) -> None:
+        with self._cb_lock:
+            if time.time() < self._circuit_open_until:
+                raise CircuitBreakerOpenError("circuit breaker open")
+            if self._circuit_open_until > 0:
+                # half-open: allow probe, will close on success or re-open on failure
+                self._circuit_open_until = 0
+
+    def _on_success(self) -> None:
+        with self._cb_lock:
+            self._consecutive_failures = 0
+            self._circuit_open_until = 0
+
+    def _on_failure(self, retryable: bool) -> None:
+        with self._cb_lock:
+            if retryable:
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= 5:
+                    self._circuit_open_until = time.time() + 30.0
+            else:
+                # 4xx errors reset the counter
+                self._consecutive_failures = 0
+
+    def _is_retryable(self, err: Exception) -> bool:
+        if isinstance(err, (ConnectionError, TimeoutError, OSError)):
+            return True
+        if isinstance(err, GrimlockerError):
+            # treat daemon internal errors as retryable
+            return err.error_code in (-1, -2, -3, -100, -105)
+        return False
 
     def _call_raw(
         self,
@@ -267,26 +335,51 @@ class Client:
         offset: int = 0,
     ) -> dict:
         """Send a GQL frame and return the raw JSON result dict."""
+        self._check_circuit()
         wire = _frame.encode_query(
             operation, namespace, entry_id, category, title,
             fields or {}, limit, offset,
         )
-        with self._lock:
-            self._conn.send(wire)
-            raw = self._conn.recv()
 
-        if isinstance(raw, str):
-            data = raw.encode()
-        else:
-            data = raw
+        delay = 0.1
+        last_err: Optional[Exception] = None
+        for attempt in range(4):
+            if attempt > 0:
+                time.sleep(min(delay, 2.0))
+                delay *= 2
+            try:
+                with self._lock:
+                    self._conn.send(wire)
+                    raw = self._conn.recv()
 
-        opcode  = _frame.read_opcode(data)
-        payload = json.loads(_frame.read_payload(data))
+                if isinstance(raw, str):
+                    data = raw.encode()
+                else:
+                    data = raw
 
-        if opcode == _frame.OPCODE_ERROR or not payload.get("success", False):
-            raise GrimlockerError._from_result(payload)
+                opcode  = _frame.read_opcode(data)
+                payload = json.loads(_frame.read_payload(data))
 
-        return payload
+                if opcode == _frame.OPCODE_ERROR or not payload.get("success", False):
+                    err = GrimlockerError._from_result(payload)
+                    last_err = err
+                    if not self._is_retryable(err):
+                        self._on_failure(False)
+                        raise err
+                    continue
+
+                self._on_success()
+                return payload
+            except GrimlockerError:
+                raise
+            except Exception as e:
+                last_err = e
+                if not self._is_retryable(e):
+                    self._on_failure(False)
+                    raise
+
+        self._on_failure(True)
+        raise last_err or GrimlockerError("call failed after retries")
 
     def _execute(
         self,

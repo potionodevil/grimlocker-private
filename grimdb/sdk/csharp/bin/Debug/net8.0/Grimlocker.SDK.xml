@@ -21,5 +21,10 @@
             <param name="baseUrl">Daemon base URL, e.g. "http://127.0.0.1:36353"</param>
             <param name="token">GRIMLOCKER_TOKEN from daemon stdout</param>
         </member>
+        <member name="T:Grimlocker.Tests.GrimlockerClientTests.TestableGrimlockerClient">
+            <summary>
+            Testable client that accepts a custom HttpMessageHandler.
+            </summary>
+        </member>
     </members>
 </doc>

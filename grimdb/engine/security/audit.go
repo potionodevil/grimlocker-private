@@ -1,14 +1,14 @@
-// Package security (audit.go) implements the AuditLog — an append-only,
-// hash-chained in-memory log of security events.
+// Package security (audit.go) implementiert den AuditLog — ein append-only,
+// hash-gechainedes In-Memory-Log von Security-Events.
 //
-// Each SecurityEvent carries a Level (Info/Warn/Critical), the originating
-// Module, a human-readable Message, and an optional SubjectID (user/session).
-// Entries are linked via SHA-256 chaining so tampering with any entry
-// invalidates all subsequent entries.
+// Jedes SecurityEvent hat ein Level (Info/Warn/Critical), das Modul, eine
+// lesbare Message und optional eine SubjectID (User/Session). Einträge sind
+// via SHA-256-Chaining verlinkt — Manipulation an einem Eintrag invalidiert
+// alle nachfolgenden.
 //
-// The log is bounded by a configurable capacity; when full the oldest entry
-// is evicted (ring-buffer semantics). Use AuditLog.Append for writing and
-// AuditLog.Entries for reading the current snapshot.
+// Der Log ist durch eine konfigurierbare Kapazität begrenzt; wenn voll, wird
+// der älteste Eintrag verworfen (Ringbuffer). Nutze AuditLog.Append zum Schreiben
+// und AuditLog.Entries zum Lesen des aktuellen Snapshots.
 package security
 
 import (
@@ -25,18 +25,18 @@ const (
 	LevelCritical = "CRITICAL"
 )
 
-// SecurityEvent is an immutable audit record with cryptographic chaining.
+// SecurityEvent ist ein immutabler Audit-Eintrag mit kryptografischem Chaining.
 type SecurityEvent struct {
 	Timestamp int64  `json:"timestamp"`
 	Level     string `json:"level"`
 	Module    string `json:"module"`
 	Message   string `json:"message"`
-	SubjectID string `json:"subject_id,omitempty"`   // Who triggered the action
-	PrevHash  []byte `json:"prev_hash,omitempty"`    // Hash of previous entry
-	Hash      []byte `json:"hash,omitempty"`         // SHA-256 of this entry
+	SubjectID string `json:"subject_id,omitempty"`   // Wer hat die Aktion ausgelöst
+	PrevHash  []byte `json:"prev_hash,omitempty"`    // Hash des vorherigen Eintrags
+	Hash      []byte `json:"hash,omitempty"`         // SHA-256 dieses Eintrags
 }
 
-// AuditLog is a thread-safe append-only ring buffer of SecurityEvents.
+// AuditLog ist ein thread-safeer Append-Only-Ringbuffer von SecurityEvents.
 type AuditLog interface {
 	Append(e SecurityEvent)
 	Recent(n int) []SecurityEvent
@@ -49,10 +49,10 @@ type ringAuditLog struct {
 	cap      int
 	head     int
 	size     int
-	lastHash [32]byte  // SHA-256 of the most recent entry
+	lastHash [32]byte  // SHA-256 des aktuellsten Eintrags
 }
 
-// NewAuditLog creates an AuditLog with the given ring buffer capacity.
+// NewAuditLog erzeugt einen AuditLog mit der gegebenen Ringbuffer-Kapazität.
 func NewAuditLog(capacity int) AuditLog {
 	if capacity <= 0 {
 		capacity = 1024
@@ -70,7 +70,7 @@ func (a *ringAuditLog) Append(e SecurityEvent) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Cryptographic chaining: hash = SHA-256(prevHash || timestamp || level || module || message || subjectID)
+	// Kryptografisches Chaining: hash = SHA-256(prevHash || timestamp || level || module || message || subjectID)
 	e.PrevHash = a.lastHash[:]
 	h := sha256.New()
 	h.Write(a.lastHash[:])
