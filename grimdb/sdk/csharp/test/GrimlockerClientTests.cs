@@ -400,6 +400,88 @@ public class GrimlockerClientTests
         Assert.Equal("file.move", body.GetProperty("action").GetString());
     }
 
+    [Fact]
+    public async Task CreateEntriesBatchAsync_ReturnsIds()
+    {
+        var handler = CreateHandler(
+            (HttpStatusCode.OK, new { id = "b1", title = "Batch 1", category = "PASSWORD" }),
+            (HttpStatusCode.OK, new { id = "b2", title = "Batch 2", category = "PASSWORD" })
+        );
+        var client = new TestableGrimlockerClient("http://127.0.0.1:36353", "token", handler);
+
+        var ids = await client.CreateEntriesBatchAsync(new[] {
+            new Models.BatchEntryInput { Title = "Batch 1", Category = "PASSWORD", Fields = new() { ["username"] = "a" } },
+            new Models.BatchEntryInput { Title = "Batch 2", Category = "PASSWORD", Fields = new() { ["username"] = "b" } },
+        });
+
+        Assert.Equal(2, ids.Count);
+        Assert.Equal("b1", ids[0]);
+    }
+
+    [Fact]
+    public async Task DeleteEntriesBatchAsync_DeletesMultiple()
+    {
+        var handler = CreateHandler(
+            (HttpStatusCode.OK, new { success = true }),
+            (HttpStatusCode.OK, new { success = true })
+        );
+        var client = new TestableGrimlockerClient("http://127.0.0.1:36353", "token", handler);
+
+        await client.DeleteEntriesBatchAsync(new[] { "e1", "e2" });
+
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Retry_On500_RetriesThenSucceeds()
+    {
+        var handler = new MockHttpMessageHandler(
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            { Content = JsonContent.Create(new { error = "Internal Server Error" }) },
+            new HttpResponseMessage(HttpStatusCode.InternalServerError)
+            { Content = JsonContent.Create(new { error = "Internal Server Error" }) },
+            new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = JsonContent.Create(new[] { new { id = "e1", title = "T", category = "PASSWORD" } }) }
+        );
+        var client = new TestableGrimlockerClient("http://127.0.0.1:36353", "token", handler);
+
+        var entries = await client.ListEntriesAsync();
+        Assert.Single(entries);
+    }
+
+    [Fact]
+    public async Task NoRetry_On401_ThrowsImmediately()
+    {
+        var handler = CreateHandler((HttpStatusCode.Unauthorized, new { error = "Unauthorized" }));
+        var client = new TestableGrimlockerClient("http://127.0.0.1:36353", "token", handler);
+
+        await Assert.ThrowsAsync<GrimlockerException>(() => client.ListEntriesAsync());
+        Assert.Single(handler.Requests); // no retries
+    }
+
+    [Fact]
+    public async Task CircuitBreaker_OpensAfterRepeatedFailures()
+    {
+        var handler = new MockHttpMessageHandler(
+            new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = JsonContent.Create(new { error = "fail" }) },
+            new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = JsonContent.Create(new { error = "fail" }) },
+            new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = JsonContent.Create(new { error = "fail" }) },
+            new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = JsonContent.Create(new { error = "fail" }) },
+            new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = JsonContent.Create(new { error = "fail" }) },
+            new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = JsonContent.Create(new { error = "fail" }) }
+        );
+        var client = new TestableGrimlockerClient("http://127.0.0.1:36353", "token", handler);
+
+        // Trigger 6 failures to open circuit
+        for (int i = 0; i < 6; i++)
+        {
+            try { await client.ListEntriesAsync(); } catch { /* ignore */ }
+        }
+
+        // Next request should fail with circuit breaker open
+        await Assert.ThrowsAsync<CircuitBreakerOpenException>(() => client.ListEntriesAsync());
+    }
+
     /// <summary>
     /// Testable client that accepts a custom HttpMessageHandler.
     /// </summary>

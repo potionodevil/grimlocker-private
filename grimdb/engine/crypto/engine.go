@@ -6,10 +6,10 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
-// KeyLen is the required length for all ChaCha20-Poly1305 keys.
+// KeyLen ist die erforderliche Länge für alle ChaCha20-Poly1305-Keys.
 const KeyLen = chacha20poly1305.KeySize // 32
 
-// ValidateKeyLength returns nil if key is exactly 32 bytes, otherwise an error.
+// ValidateKeyLength gibt nil zurück, wenn key genau 32 Bytes hat, sonst einen Error.
 func ValidateKeyLength(key []byte) error {
 	if len(key) == 0 {
 		return fmt.Errorf("crypto/engine: key is empty (vault may be locked)")
@@ -20,8 +20,8 @@ func ValidateKeyLength(key []byte) error {
 	return nil
 }
 
-// ValidateAndNewCipher wraps chacha20poly1305.New with strict key-length checking.
-// It returns a more informative error than the standard library's opaque message.
+// ValidateAndNewCipher wrappt chacha20poly1305.New mit striktem Key-Length-Check.
+// Gibt einen informativeren Error als die opake Standard-Bibliothek zurück.
 func ValidateAndNewCipher(key []byte) (cipher interface {
 	Seal(dst, nonce, plaintext, additionalData []byte) []byte
 	Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error)

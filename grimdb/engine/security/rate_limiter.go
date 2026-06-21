@@ -1,16 +1,16 @@
-// Package security (rate_limiter.go) implements RateLimiter — an exponential
-// backoff rate limiter for authentication attempts.
+// Package security (rate_limiter.go) implementiert RateLimiter — einen Exponential-
+// Backoff-Rate-Limiter für Authentifizierungsversuche.
 //
-// Policy (aligned with NIST SP 800-63B guidelines):
-//   - Attempts 1-5:   no lockout
-//   - Attempt 6:      60 second lockout
-//   - Attempt 11:     600 second lockout (10 minutes)
-//   - Attempt 16:     3600 second lockout (1 hour)
-//   - Attempt 21+:    86400 second lockout (24 hours)
+// Policy (angelehnt an NIST SP 800-63B):
+//   - Versuche 1-5:   kein Lockout
+//   - Versuch 6:      60 Sekunden Lockout
+//   - Versuch 11:     600 Sekunden Lockout (10 Minuten)
+//   - Versuch 16:     3600 Sekunden Lockout (1 Stunde)
+//   - Versuch 21+:    86400 Sekunden Lockout (24 Stunden)
 //
-// State is stored in-memory only. After a daemon restart, the lockout
-// window is reset. For persistent lockout across restarts, integrate
-// with the vault index (see TODO below).
+// Der State wird nur in-Memory gehalten. Nach Daemon-Restart ist das Lockout
+// zurückgesetzt. Für persistentes Lockout über Restarts hinweg mit dem Vault-Index
+// integrieren (siehe TODO unten).
 package security
 
 import (
@@ -19,8 +19,7 @@ import (
 	"time"
 )
 
-// RateLimiter tracks authentication attempts per subject and enforces
-// exponential backoff lockouts.
+// RateLimiter trackt Auth-Versuche pro Subject und erzwingt Exponential-Backoff-Lockouts.
 type RateLimiter struct {
 	mu      sync.Mutex
 	entries map[string]*rateLimitEntry
@@ -32,16 +31,16 @@ type rateLimitEntry struct {
 	lastAttempt time.Time
 }
 
-// NewRateLimiter creates a RateLimiter.
+// NewRateLimiter erzeugt einen RateLimiter.
 func NewRateLimiter() *RateLimiter {
 	return &RateLimiter{
 		entries: make(map[string]*rateLimitEntry),
 	}
 }
 
-// Check returns whether the subject is currently allowed to attempt
-// authentication. Returns (allowed=false, lockoutUntil) if locked out.
-// Does NOT record a new attempt — call RecordFailure after a failed attempt.
+// Check gibt zurück, ob das Subject gerade einen Auth-Versuch machen darf.
+// Returns (allowed=false, lockoutUntil) wenn gelockt.
+// Zeichnet KEINEN neuen Versuch auf — RecordFailure nach fehlgeschlagenem Attempt aufrufen.
 func (r *RateLimiter) Check(subject string) (allowed bool, lockedUntil time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -58,9 +57,8 @@ func (r *RateLimiter) Check(subject string) (allowed bool, lockedUntil time.Time
 	return true, time.Time{}
 }
 
-// RecordFailure records a failed authentication attempt for the subject.
-// Returns the new lockout duration (0 if no lockout applies yet) and
-// the total consecutive failure count.
+// RecordFailure zeichnet einen fehlgeschlagenen Auth-Versuch für das Subject auf.
+// Gibt die neue Lockout-Dauer (0 wenn kein Lockout) und die Gesamt-Fehleranzahl zurück.
 func (r *RateLimiter) RecordFailure(subject string) (lockoutDuration time.Duration, totalFailures int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -75,7 +73,6 @@ func (r *RateLimiter) RecordFailure(subject string) (lockoutDuration time.Durati
 	entry.lastAttempt = time.Now()
 	totalFailures = entry.attempts
 
-	// Exponential backoff lockout policy.
 	var lockout time.Duration
 	switch {
 	case entry.attempts >= 21:
@@ -102,8 +99,8 @@ func (r *RateLimiter) RecordFailure(subject string) (lockoutDuration time.Durati
 	return lockout, totalFailures
 }
 
-// RecordSuccess resets the failure counter for the subject.
-// Call after a successful authentication.
+// RecordSuccess resetet den Failure-Counter für das Subject.
+// Nach erfolgreichem Login aufrufen.
 func (r *RateLimiter) RecordSuccess(subject string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -117,22 +114,21 @@ func (r *RateLimiter) RecordSuccess(subject string) {
 	}
 }
 
-// RemainingAttempts returns how many more failures are allowed before the
-// next lockout tier triggers. Returns -1 if the subject is currently locked.
+// RemainingAttempts gibt zurück, wie viele Fehlversuche noch erlaubt sind, bevor
+// die nächste Lockout-Stufe greift. Gibt -1 zurück, wenn das Subject gerade gelockt ist.
 func (r *RateLimiter) RemainingAttempts(subject string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	entry, ok := r.entries[subject]
 	if !ok {
-		return 5 // default: 5 attempts before first lockout
+		return 5
 	}
 
 	if time.Now().Before(entry.lockedUntil) {
-		return -1 // currently locked
+		return -1
 	}
 
-	// Calculate attempts until next lockout tier.
 	switch {
 	case entry.attempts < 5:
 		return 5 - entry.attempts
@@ -147,8 +143,7 @@ func (r *RateLimiter) RemainingAttempts(subject string) int {
 	}
 }
 
-// LockoutStatus returns whether the subject is currently locked out
-// and the time remaining in the lockout window.
+// LockoutStatus gibt zurück, ob das Subject gelockt ist und die Restzeit.
 func (r *RateLimiter) LockoutStatus(subject string) (locked bool, remaining time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

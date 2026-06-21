@@ -1,5 +1,5 @@
-// Package backup (handlers.go) — HandlerRegistry and PayloadValidator.
-// Identical pattern to daemon/internal/modules/crypto/handlers.go.
+// Package backup (handlers.go) — HandlerRegistry und PayloadValidator für das Backup-Modul.
+// Identisches Muster wie daemon/internal/modules/crypto/handlers.go.
 package backup
 
 import (
@@ -9,19 +9,20 @@ import (
 	"github.com/grimlocker/grimdb/engine/kernel"
 )
 
+// eventHandlerFn ist der interne Handler-Funktionstyp.
 type eventHandlerFn func(kernel.Event) error
 
-// PayloadValidator validates the raw JSON payload of an event before the handler runs.
+// PayloadValidator validiert den rohen JSON-Payload eines Events vor dem Handler.
 type PayloadValidator interface {
 	Validate(payload []byte) error
 }
 
-// ValidatorFunc adapts a function as a PayloadValidator.
+// ValidatorFunc adaptiert eine Funktion als PayloadValidator.
 type ValidatorFunc func([]byte) error
 
 func (f ValidatorFunc) Validate(payload []byte) error { return f(payload) }
 
-// JSONSchemaValidator is a generic validator that unmarshals JSON into T and calls check.
+// JSONSchemaValidator ist ein generischer Validator, der JSON in T unmarshalt und check aufruft.
 func JSONSchemaValidator[T any](check func(*T) error) PayloadValidator {
 	return ValidatorFunc(func(payload []byte) error {
 		var v T
@@ -35,13 +36,13 @@ func JSONSchemaValidator[T any](check func(*T) error) PayloadValidator {
 	})
 }
 
-// HandlerEntry pairs a handler with its optional validator.
+// HandlerEntry paart einen Handler mit seinem optionalen Validator.
 type HandlerEntry struct {
 	Validator PayloadValidator
 	Handler   eventHandlerFn
 }
 
-// HandlerRegistry maps EventTypes to validated handler entries.
+// HandlerRegistry mappt EventTypes auf validierte Handler-Entries.
 type HandlerRegistry struct {
 	entries map[kernel.EventType]HandlerEntry
 }

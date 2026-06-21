@@ -417,6 +417,61 @@ async fn test_recovery_phrase() {
 }
 
 #[tokio::test]
+async fn test_batch_create_entries() {
+    let e1 = entry_json("b1", "A", "PASSWORD", &[]);
+    let e2 = entry_json("b2", "B", "SSH_KEY", &[]);
+    let json1 = entries_json(&[&e1]);
+    let json2 = entries_json(&[&e2]);
+    let server = MockServer::new(vec![encode_result(&json1), encode_result(&json2)]).await;
+    let mut client = GrimlockerClient::connect(&server.url(), "token").await.unwrap();
+    let mut items = Vec::new();
+    items.push(("A".into(), "PASSWORD".into(), HashMap::new()));
+    items.push(("B".into(), "SSH_KEY".into(), HashMap::new()));
+    let ids = client.create_entries_batch(&items).await.unwrap();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(ids[0], "b1");
+    assert_eq!(ids[1], "b2");
+    client.close().await;
+}
+
+#[tokio::test]
+async fn test_batch_delete_entries() {
+    let server = MockServer::new(vec![
+        encode_result(r#"{"success":true}"#),
+        encode_result(r#"{"success":true}"#),
+    ]).await;
+    let mut client = GrimlockerClient::connect(&server.url(), "token").await.unwrap();
+    let ids = vec!["e1".into(), "e2".into()];
+    client.delete_entries_batch(&ids).await.unwrap();
+    client.close().await;
+}
+
+#[tokio::test]
+async fn test_circuit_breaker() {
+    let server = MockServer::new(vec![
+        encode_error(-1, "fail"),
+        encode_error(-1, "fail"),
+        encode_error(-1, "fail"),
+        encode_error(-1, "fail"),
+        encode_error(-1, "fail"),
+        encode_error(-1, "fail"),
+    ]).await;
+    let mut client = GrimlockerClient::connect(&server.url(), "token").await.unwrap();
+    for i in 0..5 {
+        let result = client.list_entries(None).await;
+        assert!(result.is_err(), "expected error on call {}", i);
+    }
+    let result = client.list_entries(None).await;
+    assert!(result.is_err(), "expected circuit breaker open");
+    if let Err(Error::WebSocket(msg)) = result {
+        assert!(msg.contains("circuit breaker open"), "expected circuit breaker open, got: {}", msg);
+    } else {
+        panic!("expected WebSocket error due to open circuit, got: {:?}", result);
+    }
+    client.close().await;
+}
+
+#[tokio::test]
 async fn test_download_file() {
     let json = r#"{"data_b64":"aGVsbG8="}"#;
     let server = MockServer::new(vec![encode_result(json)]).await;

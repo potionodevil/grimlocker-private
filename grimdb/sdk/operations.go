@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/grimlocker/grimdb/gql"
+	"github.com/grimlocker/grimdb/engine/gql"
 )
 
 // PasswordEntry represents a stored password credential.

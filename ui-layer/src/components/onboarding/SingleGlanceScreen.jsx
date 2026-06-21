@@ -50,6 +50,9 @@ export function SingleGlanceScreen({ keyHex, coordinates, onProceed, timeLeft })
     const preventContextMenu = (e) => e.preventDefault()
     const preventDrag = (e) => e.preventDefault()
 
+    // Copy/Clipboard-Schutz: Sobald der 256-Bit-Key im Klartext sichtbar ist,
+    // blockieren wir alle Wege, wie ein Angreifer (oder der Browser) den Key abgreifen könnte.
+    // Das ist ein bewusster UX-Trade-off: Sicherheit geht hier vor Bequemlichkeit.
     const preventKeyboardShortcuts = (e) => {
       const blocked = [
         e.ctrlKey && e.key === 'c',
@@ -143,6 +146,8 @@ export function SingleGlanceScreen({ keyHex, coordinates, onProceed, timeLeft })
             <h2 className="font-mono text-xl font-bold text-cyber-amber tracking-wider mb-1">
               SINGLE GLANCE PROTOCOL
             </h2>
+            {/* Wichtig: Der Key wird NUR HIER im Klartext gezeigt und dann zeroized.
+                 Copy/Paste/Screenshot sind blockiert — das ist Absicht. */}
             <p className="font-mono text-xs text-cyber-amberDim uppercase tracking-widest">
               MEMORIZE THIS KEY — IT WILL BE ZEROIZED
             </p>

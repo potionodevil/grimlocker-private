@@ -2,8 +2,9 @@ import { useCallback } from 'react'
 import { useGrimStore } from '../store/useGrimStore'
 
 /**
- * Returns a copy function that writes text to the clipboard
- * and schedules an auto-clear after clipboardClearSeconds (0 = never).
+ * Gibt eine copy-Funktion zurück, die Text in die Zwischenablage schreibt
+ * und nach clipboardClearSeconds automatisch löscht (0 = nie).
+ * So verhindern wir, dass Passwörter ewig in der Zwischenablage rumliegen.
  */
 export function useCopyToClipboard() {
   const clearSeconds = useGrimStore((s) => s.preferences.clipboardClearSeconds ?? 30)
@@ -12,7 +13,7 @@ export function useCopyToClipboard() {
     try {
       await navigator.clipboard.writeText(text)
     } catch {
-      // Fallback for older WebView environments
+      // Fallback für ältere WebView-Umgebungen (Tauri on Windows 10)
       const ta = document.createElement('textarea')
       ta.value = text
       ta.style.position = 'fixed'
@@ -26,13 +27,14 @@ export function useCopyToClipboard() {
     if (clearSeconds > 0) {
       setTimeout(async () => {
         try {
-          // Only clear if the clipboard still contains our value
+          // Nur leeren, falls die Zwischenablage immer noch UNSEREN Wert enthält
+          // (sonst hat der User vielleicht was anderes kopiert — das wollen wir nicht killen).
           const current = await navigator.clipboard.readText().catch(() => null)
           if (current === text) {
             await navigator.clipboard.writeText('')
           }
         } catch {
-          // readText may be denied — just attempt a clear
+          // readText kann verweigert werden (Permissions) — dann einfach blind clears versuchen
           navigator.clipboard.writeText('').catch(() => {})
         }
       }, clearSeconds * 1000)

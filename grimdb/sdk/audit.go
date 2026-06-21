@@ -5,7 +5,7 @@ package sdk
 import (
 	"context"
 
-	"github.com/grimlocker/grimdb/gql"
+	"github.com/grimlocker/grimdb/engine/gql"
 )
 
 // AuditEvent is an immutable audit record with cryptographic chaining.

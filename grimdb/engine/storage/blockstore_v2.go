@@ -2,75 +2,56 @@ package storage
 
 // ─── BlockStoreV2 ─────────────────────────────────────────────────────────────
 
-// BlockStoreV2 extends BlockStore with explicit transaction support.
-// Transactions provide atomicity: either all writes in a transaction are
-// committed together, or none are (Rollback).
+// BlockStoreV2 erweitert BlockStore um explizite Transaktionen.
+// Transaktionen bieten Atomizität: entweder alle Writes in einer Transaktion
+// werden committed, oder keine (Rollback).
 //
-// Use BlockStoreV2 when you need to write multiple blocks in a single atomic
-// operation (e.g., create entry + attach metadata block).
+// Nutze BlockStoreV2, wenn du mehrere Blöcke in einer atomaren Operation
+// schreiben musst (z.B. Entry + Metadaten-Block anlegen).
 //
-// Existing code that uses BlockStore continues to work unchanged — BlockStoreV2
-// is a backwards-compatible extension, not a replacement.
+// Existierender Code mit BlockStore funktioniert unverändert — BlockStoreV2
+// ist eine abwärtskompatible Erweiterung, kein Ersatz.
 type BlockStoreV2 interface {
 	BlockStore
 
-	// BeginWrite starts a write transaction.
-	// Only one write transaction may be open at a time per store.
-	// The caller must call Commit() or Rollback() to release the transaction.
+	// BeginWrite startet eine Write-Transaktion.
+	// Nur eine Write-Transaktion kann gleichzeitig offen sein.
+	// Der Caller muss Commit() oder Rollback() aufrufen.
 	BeginWrite() (WriteTransaction, error)
 
-	// BeginRead starts a read-only snapshot transaction.
-	// Multiple read transactions may be open concurrently.
+	// BeginRead startet eine Read-Only-Snapshot-Transaktion.
+	// Mehrere Read-Transaktionen können gleichzeitig laufen.
 	BeginRead() (ReadTransaction, error)
 }
 
 // ─── WriteTransaction ─────────────────────────────────────────────────────────
 
-// WriteTransaction batches block writes and atomically commits them to the
-// underlying store. The transaction buffers all writes in memory until Commit
-// is called, so partial failures do not corrupt the on-disk state.
+// WriteTransaction batcht Block-Writes und committed sie atomar.
+// Die Transaktion puffert alle Writes im Memory, bis Commit aufgerufen wird,
+// sodass partielle Fehler den On-Disk-State nicht korrumpieren.
 type WriteTransaction interface {
-	// WriteBlock stages a block for writing. The block is not persisted
-	// until Commit() is called.
 	WriteBlock(b Block) error
-
-	// DeleteBlock stages a block for deletion. The deletion is not applied
-	// until Commit() is called.
 	DeleteBlock(id string) error
-
-	// Commit atomically applies all staged writes and deletions.
-	// Returns an error if any operation fails; the store remains unchanged.
-	// The transaction is closed after Commit regardless of success.
 	Commit() error
-
-	// Rollback discards all staged writes without modifying the store.
-	// Always call Rollback in a defer to handle error paths.
 	Rollback()
 }
 
 // ─── ReadTransaction ──────────────────────────────────────────────────────────
 
-// ReadTransaction provides a consistent snapshot view of the store.
-// Reads within a transaction see the state at the time BeginRead was called.
+// ReadTransaction bietet einen konsistenten Snapshot-View des Stores.
+// Reads innerhalb einer Transaktion sehen den State zum Zeitpunkt von BeginRead.
 type ReadTransaction interface {
-	// ReadBlock retrieves a block from the snapshot.
 	ReadBlock(id string) (Block, error)
-
-	// ListBlocks returns all block metadata from the snapshot.
 	ListBlocks() ([]BlockMeta, error)
-
-	// QueryBlocks returns metadata for blocks matching the given category.
 	QueryBlocks(category Category) ([]BlockMeta, error)
-
-	// Close releases the snapshot. Always call Close (or use defer).
 	Close()
 }
 
-// ─── InMemoryWriteTransaction — reference implementation ──────────────────────
+// ─── InMemoryWriteTransaction ─────────────────────────────────────────────────
 
-// InMemoryWriteTransaction implements WriteTransaction using a buffer.
-// The store flushes the buffer on Commit. This is suitable for the current
-// single-threaded file-backed store; a future WAL-based store would replace it.
+// InMemoryWriteTransaction implementiert WriteTransaction mit einem Buffer.
+// Der Store flushed den Buffer bei Commit. Geeignet für den aktuellen
+// Single-Thread-File-Backed-Store; ein zukünftiger WAL-Store würde es ersetzen.
 type InMemoryWriteTransaction struct {
 	store    BlockStore
 	writes   []Block
@@ -78,9 +59,9 @@ type InMemoryWriteTransaction struct {
 	done     bool
 }
 
-// NewInMemoryWriteTransaction creates a buffered write transaction over any BlockStore.
-// Modules that want transactions but work with a plain BlockStore can use this
-// as a compatibility shim until the store itself implements BlockStoreV2.
+// NewInMemoryWriteTransaction erzeugt eine gepufferte Write-Transaktion über
+// jedem BlockStore. Module, die Transaktionen brauchen, aber nur mit einem
+// einfachen BlockStore arbeiten, können das als Compatibility-Shim nutzen.
 func NewInMemoryWriteTransaction(store BlockStore) *InMemoryWriteTransaction {
 	return &InMemoryWriteTransaction{store: store}
 }
@@ -101,9 +82,10 @@ func (t *InMemoryWriteTransaction) DeleteBlock(id string) error {
 	return nil
 }
 
-// Commit applies all staged writes then all staged deletes.
-// On partial failure the successfully written blocks remain — this is a
-// "best-effort atomic" implementation. Use a WAL-backed store for true atomicity.
+// Commit wendet alle staged Writes und dann Deletes an.
+// Bei partiellem Fehler bleiben die erfolgreich geschriebenen Blöcke erhalten —
+// das ist eine "Best-Effort-Atomic"-Implementierung. Echten atomaren Commit
+// gibt's nur mit WAL-Backed-Store.
 func (t *InMemoryWriteTransaction) Commit() error {
 	if t.done {
 		return ErrTransactionClosed
@@ -129,10 +111,10 @@ func (t *InMemoryWriteTransaction) Rollback() {
 	t.deletes = nil
 }
 
-// ─── Sentinel errors ──────────────────────────────────────────────────────────
+// ─── Sentinel Errors ──────────────────────────────────────────────────────────
 
-// ErrTransactionClosed is returned when a method is called on an already-committed
-// or rolled-back transaction.
+// ErrTransactionClosed wird zurückgegeben, wenn eine Methode auf einer bereits
+// committed oder rolled-back Transaktion aufgerufen wird.
 var ErrTransactionClosed = transactionClosedError{}
 
 type transactionClosedError struct{}

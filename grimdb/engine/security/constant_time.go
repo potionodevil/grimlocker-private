@@ -1,7 +1,7 @@
 package security
 
-// constantTimeEqual returns true iff a and b have the same length and content.
-// The running time depends only on len(a) and len(b), not their values.
+// constantTimeEqual gibt true zurück, wenn a und b die gleiche Länge UND den gleichen Inhalt haben.
+// Die Laufzeit hängt nur von len(a) und len(b) ab, nicht vom Inhalt — schützt vor Timing-Angriffen.
 func constantTimeEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

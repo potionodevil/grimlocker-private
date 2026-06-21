@@ -22,6 +22,10 @@ public class GrimlockerClient : IAsyncDisposable
     private static readonly JsonSerializerOptions _json = new()
         { PropertyNameCaseInsensitive = true };
 
+    private readonly object _circuitLock = new();
+    private int _consecutiveFailures = 0;
+    private DateTimeOffset _circuitOpenUntil = DateTimeOffset.MinValue;
+
     /// <param name="baseUrl">Daemon base URL, e.g. "http://127.0.0.1:36353"</param>
     /// <param name="token">GRIMLOCKER_TOKEN from daemon stdout</param>
     public GrimlockerClient(string baseUrl, string token)
@@ -65,6 +69,25 @@ public class GrimlockerClient : IAsyncDisposable
 
     public Task DeleteEntryAsync(string id, CancellationToken ct = default)
         => CallAsync("entry.delete", new { id }, ct);
+
+    public async Task<IReadOnlyList<string>> CreateEntriesBatchAsync(IReadOnlyList<BatchEntryInput> items, CancellationToken ct = default)
+    {
+        var ids = new List<string>(items.Count);
+        foreach (var item in items)
+        {
+            var entry = await CreateEntryAsync(item.Title, item.Category, item.Fields, ct);
+            ids.Add(entry.Id);
+        }
+        return ids;
+    }
+
+    public async Task DeleteEntriesBatchAsync(IReadOnlyList<string> ids, CancellationToken ct = default)
+    {
+        foreach (var id in ids)
+        {
+            await DeleteEntryAsync(id, ct);
+        }
+    }
 
     public async Task<IReadOnlyList<VaultEntry>> SearchEntriesAsync(string query, string? category = null, CancellationToken ct = default)
         => await CallAsync<List<VaultEntry>>("entry.search", new { query, category }, ct) ?? [];
@@ -204,36 +227,82 @@ public class GrimlockerClient : IAsyncDisposable
 
     private async Task CallAsync(string action, object payload, CancellationToken ct)
     {
-        var resp = await _http.PostAsJsonAsync($"{_baseUrl}/api/v1",
-            new { action, payload }, _json, ct);
-        await EnsureSuccessAsync(resp, action, ct);
+        await ExecuteWithRetryAsync(action, payload, ct);
     }
 
     private async Task<T?> CallAsync<T>(string action, object payload, CancellationToken ct)
     {
-        var resp = await _http.PostAsJsonAsync($"{_baseUrl}/api/v1",
-            new { action, payload }, _json, ct);
-        var body = await EnsureSuccessAsync(resp, action, ct);
+        var body = await ExecuteWithRetryAsync(action, payload, ct);
         return JsonSerializer.Deserialize<T>(body, _json);
     }
 
-    private static async Task<string> EnsureSuccessAsync(HttpResponseMessage resp, string action, CancellationToken ct)
+    private async Task<string> ExecuteWithRetryAsync(string action, object payload, CancellationToken ct)
     {
-        var body = await resp.Content.ReadAsStringAsync(ct);
-        if (!resp.IsSuccessStatusCode)
+        lock (_circuitLock)
         {
-            int code = 0;
-            string msg = body;
+            if (DateTimeOffset.UtcNow < _circuitOpenUntil)
+                throw new CircuitBreakerOpenException("circuit breaker is open");
+        }
+
+        for (int attempt = 0; attempt < 4; attempt++)
+        {
+            string body = "";
+            int statusCode = 0;
+            bool isNetworkError = false;
+
             try
             {
-                using var doc = JsonDocument.Parse(body);
-                code = doc.RootElement.TryGetProperty("error_code", out var c) ? c.GetInt32() : 0;
-                msg  = doc.RootElement.TryGetProperty("error", out var e) ? e.GetString() ?? body : body;
+                using var resp = await _http.PostAsJsonAsync($"{_baseUrl}/api/v1",
+                    new { action, payload }, _json, ct);
+                statusCode = (int)resp.StatusCode;
+                body = await resp.Content.ReadAsStringAsync(ct);
             }
-            catch { /* ignore parse errors */ }
-            throw new GrimlockerException($"{GrimlockerException.NameOf(code)} ({action}): {msg}", code);
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (HttpRequestException)
+            {
+                isNetworkError = true;
+            }
+
+            if (!isNetworkError && statusCode >= 200 && statusCode < 300)
+            {
+                lock (_circuitLock) { _consecutiveFailures = 0; }
+                return body;
+            }
+
+            bool isClientError = !isNetworkError && statusCode >= 400 && statusCode < 500;
+
+            if (isClientError || attempt == 3)
+            {
+                lock (_circuitLock)
+                {
+                    _consecutiveFailures++;
+                    if (_consecutiveFailures >= 5)
+                        _circuitOpenUntil = DateTimeOffset.UtcNow.AddSeconds(30);
+                }
+
+                if (isNetworkError)
+                    throw new GrimlockerException($"network error ({action})", -104);
+
+                int code = 0;
+                string msg = body;
+                try
+                {
+                    using var doc = JsonDocument.Parse(body);
+                    code = doc.RootElement.TryGetProperty("error_code", out var c) ? c.GetInt32() : 0;
+                    msg = doc.RootElement.TryGetProperty("error", out var e) ? e.GetString() ?? body : body;
+                }
+                catch { /* ignore parse errors */ }
+                throw new GrimlockerException($"{GrimlockerException.NameOf(code)} ({action}): {msg}", code);
+            }
+
+            int delayMs = Math.Min(2000, 100 * (1 << attempt));
+            await Task.Delay(delayMs, ct);
         }
-        return body;
+
+        throw new GrimlockerException("retry exhaustion", -104);
     }
 
     public async ValueTask DisposeAsync() => _http.Dispose();
@@ -241,6 +310,13 @@ public class GrimlockerClient : IAsyncDisposable
     private record DownloadResult([property: System.Text.Json.Serialization.JsonPropertyName("data_b64")] string? DataB64);
     private record RecoveryResult([property: System.Text.Json.Serialization.JsonPropertyName("phrase")] string? Phrase);
 }
+
+public class CircuitBreakerOpenException : GrimlockerException
+{
+    public CircuitBreakerOpenException(string message) : base(message, -200) { }
+}
+
+public sealed record BatchEntryInput(string Title, string Category, Dictionary<string, string> Fields);
 
 public sealed record SshKeyResult
 {

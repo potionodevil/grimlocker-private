@@ -28,15 +28,15 @@ export function SetupScreen() {
     setIsInitializing(true)
 
     try {
-      // Call backend to initialize vault
-      // This returns the recovery phrase
+      // Backend aufrufen, um den Vault zu initialisieren
+      // Das gibt die Recovery-Phrase zurück — die zeigen wir dem User genau EINMAL
       const phrase = await initializeVault(password)
       if (phrase) {
         setRecoveryPhrase(phrase)
       }
     } finally {
       setIsInitializing(false)
-      // Clear password from memory
+      // Passwort aus dem RAM entfernen — sicherheitshalber
       setPassword('')
       setConfirmPassword('')
     }

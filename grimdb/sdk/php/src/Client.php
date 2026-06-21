@@ -7,6 +7,7 @@ use Grimlocker\Entries\{Entry, PasswordEntry, SshKeyEntry, CertificateEntry};
 use Grimlocker\FileVault\{FileVaultClient, FolderListing, FolderItem, FileEntry};
 use Grimlocker\Models\{Workspace, SyncStatus, AuditEvent};
 use Grimlocker\Exception\GrimlockerException;
+use Grimlocker\Exception\CircuitBreakerOpenException;
 
 /**
  * HTTP client for the Grimlocker daemon /api/v1 endpoint.
@@ -21,6 +22,13 @@ class Client
     private string $baseUrl;
     private string $token;
     private int    $timeout;
+    private int    $failureCount = 0;
+    private ?float $circuitOpenUntil = null;
+
+    private const MAX_RETRIES = 3;
+    private const BASE_DELAY_MS = 100;
+    private const CIRCUIT_FAILURE_THRESHOLD = 5;
+    private const CIRCUIT_OPEN_SECONDS = 30;
 
     public function __construct(string $baseUrl, string $token, int $timeout = 30)
     {
@@ -81,6 +89,25 @@ class Client
     public function deleteEntry(string $id): void
     {
         $this->call('entry.delete', ['id' => $id]);
+    }
+
+    /** @param array<int,array{title:string,category:string,fields?:array<string,string>}> $entries */
+    public function createEntriesBatch(array $entries): array
+    {
+        $ids = [];
+        foreach ($entries as $entry) {
+            $created = $this->createEntry($entry['title'], $entry['category'], $entry['fields'] ?? []);
+            $ids[] = $created->id;
+        }
+        return $ids;
+    }
+
+    /** @param string[] $ids */
+    public function deleteEntriesBatch(array $ids): void
+    {
+        foreach ($ids as $id) {
+            $this->deleteEntry($id);
+        }
     }
 
     /** @return Entry[] */
@@ -215,44 +242,110 @@ class Client
 
     // ── Health ────────────────────────────────────────────────────────────────
 
+    public function generateSSHKey(string $comment = '', bool $saveToVault = true): array
+    {
+        return $this->call('tool.ssh_keygen', ['comment' => $comment, 'save_to_vault' => $saveToVault]);
+    }
+
+    public function getRecoveryPhrase(string $password): string
+    {
+        $r = $this->call('vault.recovery_phrase', ['password' => $password]);
+        return $r['recovery_phrase'] ?? $r['phrase'] ?? '';
+    }
+
     public function healthCheck(): array { return $this->vaultStatus(); }
 
     // ── Internal ─────────────────────────────────────────────────────────────
 
     private function call(string $action, array $payload): array
     {
-        $ch = curl_init($this->baseUrl . '/api/v1');
-        $body = json_encode(['action' => $action, 'payload' => $payload]);
+        $now = microtime(true);
+        if ($this->circuitOpenUntil !== null && $now < $this->circuitOpenUntil) {
+            throw new CircuitBreakerOpenException('Circuit breaker is open');
+        }
+        $this->circuitOpenUntil = null;
 
-        curl_setopt_array($ch, [
-            CURLOPT_POST           => true,
-            CURLOPT_POSTFIELDS     => $body,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => $this->timeout,
-            CURLOPT_HTTPHEADER     => [
-                'Content-Type: application/json',
-                'X-Grimlocker-Token: ' . $this->token,
-            ],
-        ]);
+        $lastError = null;
 
-        $resp    = curl_exec($ch);
-        $code    = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlErr = curl_error($ch);
-        curl_close($ch);
+        for ($attempt = 0; $attempt <= self::MAX_RETRIES; $attempt++) {
+            $ch = curl_init($this->baseUrl . '/api/v1');
+            $body = json_encode(['action' => $action, 'payload' => $payload]);
 
-        if ($curlErr) throw new GrimlockerException("cURL error: $curlErr");
+            curl_setopt_array($ch, [
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $body,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT        => $this->timeout,
+                CURLOPT_HTTPHEADER     => [
+                    'Content-Type: application/json',
+                    'X-Grimlocker-Token: ' . $this->token,
+                ],
+            ]);
 
-        $data = json_decode($resp ?: '{}', true);
-        if (json_last_error() !== JSON_ERROR_NONE)
-            throw new GrimlockerException("Invalid JSON response");
+            $resp    = curl_exec($ch);
+            $code    = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlErr = curl_error($ch);
+            curl_close($ch);
 
-        if ($code < 200 || $code >= 300) {
-            $ec  = $data['error_code'] ?? 0;
-            $msg = $data['error'] ?? "HTTP $code";
-            throw new GrimlockerException(GrimlockerException::nameOf($ec) . ": $msg", $ec);
+            if ($curlErr) {
+                $this->recordFailure();
+                $lastError = new GrimlockerException("cURL error: $curlErr");
+                if ($attempt === self::MAX_RETRIES) {
+                    throw $lastError;
+                }
+                $delay = min(self::BASE_DELAY_MS * (1 << $attempt), 2000);
+                usleep($delay * 1000);
+                continue;
+            }
+
+            $data = json_decode($resp ?: '{}', true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                $this->recordFailure();
+                $lastError = new GrimlockerException("Invalid JSON response");
+                if ($attempt === self::MAX_RETRIES) {
+                    throw $lastError;
+                }
+                $delay = min(self::BASE_DELAY_MS * (1 << $attempt), 2000);
+                usleep($delay * 1000);
+                continue;
+            }
+
+            if ($code < 200 || $code >= 300) {
+                $ec  = $data['error_code'] ?? 0;
+                $msg = $data['error'] ?? "HTTP $code";
+                $lastError = new GrimlockerException(GrimlockerException::nameOf($ec) . ": $msg", $ec);
+
+                if ($code >= 400 && $code < 500) {
+                    $this->failureCount = 0;
+                    throw $lastError;
+                }
+
+                if ($code >= 500) {
+                    $this->recordFailure();
+                    if ($attempt === self::MAX_RETRIES) {
+                        throw $lastError;
+                    }
+                    $delay = min(self::BASE_DELAY_MS * (1 << $attempt), 2000);
+                    usleep($delay * 1000);
+                    continue;
+                }
+
+                throw $lastError;
+            }
+
+            $this->failureCount = 0;
+            return $data;
         }
 
-        return $data;
+        throw $lastError ?? new GrimlockerException("Request failed after retries");
+    }
+
+    private function recordFailure(): void
+    {
+        $this->failureCount++;
+        if ($this->failureCount >= self::CIRCUIT_FAILURE_THRESHOLD) {
+            $this->circuitOpenUntil = microtime(true) + self::CIRCUIT_OPEN_SECONDS;
+        }
     }
 
     /** @return Entry[] */

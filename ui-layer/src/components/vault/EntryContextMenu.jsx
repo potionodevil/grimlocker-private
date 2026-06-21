@@ -19,7 +19,7 @@ export function EntryContextMenu({ entry, x, y, onClose, onEdit, onOpenFile, onO
   useEffect(() => {
     const handleClickOutside = (e) => {
       if (menuRef.current && !menuRef.current.contains(e.target)) {
-        // Do not close if the confirm dialog is open
+        // Nicht schliessen, wenn der Confirm-Dialog offen ist — sonst verliert der User die Auswahl
         if (!confirmDeleteOpen) onClose()
       }
     }

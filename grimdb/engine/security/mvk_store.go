@@ -18,50 +18,50 @@ func randomHandle() string {
 
 // ─── MVKStore Interface ───────────────────────────────────────────────────────
 
-// MVKStore is the contract for storing, retrieving, and revoking Master Vault
-// Key (MVK) material in locked memory. No other module holds actual key bytes —
-// they interact with key material exclusively via opaque string handles.
+// MVKStore ist der Vertrag zum Speichern, Abrufen und Entziehen von MVK-Material
+// in locked Memory. Kein anderes Modul hält die eigentlichen Key-Bytes —
+// sie interagieren mit Key-Material ausschließlich via opaque String-Handles.
 //
-// Implementors MUST:
-//   - Allocate backing memory via the OS memory-locking API (mlock / VirtualLock)
-//   - Zero key material on Revoke and on process exit
-//   - Never copy key bytes to heap (return slices only for the current call frame)
+// Implementoren MÜSSEN:
+//   - Backing-Memory via OS-Memory-Locking-API allozieren (mlock / VirtualLock)
+//   - Key-Material bei Revoke und Prozess-Exit zeroisieren
+//   - Key-Bytes nie auf den Heap kopieren (nur für den aktuellen Call-Frame returnen)
 type MVKStore interface {
-	// Store allocates locked memory, copies key into it, and returns an opaque handle.
-	// The original key slice should be zeroed by the caller after this returns.
+	// Store alloziert locked Memory, kopiert key hinein und gibt einen opaque Handle zurück.
+	// Das originale Key-Slice sollte vom Caller nach Rückkehr gezeroized werden.
 	Store(key []byte) (handle string, err error)
 
-	// Retrieve returns the raw key bytes for the given handle.
-	// Returns (nil, false) if the handle is unknown or has been revoked.
-	// IMPORTANT: callers MUST NOT hold the returned slice past the current call frame.
+	// Retrieve gibt die rohen Key-Bytes für den gegebenen Handle zurück.
+	// Gibt (nil, false) zurück, wenn der Handle unbekannt oder revoked ist.
+	// WICHTIG: Caller dürfen das zurückgegebene Slice NICHT über den Call-Frame hinaus halten.
 	Retrieve(handle string) (key []byte, ok bool)
 
-	// Revoke zeroes and releases the locked memory for the given handle.
-	// Silently ignores unknown handles.
+	// Revoke zeroized und gibt locked Memory für den Handle frei.
+	// Ignoriert unbekannte Handles silent.
 	Revoke(handle string)
 
-	// RevokeAll zeroes and releases all stored handles. Called during shutdown or lockdown.
+	// RevokeAll zeroized und gibt ALLE Handles frei. Aufruf bei Shutdown oder Lockdown.
 	RevokeAll()
 
-	// Handles returns the list of active handle strings (for audit purposes).
-	// Never returns the key material itself.
+	// Handles gibt die Liste der aktiven Handle-Strings zurück (für Audit).
+	// Gibt NIE das Key-Material selbst zurück.
 	Handles() []string
 }
 
-// ─── lockedMVKStore — concrete implementation ─────────────────────────────────
+// ─── lockedMVKStore — konkrete Implementierung ────────────────────────────────
 
-// lockedMVKStore is the MVKStore implementation backed by MemoryGuard.
-// It wraps the same locking mechanism as security.Module — use NewLockedMVKStore
-// to create a standalone store, or use security.Module which embeds one internally.
+// lockedMVKStore ist die MVKStore-Implementierung, die auf MemoryGuard basiert.
+// Nutze NewLockedMVKStore für einen Standalone-Store oder security.Module,
+// das einen internen einbettet.
 type lockedMVKStore struct {
 	mu      sync.RWMutex
 	guard   MemoryGuard
 	handles map[string][]byte // handle → locked memory slice
 }
 
-// NewLockedMVKStore creates a standalone MVKStore with the given MemoryGuard.
-// Pass a platform-appropriate guard (e.g., NewMemoryGuard() from daemon/internal/security).
-// The engine provides a default Go-only guard via NewGoMemoryGuard().
+// NewLockedMVKStore erzeugt einen Standalone-MVKStore mit dem gegebenen MemoryGuard.
+// Übergib einen plattform-passenden Guard (z.B. NewMemoryGuard() aus daemon/internal/security).
+// Der Engine stellt einen Default-Go-Guard via NewGoMemoryGuard() bereit.
 func NewLockedMVKStore(guard MemoryGuard) MVKStore {
 	return &lockedMVKStore{
 		guard:   guard,
@@ -69,9 +69,9 @@ func NewLockedMVKStore(guard MemoryGuard) MVKStore {
 	}
 }
 
-// NewGoMemoryGuard returns a Go-only MemoryGuard that zeroizes bytes without
-// OS-level memory locking. Used when the real MemoryGuard is not available
-// (e.g., in the engine package where mlock is not accessible).
+// NewGoMemoryGuard gibt einen Go-Only-MemoryGuard zurück, der Bytes zeroized ohne
+// OS-Level-Memory-Locking. Wird verwendet, wenn der echte MemoryGuard nicht verfügbar ist
+// (z.B. im Engine-Package, wo mlock nicht zugänglich ist).
 func NewGoMemoryGuard() MemoryGuard {
 	return &goMemoryGuard{}
 }
@@ -91,7 +91,7 @@ func (s *lockedMVKStore) Store(key []byte) (string, error) {
 	}
 	copy(locked, key)
 
-	handle := randomHandle() // reuse from module.go
+	handle := randomHandle()
 	s.mu.Lock()
 	s.handles[handle] = locked
 	s.mu.Unlock()

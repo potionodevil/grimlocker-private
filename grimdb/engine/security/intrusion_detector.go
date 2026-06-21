@@ -1,15 +1,15 @@
-// Package security (intrusion_detector.go) implements IntrusionDetector — a
-// lightweight anomaly detector that watches for patterns indicating unauthorized
-// access attempts or data exfiltration.
+// Package security (intrusion_detector.go) implementiert IntrusionDetector — einen
+// leichten Anomaly-Detector, der auf Muster achtet, die auf unbefugte Zugriffe oder
+// Data Exfiltration hindeuten.
 //
-// Detected patterns:
-//   - Rapid auth failures from multiple source IPs within a short window
-//   - Unusually high entry-read rate (possible vault scan / exfiltration)
-//   - Rapid file ingest followed by deletes (possible data staging)
+// Erkannte Muster:
+//   - Schnelle Auth-Failures von mehreren Source-IPs innerhalb eines kurzen Zeitfensters
+//   - Ungewöhnlich hohe Entry-Read-Rate (möglicher Vault-Scan / Exfiltration)
+//   - Schnelles File-Ingest gefolgt von Deletes (mögliches Data Staging)
 //
-// On detection, an anomaly event is dispatched to the kernel bus and logged
-// at WARN level. After a configurable threshold of anomalies, a security
-// lockdown is triggered automatically.
+// Bei Erkennung wird ein Anomaly-Event in den Kernel-Bus dispatched und auf WARN-Level
+// geloggt. Nach einem konfigurierbaren Threshold von Anomalien wird automatisch
+// ein Security-Lockdown ausgelöst.
 package security
 
 import (
@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-// AnomalyType identifies the kind of anomaly detected.
+// AnomalyType identifiziert die Art der erkannten Anomalie.
 type AnomalyType string
 
 const (
@@ -28,7 +28,7 @@ const (
 	AnomalyDataExfil         AnomalyType = "POSSIBLE_DATA_EXFIL"
 )
 
-// AnomalyEvent is emitted when suspicious behaviour is detected.
+// AnomalyEvent wird emittiert, wenn verdächtiges Verhalten erkannt wird.
 type AnomalyEvent struct {
 	Type      AnomalyType
 	Subject   string
@@ -37,16 +37,16 @@ type AnomalyEvent struct {
 	Severity  string // "LOW", "MEDIUM", "HIGH"
 }
 
-// IntrusionDetector watches for anomalous patterns and emits AnomalyEvents.
-// It is designed to run in-process alongside the daemon with minimal overhead.
+// IntrusionDetector beobachtet auf anomale Muster und emittiert AnomalyEvents.
+// Läuft In-Process neben dem Daemon mit minimalem Overhead.
 type IntrusionDetector struct {
 	mu sync.Mutex
 
-	// Sliding window counters (reset after windowSize).
-	authFailures map[string][]time.Time // subject -> timestamps of failures
-	entryReads   map[string][]time.Time // subject -> timestamps of reads
-	ingestOps    map[string][]time.Time // subject -> timestamps of ingest ops
-	deleteOps    map[string][]time.Time // subject -> timestamps of delete ops
+	// Sliding-Window-Counter (reset nach windowSize).
+	authFailures map[string][]time.Time // subject → timestamps of failures
+	entryReads   map[string][]time.Time // subject → timestamps of reads
+	ingestOps    map[string][]time.Time // subject → timestamps of ingest ops
+	deleteOps    map[string][]time.Time // subject → timestamps of delete ops
 
 	// Configuration.
 	windowSize        time.Duration // sliding window duration
@@ -54,15 +54,15 @@ type IntrusionDetector struct {
 	readRateThreshold int           // entry reads in window before anomaly
 	exfilThreshold    int           // ingest+delete ops in window before anomaly
 
-	// Anomaly callback — called with each detected event.
+	// Anomaly callback — wird mit jedem erkannten Event aufgerufen.
 	onAnomaly func(AnomalyEvent)
 
-	// Anomaly history (capped ring buffer).
+	// Anomaly-History (begrenzter Ringbuffer).
 	history    []AnomalyEvent
 	historyMax int
 }
 
-// NewIntrusionDetector creates an IntrusionDetector with sensible defaults.
+// NewIntrusionDetector erzeugt einen IntrusionDetector mit sinnvollen Defaults.
 func NewIntrusionDetector(onAnomaly func(AnomalyEvent)) *IntrusionDetector {
 	return &IntrusionDetector{
 		authFailures:      make(map[string][]time.Time),
@@ -70,17 +70,17 @@ func NewIntrusionDetector(onAnomaly func(AnomalyEvent)) *IntrusionDetector {
 		ingestOps:         make(map[string][]time.Time),
 		deleteOps:         make(map[string][]time.Time),
 		windowSize:        5 * time.Minute,
-		authFailThreshold: 3,    // 3 failures from different subjects in 5 min
-		readRateThreshold: 50,   // 50 reads in 5 min = possible vault scan
-		exfilThreshold:    20,   // 20 ingest+delete ops in 5 min = possible staging
+		authFailThreshold: 3,
+		readRateThreshold: 50,
+		exfilThreshold:    20,
 		onAnomaly:         onAnomaly,
 		history:           make([]AnomalyEvent, 0, 100),
 		historyMax:        100,
 	}
 }
 
-// RecordAuthFailure records a failed authentication attempt.
-// Emits AnomalyRapidAuthFailures if the threshold is exceeded.
+// RecordAuthFailure zeichnet einen fehlgeschlagenen Auth-Versuch auf.
+// Emittiert AnomalyRapidAuthFailures bei Überschreitung des Thresholds.
 func (d *IntrusionDetector) RecordAuthFailure(subject string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -104,8 +104,8 @@ func (d *IntrusionDetector) RecordAuthFailure(subject string) {
 	}
 }
 
-// RecordEntryRead records an entry read operation.
-// Emits AnomalyRapidEntryAccess if the read rate exceeds the threshold.
+// RecordEntryRead zeichnet eine Entry-Read-Operation auf.
+// Emittiert AnomalyRapidEntryAccess bei Überschreitung des Read-Rate-Thresholds.
 func (d *IntrusionDetector) RecordEntryRead(subject string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -126,7 +126,7 @@ func (d *IntrusionDetector) RecordEntryRead(subject string) {
 	}
 }
 
-// RecordIngestOp records a file ingest operation.
+// RecordIngestOp zeichnet eine File-Ingest-Operation auf.
 func (d *IntrusionDetector) RecordIngestOp(subject string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -136,7 +136,7 @@ func (d *IntrusionDetector) RecordIngestOp(subject string) {
 	d.checkExfilPattern(subject)
 }
 
-// RecordDeleteOp records a block delete operation.
+// RecordDeleteOp zeichnet eine Block-Delete-Operation auf.
 func (d *IntrusionDetector) RecordDeleteOp(subject string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -146,8 +146,8 @@ func (d *IntrusionDetector) RecordDeleteOp(subject string) {
 	d.checkExfilPattern(subject)
 }
 
-// checkExfilPattern detects rapid ingest+delete patterns.
-// Must be called with d.mu held.
+// checkExfilPattern erkennt schnelle Ingest+Delete-Muster.
+// Muss mit d.mu gehalten aufgerufen werden.
 func (d *IntrusionDetector) checkExfilPattern(subject string) {
 	ingests := len(d.ingestOps[subject])
 	deletes := len(d.deleteOps[subject])
@@ -165,25 +165,24 @@ func (d *IntrusionDetector) checkExfilPattern(subject string) {
 	}
 }
 
-// emit logs and dispatches an anomaly. Must be called with d.mu held.
+// emit loggt und dispatched eine Anomalie. Muss mit d.mu gehalten aufgerufen werden.
 func (d *IntrusionDetector) emit(ev AnomalyEvent) {
 	log.Printf("[IntrusionDetector] ANOMALY type=%s severity=%s subject=%q detail=%q",
 		ev.Type, ev.Severity, ev.Subject, ev.Detail)
 
-	// Append to ring buffer.
 	if len(d.history) >= d.historyMax {
 		d.history = d.history[1:]
 	}
 	d.history = append(d.history, ev)
 
-	// Fire callback without holding the lock (callback may acquire other locks).
+	// Callback ohne Lock feuern (könnte andere Locks brauchen).
 	if d.onAnomaly != nil {
 		go d.onAnomaly(ev)
 	}
 }
 
-// pruneWindow removes timestamps outside the sliding window.
-// Must be called with d.mu held.
+// pruneWindow entfernt Timestamps außerhalb des Sliding Window.
+// Muss mit d.mu gehalten aufgerufen werden.
 func (d *IntrusionDetector) pruneWindow(timestamps []time.Time) []time.Time {
 	cutoff := time.Now().Add(-d.windowSize)
 	i := 0
@@ -193,13 +192,12 @@ func (d *IntrusionDetector) pruneWindow(timestamps []time.Time) []time.Time {
 	return timestamps[i:]
 }
 
-// History returns a snapshot of recent anomaly events (newest first).
+// History gibt einen Snapshot der letzten Anomaly-Events zurück (neueste zuerst).
 func (d *IntrusionDetector) History() []AnomalyEvent {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	result := make([]AnomalyEvent, len(d.history))
-	// Return newest first.
 	for i, ev := range d.history {
 		result[len(d.history)-1-i] = ev
 	}

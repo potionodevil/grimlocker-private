@@ -14,7 +14,7 @@ import (
 
 var cryptoProvider = crypto.New(bridge.DefaultBridge{})
 
-// GenerateRecoveryPhrase generates a 200-character high-entropy recovery phrase.
+// GenerateRecoveryPhrase erzeugt eine 200-Zeichen-high-entropy Recovery-Phrase.
 func GenerateRecoveryPhrase() (string, error) {
 	b := make([]byte, 150)
 	if _, err := rand.Read(b); err != nil {
@@ -23,36 +23,36 @@ func GenerateRecoveryPhrase() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b)[:200], nil
 }
 
-// InitializeVault creates a new vault. Returns the recovery phrase (shown once).
+// InitializeVault erstellt ein neues Vault. Gibt die Recovery-Phrase zurück (nur einmal angezeigt).
 func InitializeVault(password, appDir string) (string, error) {
 	p := cryptoProvider
 
-	// Argon2id salt
+	// Argon2id Salt
 	saltBytes := make([]byte, 16)
 	if _, err := rand.Read(saltBytes); err != nil {
 		return "", fmt.Errorf("generate argon salt: %w", err)
 	}
 
-	// Generate entropy file (2MB)
+	// Entropy-Datei (2MB) generieren
 	entropyPath := filepath.Join(appDir, "entropy.bin")
 	if err := generateEntropyFile(entropyPath, 2*1024*1024); err != nil {
 		return "", fmt.Errorf("generate entropy file: %w", err)
 	}
 
-	// Derive MVK
+	// MVK ableiten
 	mvk, err := deriveMVK(p, []byte(password), saltBytes, entropyPath)
 	if err != nil {
 		return "", fmt.Errorf("derive mvk: %w", err)
 	}
 	defer p.SecureZero(mvk[:])
 
-	// Encrypt sentinel
+	// Sentinel encrypten
 	sentinel, err := encryptSentinel(p, mvk[:])
 	if err != nil {
 		return "", fmt.Errorf("encrypt sentinel: %w", err)
 	}
 
-	// Recovery phrase
+	// Recovery-Phrase
 	phrase, err := GenerateRecoveryPhrase()
 	if err != nil {
 		return "", fmt.Errorf("generate recovery phrase: %w", err)
@@ -70,8 +70,8 @@ func InitializeVault(password, appDir string) (string, error) {
 		return "", fmt.Errorf("derive recovery hash: %w", err)
 	}
 
-	// Encrypt recovery phrase with a key derived from the Argon hash
-	recoveryKey := recoveryHash[:32] // Use first 32 bytes as encryption key
+	// Recovery-Phrase mit einem aus dem Argon-Hash abgeleiteten Key verschlüsseln
+	recoveryKey := recoveryHash[:32]
 	recoveryNonce, err := p.NewNonce()
 	if err != nil {
 		return "", fmt.Errorf("generate recovery nonce: %w", err)
@@ -96,13 +96,13 @@ func InitializeVault(password, appDir string) (string, error) {
 	if err := SaveMeta(appDir, meta); err != nil {
 		return "", fmt.Errorf("save metadata: %w", err)
 	}
-	// Remove stale block data and index so the new MVK doesn't fail to decrypt them.
+	// Stale Block-Daten und Index entfernen, damit der neue MVK nicht versucht, sie zu entschlüsseln.
 	_ = os.Remove(filepath.Join(appDir, "vault_entries.enc"))
 	_ = os.Remove(filepath.Join(appDir, "vault_index.enc"))
 	return phrase, nil
 }
 
-// UnlockVault verifies the master password and returns the derived MVK bytes.
+// UnlockVault verifiziert das Master-Passwort und gibt den abgeleiteten MVK zurück.
 func UnlockVault(password, appDir string) ([]byte, error) {
 	p := cryptoProvider
 
@@ -129,7 +129,7 @@ func UnlockVault(password, appDir string) ([]byte, error) {
 	return mvk[:], nil
 }
 
-// CheckVaultStatus returns (initialized, isV5) without loading secrets.
+// CheckVaultStatus gibt (initialized, isV5) zurück, ohne Secrets zu laden.
 func CheckVaultStatus(appDir string) (bool, bool, error) {
 	meta, err := LoadMeta(appDir)
 	if err != nil {
@@ -138,7 +138,7 @@ func CheckVaultStatus(appDir string) (bool, bool, error) {
 	return meta.IsInitialized, meta.IsV5Format(), nil
 }
 
-// RetrieveRecoveryPhrase decrypts and returns the stored recovery phrase using the master password.
+// RetrieveRecoveryPhrase entschlüsselt die gespeicherte Recovery-Phrase mit dem Master-Passwort.
 func RetrieveRecoveryPhrase(password, appDir string) (string, error) {
 	p := cryptoProvider
 
@@ -153,7 +153,7 @@ func RetrieveRecoveryPhrase(password, appDir string) (string, error) {
 		return "", fmt.Errorf("recovery phrase not stored")
 	}
 
-	// Derive recovery key from password and salt (same as during init)
+	// Recovery-Key aus Password + Salt ableiten (wie bei Init).
 	opts := crypto.DefaultKDFOptions
 	opts.Salt = meta.RecoverySalt
 	recoveryHash, err := p.DeriveArgon2id([]byte(password), opts)
@@ -161,7 +161,7 @@ func RetrieveRecoveryPhrase(password, appDir string) (string, error) {
 		return "", fmt.Errorf("derive recovery hash: %w", err)
 	}
 
-	// Decrypt phrase
+	// Phrase entschlüsseln
 	recoveryKey := recoveryHash[:32]
 	if len(meta.RecoveryPhraseCiphertext) < 12 {
 		return "", fmt.Errorf("ciphertext too short")
@@ -176,7 +176,7 @@ func RetrieveRecoveryPhrase(password, appDir string) (string, error) {
 	return string(phrase), nil
 }
 
-// ResetVault uses the recovery phrase to reset the vault to uninitialized state.
+// ResetVault setzt das Vault mit der Recovery-Phrase auf den uninitialisierten Zustand zurück.
 func ResetVault(recoveryPhrase, appDir string) error {
 	p := cryptoProvider
 
@@ -309,31 +309,29 @@ func overwriteEntropyFile(path string) {
 	_ = f.Sync()
 }
 
-// WipeVault performs a complete destruction of the vault: deletes all files and metadata.
-// This is the panic/security wipe operation. After this, the vault is completely destroyed.
-// Uses Rust's secure wipe (7-pass) where available for sensitive files.
+// WipeVault zerstört das Vault komplett: löscht alle Dateien und Metadaten.
+// Das ist die Panic/Security-Wipe-Operation. Danach ist das Vault komplett weg.
+// Nutzt Rust's Secure Wipe (7-pass) wo verfügbar für sensitive Dateien.
 func WipeVault(appDir string) error {
 	meta, err := LoadMeta(appDir)
 	if err != nil {
-		// If we can't load metadata, try to wipe what we can
+		// Wenn wir keine Metadaten laden können, versuchen wir zu löschen, was geht.
 		meta = &VaultMeta{EntropyPath: filepath.Join(appDir, "entropy.bin")}
 	}
 
-	// Securely wipe entropy file (high entropy content)
+	// Entropy-Datei sicher überschreiben (7-pass via Rust, Fallback auf os.Remove).
 	if meta.EntropyPath != "" {
-		// Attempt Rust secure wipe first (7-pass)
-		// Fall back to normal deletion if not available
 		_ = os.Remove(meta.EntropyPath)
 	}
 
-	// Delete vault database files (regular deletion is acceptable)
+	// Vault-DB-Dateien löschen (einfaches Löschen reicht für diese).
 	_ = os.Remove(filepath.Join(appDir, "vault.gdb"))
 	_ = os.Remove(filepath.Join(appDir, "vault.gdb-log"))
 	_ = os.Remove(filepath.Join(appDir, "vault_entries.enc"))
 	_ = os.Remove(filepath.Join(appDir, "vault_index.enc"))
 	_ = os.Remove(filepath.Join(appDir, "vault.meta"))
 
-	// Delete blockstore chunks if present
+	// Blockstore-Chunks löschen, falls vorhanden.
 	blockStoreDir := filepath.Join(appDir, "blocks")
 	_ = os.RemoveAll(blockStoreDir)
 

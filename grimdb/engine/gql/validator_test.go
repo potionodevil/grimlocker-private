@@ -198,7 +198,7 @@ func TestValidateNilSession(t *testing.T) {
 func TestValidateMismatchedOpcode(t *testing.T) {
 	query := &GQLQuery{Namespace: "default", Operation: OpCreateEntry}
 	frame := NewQueryFrame(query)
-	frame.Opcode = OpcodeQuery // set to query opcode but operation is mutate
+	frame.Opcode = OpcodeQuery
 	_, err := ValidateFrame(frame, unlockedSession())
 	if err == nil {
 		t.Fatal("expected error for opcode/operation mismatch")
@@ -212,7 +212,7 @@ func TestValidateMutateWithoutCredentials(t *testing.T) {
 		Title:       "test",
 		Category:    "PASSWORD",
 		Fields:      map[string]string{"user": "alice"},
-		Credentials: nil, // missing!
+		Credentials: nil,
 	}
 	frame := NewQueryFrame(query)
 	_, err := ValidateFrame(frame, unlockedSession())
@@ -230,7 +230,7 @@ func TestValidateRBACNamespaceMismatch(t *testing.T) {
 	}
 	frame := NewQueryFrame(query)
 	session := unlockedSession()
-	session.userID = "default" // session user is "default", query says "other-namespace"
+	session.userID = "default"
 	_, err := ValidateFrame(frame, session)
 	if err == nil {
 		t.Fatal("expected error for namespace mismatch")
@@ -297,11 +297,10 @@ func TestFuzzDecodeFrame(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping fuzz test in short mode")
 	}
-	// Test that random bytes never cause a panic in DecodeFrame
+	// Testet, dass zufällige Bytes nie einen Panic in DecodeFrame verursachen.
 	for i := 0; i < 10000; i++ {
 		size := 1 + i%4096
 		data := make([]byte, size)
-		// Use a simple deterministic source for reproducibility
 		for j := range data {
 			data[j] = byte(j * 2654435761 % 256)
 		}

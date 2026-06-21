@@ -1,7 +1,7 @@
 package gql
 
-// ErrorCodeNames maps GQL error codes to human-readable names.
-// Returned by ErrorCodeName for logging and SDK error messages.
+// ErrorCodeNames mapped GQL-Error-Codes zu lesbaren Namen.
+// Wird von ErrorCodeName für Logging und SDK-Error-Messages verwendet.
 var ErrorCodeNames = map[int32]string{
 	-1:   "BUS_TIMEOUT",
 	-2:   "INVALID_STORAGE_RESPONSE",
@@ -20,8 +20,8 @@ var ErrorCodeNames = map[int32]string{
 	-105: "DISPATCH_ERROR",
 }
 
-// ErrorCodeName returns the symbolic name for a GQL error code.
-// Returns "UNKNOWN" for unrecognized codes.
+// ErrorCodeName gibt den symbolischen Namen für einen GQL-Error-Code zurück.
+// Gibt "UNKNOWN" für unbekannte Codes zurück.
 func ErrorCodeName(code int32) string {
 	if name, ok := ErrorCodeNames[code]; ok {
 		return name

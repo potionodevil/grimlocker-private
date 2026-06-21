@@ -1,5 +1,17 @@
 import Foundation
 
+public struct EntryInput {
+    public let title: String
+    public let category: String
+    public let fields: [String: String]
+
+    public init(title: String, category: String, fields: [String: String] = [:]) {
+        self.title = title
+        self.category = category
+        self.fields = fields
+    }
+}
+
 /// Actor-based Grimlocker client — thread-safe by Swift's actor model.
 ///
 /// ```swift
@@ -13,6 +25,12 @@ public actor GrimlockerClient {
     private let session: URLSession
     private let decoder = JSONDecoder()
     private let encoder = JSONEncoder()
+    private var failureCount: Int = 0
+    private var circuitOpenUntil: Date?
+    private let maxRetries = 3
+    private let baseDelayMs = 100
+    private let circuitFailureThreshold = 5
+    private let circuitOpenSeconds: TimeInterval = 30
 
     public init(baseURL: URL, token: String, timeout: TimeInterval = 30) {
         self.baseURL = baseURL
@@ -68,6 +86,21 @@ public actor GrimlockerClient {
         var p: [String: String] = ["query": query]
         if let c = category { p["category"] = c }
         return try await call("entry.search", payload: p)
+    }
+
+    public func createEntriesBatch(_ entries: [EntryInput]) async throws -> [String] {
+        var ids: [String] = []
+        for entry in entries {
+            let created = try await createEntry(title: entry.title, category: entry.category, fields: entry.fields)
+            ids.append(created.id)
+        }
+        return ids
+    }
+
+    public func deleteEntriesBatch(_ ids: [String]) async throws {
+        for id in ids {
+            try await deleteEntry(id: id)
+        }
     }
 
     // ── Typed helpers ─────────────────────────────────────────────────────────
@@ -180,6 +213,15 @@ public actor GrimlockerClient {
 
     // ── Health ────────────────────────────────────────────────────────────────
 
+    public func generateSSHKey(comment: String = "", saveToVault: Bool = true) async throws -> SSHKeyResult {
+        try await call("tool.ssh_keygen", payload: ["comment": comment, "save_to_vault": saveToVault])
+    }
+
+    public func getRecoveryPhrase(password: String) async throws -> String {
+        let result: RecoveryPhraseResponse = try await call("vault.recovery_phrase", payload: ["password": password])
+        return result.phrase
+    }
+
     public func healthCheck() async throws -> VaultStatus { try await vaultStatus() }
 
     // ── Internal ─────────────────────────────────────────────────────────────
@@ -188,20 +230,79 @@ public actor GrimlockerClient {
     private func call<Payload: Encodable, Response: Decodable>(
         _ action: String, payload: Payload
     ) async throws -> Response {
+        let now = Date()
+
+        if let openUntil = circuitOpenUntil {
+            if now < openUntil {
+                throw GrimlockerError.circuitBreakerOpen("Circuit breaker is open until \(openUntil)")
+            }
+            circuitOpenUntil = nil
+        }
+
         var req = URLRequest(url: baseURL.appendingPathComponent("api/v1"))
         req.httpMethod = "POST"
         req.httpBody = try encoder.encode(["action": AnyEncodable(action), "payload": AnyEncodable(payload)])
 
-        let (data, resp) = try await session.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw GrimlockerError.network("non-HTTP response") }
+        for attempt in 0...maxRetries {
+            do {
+                let (data, resp) = try await session.data(for: req)
+                guard let http = resp as? HTTPURLResponse else {
+                    throw GrimlockerError.network("non-HTTP response")
+                }
 
-        if http.statusCode < 200 || http.statusCode >= 300 {
-            if let err = try? decoder.decode(APIError.self, from: data) {
-                throw GrimlockerError.daemon(code: err.errorCode ?? 0, message: err.error ?? "HTTP \(http.statusCode)")
+                if http.statusCode < 200 || http.statusCode >= 300 {
+                    if let err = try? decoder.decode(APIError.self, from: data) {
+                        throw GrimlockerError.daemon(code: err.errorCode ?? 0, message: err.error ?? "HTTP \(http.statusCode)", statusCode: http.statusCode)
+                    }
+                    throw GrimlockerError.network("HTTP \(http.statusCode)")
+                }
+
+                failureCount = 0
+                return try decoder.decode(Response.self, from: data)
+            } catch let error as GrimlockerError {
+                if case .circuitBreakerOpen = error {
+                    throw error
+                }
+
+                let isRetryable: Bool
+                switch error {
+                case .network(let msg):
+                    if msg.hasPrefix("HTTP "), let code = Int(msg.dropFirst(5)), code >= 500 {
+                        isRetryable = true
+                    } else {
+                        isRetryable = true
+                    }
+                case .daemon(_, _, let statusCode):
+                    isRetryable = statusCode >= 500
+                case .decodingError, .circuitBreakerOpen:
+                    isRetryable = false
+                }
+
+                if !isRetryable || attempt == maxRetries {
+                    throw error
+                }
+
+                failureCount += 1
+                if failureCount >= circuitFailureThreshold {
+                    circuitOpenUntil = Date().addingTimeInterval(circuitOpenSeconds)
+                }
+
+                let delayMs = min(baseDelayMs * (1 << attempt), 2000)
+                try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
+            } catch {
+                if attempt == maxRetries {
+                    throw GrimlockerError.network(error.localizedDescription)
+                }
+                failureCount += 1
+                if failureCount >= circuitFailureThreshold {
+                    circuitOpenUntil = Date().addingTimeInterval(circuitOpenSeconds)
+                }
+                let delayMs = min(baseDelayMs * (1 << attempt), 2000)
+                try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
             }
-            throw GrimlockerError.network("HTTP \(http.statusCode)")
         }
-        return try decoder.decode(Response.self, from: data)
+
+        throw GrimlockerError.network("Request failed after retries")
     }
 
     @discardableResult
@@ -215,20 +316,47 @@ public actor GrimlockerClient {
         enum CodingKeys: String, CodingKey { case error; case errorCode = "error_code" }
     }
     private struct EmptyResponse: Decodable {}
+
+    public struct SSHKeyResult: Decodable {
+        public let publicKey: String
+        public let fingerprint: String
+        public let entryId: String?
+        enum CodingKeys: String, CodingKey { case publicKey = "public_key"; case fingerprint; case entryId = "entry_id" }
+    }
+
+    private struct RecoveryPhraseResponse: Decodable {
+        let phrase: String
+    }
 }
 
 // MARK: - Error
 
 public enum GrimlockerError: Error, LocalizedError {
     case network(String)
-    case daemon(code: Int, message: String)
+    case daemon(code: Int, message: String, statusCode: Int)
     case decodingError(String)
+    case circuitBreakerOpen(String)
+
+    public var statusCode: Int {
+        switch self {
+        case .network(let msg):
+            let parts = msg.split(separator: " ")
+            if parts.count == 2, parts[0] == "HTTP", let code = Int(parts[1]) {
+                return code
+            }
+            return 0
+        case .daemon(_, _, let code): return code
+        case .decodingError: return 0
+        case .circuitBreakerOpen: return 0
+        }
+    }
 
     public var errorDescription: String? {
         switch self {
         case .network(let m):            return "Network error: \(m)"
-        case .daemon(let c, let m):      return "Daemon error (\(c)): \(m)"
+        case .daemon(let c, let m, _):  return "Daemon error (\(c)): \(m)"
         case .decodingError(let m):      return "Decoding error: \(m)"
+        case .circuitBreakerOpen(let m): return "Circuit breaker open: \(m)"
         }
     }
 }

@@ -1,3 +1,26 @@
+//! Kryptographische Kernoperationen — AEAD-Verschlüsselung, Key Derivation,
+//! Memory-Locking und Guard Pages.
+//!
+//! # Warum?
+//! Alle krypto-sensitiven Operationen laufen durch dieses Modul.
+//! Es kapselt ChaCha20-Poly1305 (AEAD), BLAKE3 → HKDF-SHA256 für
+//! Password-KDF, und plattformspezifisches Memory-Locking via `mlock`.
+//!
+//! # Threat Model
+//! - Ciphertext-Integrität: ChaCha20-Poly1305 liefert authenticated encryption
+//!   → Manipulation wird erkannt → Vault bleibt zu
+//! - Key im RAM: `LockedBuffer` nutzt `mlock`, um Keys aus Swap fernzuhalten
+//! - Guard Pages: `create_guard_pages` legt nicht-lesbare/nicht-schreibbare
+//!   Memory-Pages vor und nach sensiblen Daten an (Buffer-Overflow-Schutz)
+//!
+//! # Design Trade-offs
+//! - ChaCha20-Poly1305 statt AES-GCM: schneller auf CPUs ohne AES-NI,
+//!   kein Timing-Seitenkanal (software-only)
+//! - `LockedBuffer` mit `Zeroize`-Implementierung: Speicher wird beim
+//!   Drop garantiert überschrieben, egal wie der Call-Stack aussieht
+//! - `mlock` nur auf Unix (Linux, macOS): Windows hat `VirtualLock`,
+//!   wird hier nicht verwendet (könnte man ergänzen)
+
 use chacha20poly1305::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     ChaCha20Poly1305, Key, Nonce,
@@ -138,8 +161,9 @@ pub fn encrypt(plaintext: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, Error> {
     Ok(result)
 }
 
-/// encrypt_with_nonce encrypts plaintext with the given key and explicit nonce.
-/// This is used by the CGO raw encrypt function where Go provides the nonce.
+/// Verschlüsselt mit einem explizit übergebenen Nonce (statt einem frisch generierten).
+/// Wird von der CGO-Raw-Encrypt-Funktion verwendet, wenn Go den Nonce vorgibt
+/// (z.B. für reproduzierbare Chiffrate oder kompatibel mit existierenden Formaten).
 pub fn encrypt_with_nonce(
     plaintext: &[u8],
     key: &[u8; 32],

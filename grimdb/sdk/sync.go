@@ -5,7 +5,7 @@ package sdk
 import (
 	"context"
 
-	"github.com/grimlocker/grimdb/gql"
+	"github.com/grimlocker/grimdb/engine/gql"
 )
 
 // SyncPeer represents a discovered synchronization peer.

@@ -305,7 +305,7 @@ func main() {
 	watchdog.Start(ctx)
 
 	// ── 9d. Startup diagnostics — print all wired event handlers ─────────────
-	log.Printf("[Omega] Handler-Registry: [AUTH.UNLOCK=Registered, AUTH.KEY_READY=Registered, AUTH.LOGOUT=Registered, STORAGE.WRITE=Registered, STORAGE.READ=Registered, STORAGE.LIST=Registered, ENTRY.CREATE=Registered, ENTRY.READ=Registered, ENTRY.UPDATE=Registered, ENTRY.DELETE=Registered, ENTRY.QUERY=Registered, TOOL.SSH_GEN=Registered]")
+	log.Printf("[Omega] Handler-Registry: [AUTH.UNLOCK=Registered, AUTH.KEY_READY=Registered, AUTH.LOGOUT=Registered, STORAGE.WRITE=Registered, STORAGE.READ=Registered, STORAGE.LIST=Registered, ENTRY.CREATE=Registered, ENTRY.READ=Registered, ENTRY.UPDATE=Registered, ENTRY.DELETE=Registered, ENTRY.QUERY=Registered, TOOL.SSH_GEN=Registered, BACKUP.EXPORT=Registered, BACKUP.PEEK=Registered, BACKUP.AUTHORIZE=Registered, BACKUP.CHECKSUM=Registered]")
 	log.Printf("[Omega] Session-Clearer: DISABLED (session persists full daemon lifetime)")
 	log.Printf("[Omega] STORAGE-Gate: CLOSED (opens after AUTH.KEY_READY)")
 

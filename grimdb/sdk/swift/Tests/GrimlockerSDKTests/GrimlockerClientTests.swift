@@ -116,6 +116,45 @@ final class GrimlockerClientTests: XCTestCase {
         try await client.deleteEntry(id: "e1")
     }
 
+    func testCreateEntriesBatch() async throws {
+        var index = 0
+        MockURLProtocol.requestHandler = { _ in
+            index += 1
+            let id = "new\(index)"
+            let response = HTTPURLResponse(
+                url: Self.baseURL.appendingPathComponent("api/v1"),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let body = #"{"id":"\#(id)","title":"Entry","category":"PASSWORD"}"#.data(using: .utf8)!
+            return (response, body)
+        }
+        let ids = try await client.createEntriesBatch([
+            EntryInput(title: "A", category: "PASSWORD", fields: [:]),
+            EntryInput(title: "B", category: "PASSWORD", fields: [:])
+        ])
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertEqual(ids[0], "new1")
+        XCTAssertEqual(ids[1], "new2")
+    }
+
+    func testDeleteEntriesBatch() async throws {
+        var callCount = 0
+        MockURLProtocol.requestHandler = { _ in
+            callCount += 1
+            let response = HTTPURLResponse(
+                url: Self.baseURL.appendingPathComponent("api/v1"),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, #"{"success":true}"#.data(using: .utf8)!)
+        }
+        try await client.deleteEntriesBatch(["e1", "e2"])
+        XCTAssertEqual(callCount, 2)
+    }
+
     func testSearchEntries() async throws {
         stubJSON(#"{"entries":[{"id":"e1","title":"GitHub","category":"PASSWORD"}],"total_count":1}"#)
         let results = try await client.searchEntries(query: "git")
@@ -277,6 +316,35 @@ final class GrimlockerClientTests: XCTestCase {
             XCTFail("expected error")
         } catch let error as GrimlockerError {
             XCTAssertEqual(error.statusCode, 500)
+        }
+    }
+
+    func testCircuitBreakerOpensAfterFailures() async throws {
+        stubJSON(#"{"error":"internal"}"#, status: 500)
+
+        do {
+            let _ = try await client.listEntries()
+            XCTFail("expected error")
+        } catch let error as GrimlockerError {
+            XCTAssertEqual(error.statusCode, 500)
+        }
+
+        do {
+            let _ = try await client.listEntries()
+            XCTFail("expected error")
+        } catch let error as GrimlockerError {
+            XCTAssertEqual(error.statusCode, 500)
+        }
+
+        do {
+            let _ = try await client.listEntries()
+            XCTFail("expected circuit breaker open")
+        } catch let error as GrimlockerError {
+            if case .circuitBreakerOpen = error {
+                // expected
+            } else {
+                XCTFail("expected circuitBreakerOpen, got \(error)")
+            }
         }
     }
 }

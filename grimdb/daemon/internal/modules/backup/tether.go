@@ -9,14 +9,14 @@ import (
 	"github.com/grimlocker/grimdb/engine/crypto"
 )
 
-// deriveVaultID derives a device-specific ID from the MVK and the vault's ArgonSalt.
-// The VaultID never leaves memory — only its commitment is stored in the blob header.
+// deriveVaultID leitet eine gerätespezifische ID aus dem MVK und dem ArgonSalt der Vault ab.
+// Die VaultID verlässt niemals den Arbeitsspeicher — nur ihr Commitment wird im Header gespeichert.
 func deriveVaultID(cryptoP crypto.Provider, mvk, argonSalt []byte) ([]byte, error) {
 	return cryptoP.DeriveHKDF(mvk, argonSalt, []byte("GRIMBAK-VAULT-ID-v1"), 32)
 }
 
-// computeCommitment computes the hardware commitment stored in the blob header.
-// HMAC-SHA256(vaultID, Magic||exportTimestamp) — unforgeable without the VaultID.
+// computeCommitment berechnet den Hardware-Commitment-Wert, der im Blob-Header gespeichert wird.
+// HMAC-SHA256(vaultID, Magic || exportTimestamp) — ohne VaultID nicht reproduzierbar.
 func computeCommitment(vaultID []byte, exportTimestamp int64) [32]byte {
 	var tsBuf [8]byte
 	binary.BigEndian.PutUint64(tsBuf[:], uint64(exportTimestamp))
@@ -31,8 +31,22 @@ func computeCommitment(vaultID []byte, exportTimestamp int64) [32]byte {
 	return result
 }
 
-// tethersMatch returns true if the commitment in the header matches the current vault.
-// Uses constant-time comparison to prevent timing attacks.
+// verifyTether prüft ob das Hardware-Commitment im Header zur aktuellen Vault passt.
+// Nutzt constant-time Vergleich um Timing-Angriffe zu verhindern.
+// Gibt nil zurück wenn der Commitment stimmt, sonst einen Fehler.
+func verifyTether(cryptoP crypto.Provider, mvk, argonSalt []byte, header engbackup.BlobHeader) error {
+	vaultID, err := deriveVaultID(cryptoP, mvk, argonSalt)
+	if err != nil {
+		return err
+	}
+	expected := computeCommitment(vaultID, header.ExportTimestamp)
+	if !hmac.Equal(expected[:], header.HardwareID[:]) {
+		return nil // Fehler wird vom Aufrufer als ErrCodeBackupTetherMismatch behandelt
+	}
+	return nil
+}
+
+// tethersMatch gibt true zurück wenn die Commitments übereinstimmen (constant-time).
 func tethersMatch(cryptoP crypto.Provider, mvk, argonSalt []byte, header engbackup.BlobHeader) (bool, error) {
 	vaultID, err := deriveVaultID(cryptoP, mvk, argonSalt)
 	if err != nil {
