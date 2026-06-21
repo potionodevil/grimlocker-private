@@ -1,22 +1,22 @@
-// Package kernel (event.go) defines the Event type and all EventType constants
-// used across the Grimlocker daemon. Every inter-module message is an Event.
+// Package kernel (event.go) definiert den Event-Type und alle EventType-Konstanten
+// für den Grimlocker-Daemon. Jede Inter-Module-Nachricht ist ein Event.
 //
-// EventType naming convention: CHANNEL.ACTION (e.g. "CRYPTO.ENCRYPT").
-// The channel prefix (everything before ".") is used by the bus to route
-// events to the correct Module.Handle implementation.
+// EventType-Naming-Convention: CHANNEL.ACTION (z.B. "CRYPTO.ENCRYPT").
+// Das Channel-Präfix (alles vor ".") wird vom Bus genutzt, um Events an die
+// richtige Module.Handle-Implementierung zu routen.
 //
-// Adding a new event:
-//  1. Add a constant here (e.g. EvFooBar EventType = "FOO.BAR").
-//  2. Register a handler in the owning module's buildHandlers() / buildRegistry().
-//  3. Document the JSON payload schema in a comment next to the constant.
+// Neues Event hinzufügen:
+//  1. Konstante hier definieren (z.B. EvFooBar EventType = "FOO.BAR").
+//  2. Handler im besitzenden Module via buildHandlers() / buildRegistry() registrieren.
+//  3. JSON-Payload-Schema in einem Kommentar neben der Konstante dokumentieren.
 package kernel
 
-// EventType is the channel address of an event. The prefix before "." is the
-// owning module's channel (e.g. "CRYPTO" for all CRYPTO.* events).
+// EventType ist die Channel-Adresse eines Events. Der Prefix vor "." ist der
+// Channel des besitzenden Modules (z.B. "CRYPTO" für alle CRYPTO.*-Events).
 type EventType string
 
 const (
-	// AUTH channel — owned by security.Module
+	// AUTH-Channel — owned by security.Module
 	EvAuthSetup     EventType = "AUTH.SETUP"
 	EvAuthUnlock    EventType = "AUTH.UNLOCK"
 	EvAuthResult    EventType = "AUTH.RESULT"
@@ -28,14 +28,14 @@ const (
 	EvAuthReady     EventType = "AUTH.READY"
 	EvAuthGetHandle EventType = "AUTH.GET_HANDLE"
 
-	// CRYPTO channel — owned by crypto.Module
+	// CRYPTO-Channel — owned by crypto.Module
 	EvCryptoEncrypt EventType = "CRYPTO.ENCRYPT"
 	EvCryptoDecrypt EventType = "CRYPTO.DECRYPT"
 	EvCryptoDerive  EventType = "CRYPTO.DERIVE_KEY"
 	EvCryptoShred   EventType = "CRYPTO.SHRED"
 	EvCryptoResult  EventType = "CRYPTO.RESULT"
 
-	// STORAGE channel — owned by storage adapter
+	// STORAGE-Channel — owned by storage adapter
 	EvStorageWrite          EventType = "STORAGE.WRITE"
 	EvStorageRead           EventType = "STORAGE.READ"
 	EvStorageDelete         EventType = "STORAGE.DELETE"
@@ -45,103 +45,103 @@ const (
 	EvStorageVFSMount       EventType = "STORAGE.VFS_MOUNT"
 	EvStorageReady          EventType = "STORAGE.READY"
 
-	// ENTRY channel — owned by entry handler module
+	// ENTRY-Channel — owned by entry handler module
 	EvEntryCreate EventType = "ENTRY.CREATE"
 	EvEntryRead   EventType = "ENTRY.READ"
 	EvEntryUpdate EventType = "ENTRY.UPDATE"
 	EvEntryDelete EventType = "ENTRY.DELETE"
 	EvEntryIngest EventType = "ENTRY.INGEST"
 	EvEntryResult EventType = "ENTRY.RESULT"
-	EvEntryQuery  EventType = "ENTRY.QUERY" // client → daemon: {category: "PASSWORD"|"SSH_KEY"|…}
+	EvEntryQuery  EventType = "ENTRY.QUERY"
 
-	// TOOL channel — owned by tools module
-	EvToolSSHGen EventType = "TOOL.SSH_GEN" // client → daemon: {comment: string}
-	EvToolResult EventType = "TOOL.RESULT"  // daemon → client: {public_key, entry_id}
+	// TOOL-Channel — owned by tools module
+	EvToolSSHGen EventType = "TOOL.SSH_GEN"
+	EvToolResult EventType = "TOOL.RESULT"
 
-	// SECURITY channel — owned by security.Module
+	// SECURITY-Channel — owned by security.Module
 	EvSecMemLock  EventType = "SECURITY.MEM_LOCK"
 	EvSecZeroize  EventType = "SECURITY.ZEROIZE"
 	EvSecAudit    EventType = "SECURITY.AUDIT"
 	EvSecPanic    EventType = "SECURITY.PANIC"
 	EvSecLockdown EventType = "SECURITY.LOCKDOWN"
 
-	// SYNC channel — available to SDK plugins + Local Network Sync
+	// SYNC-Channel — available to SDK plugins + Local Network Sync
 	EvSyncBegin    EventType = "SYNC.BEGIN"
 	EvSyncComplete EventType = "SYNC.COMPLETE"
-	EvSyncDiscover EventType = "SYNC.DISCOVER"     // mDNS peer discovered
-	EvSyncPair     EventType = "SYNC.PAIR"         // PIN pairing request/response
-	EvSyncPull     EventType = "SYNC.PULL"         // pull entries from peer
-	EvSyncPushVer  EventType = "SYNC.PUSH_VERSION" // push version vector to peer
-	EvSyncConflict EventType = "SYNC.CONFLICT"     // version conflict detected
+	EvSyncDiscover EventType = "SYNC.DISCOVER"
+	EvSyncPair     EventType = "SYNC.PAIR"
+	EvSyncPull     EventType = "SYNC.PULL"
+	EvSyncPushVer  EventType = "SYNC.PUSH_VERSION"
+	EvSyncConflict EventType = "SYNC.CONFLICT"
 
-	// BIOMETRIC channel — used by hardware sensor plugins
+	// BIOMETRIC-Channel — used by hardware sensor plugins
 	EvBiometricAuthenticate EventType = "BIOMETRIC.AUTHENTICATE"
 	EvBiometricResult       EventType = "BIOMETRIC.RESULT"
 
-	// INTEGRITY channel — used by the binary integrity monitor
+	// INTEGRITY-Channel — used by the binary integrity monitor
 	EvIntegrityCheck     EventType = "INTEGRITY.CHECK"
 	EvIntegrityViolation EventType = "INTEGRITY.VIOLATION"
 
-	// WORKSPACE channel — multi-tenant vault management
+	// WORKSPACE-Channel — multi-tenant vault management
 	EvWorkspaceCreate EventType = "WORKSPACE.CREATE"
 	EvWorkspaceSwitch EventType = "WORKSPACE.SWITCH"
 	EvWorkspaceDelete EventType = "WORKSPACE.DELETE"
 	EvWorkspaceResult EventType = "WORKSPACE.RESULT"
 
-	// KERNEL channel — handshake & status reporting
+	// KERNEL-Channel — handshake & status reporting
 	EvKernelStatus      EventType = "KERNEL.STATUS"
 	EvKernelStateReport EventType = "KERNEL.STATE_REPORT"
-	EvKernelStateMirror EventType = "KERNEL.STATE_MIRROR" // full vault state push on reconnect
+	EvKernelStateMirror EventType = "KERNEL.STATE_MIRROR"
 
-	// RECONNECT channel — UI re-attach protocol (Phase 3)
-	EvReconnectResume EventType = "RECONNECT.RESUME" // client requests session resume
-	EvReconnectSync   EventType = "RECONNECT.SYNC"   // server pushes full state to reconnected client
+	// RECONNECT-Channel — UI re-attach protocol (Phase 3)
+	EvReconnectResume EventType = "RECONNECT.RESUME"
+	EvReconnectSync   EventType = "RECONNECT.SYNC"
 
-	// GQL channel — GrimQueryLanguage binary protocol (Phase 4)
-	EvGQLQuery  EventType = "GQL.QUERY"  // client → server: binary-encoded GQLQuery frame
-	EvGQLResult EventType = "GQL.RESULT" // server → client: GQLResult (success or error)
+	// GQL-Channel — binary protocol (Phase 4)
+	EvGQLQuery  EventType = "GQL.QUERY"
+	EvGQLResult EventType = "GQL.RESULT"
 
-	// SYSTEM channel — errors, health, telemetry
+	// SYSTEM-Channel — errors, health, telemetry
 	EvSystemError       EventType = "SYSTEM.ERROR"
 	EvSystemHealthCheck EventType = "SYSTEM.HEALTH_CHECK"
 	EvSystemLog         EventType = "SYSTEM.LOG"
 
-	// BACKUP channel — air-gap export and two-phase import
+	// BACKUP-Channel — air-gap export and two-phase import
 	// Payload schemas are defined in engine/backup/types.go.
-	EvBackupExport           EventType = "BACKUP.EXPORT"
-	EvBackupPeek             EventType = "BACKUP.PEEK"
-	EvBackupAuthorize        EventType = "BACKUP.AUTHORIZE"
-	EvBackupChecksum         EventType = "BACKUP.CHECKSUM"
-	EvBackupResult           EventType = "BACKUP.RESULT"
+	EvBackupExport          EventType = "BACKUP.EXPORT"
+	EvBackupPeek            EventType = "BACKUP.PEEK"
+	EvBackupAuthorize       EventType = "BACKUP.AUTHORIZE"
+	EvBackupChecksum        EventType = "BACKUP.CHECKSUM"
+	EvBackupResult          EventType = "BACKUP.RESULT"
 	EvBackupChecksumComplete EventType = "BACKUP.CHECKSUM_COMPLETE"
 )
 
-// Event is the unit of communication between all modules. Payloads are JSON.
-// No module may call another module's functions directly; all inter-module
-// communication MUST go through an Event dispatched on the bus.
+// Event ist die Kommunikationseinheit zwischen allen Modulen. Payloads sind JSON.
+// Kein Modul darf die Funktionen eines anderen Moduls direkt aufrufen — die
+// Kommunikation MUSS ausschließlich über Events auf dem Bus laufen.
 type Event struct {
-	// ID is a UUID v4 used to correlate requests and responses.
+	// ID ist eine UUID v4 zum Korrelieren von Requests und Responses.
 	ID string `json:"id"`
 
 	Type EventType `json:"type"`
 
-	// Payload is JSON-encoded data whose schema is defined per EventType.
+	// Payload ist JSON-encoded; das Schema ist pro EventType definiert.
 	Payload []byte `json:"payload,omitempty"`
 
-	// ReplyTo contains the originating Event.ID when this event is a response.
+	// ReplyTo enthält die Event.ID des Ursprungs, wenn dieses Event eine Response ist.
 	ReplyTo string `json:"reply_to,omitempty"`
 
-	// Origin is the module ID that dispatched this event.
+	// Origin ist die Modul-ID, die dieses Event dispatched hat.
 	Origin string `json:"origin,omitempty"`
 
-	// Timestamp is Unix nanoseconds.
+	// Timestamp in Unix-Nanoseconds.
 	Timestamp int64 `json:"timestamp"`
 
-	// TTL is decremented on each hop; the bus drops events at 0 to break cycles.
+	// TTL wird pro Hop dekrementiert; der Bus droppt Events bei 0 (Cycle-Schutz).
 	TTL int `json:"ttl"`
 }
 
-// Channel extracts the routing prefix from an EventType (e.g. "CRYPTO" from "CRYPTO.ENCRYPT").
+// Channel extrahiert das Routing-Präfix aus einem EventType (z.B. "CRYPTO" aus "CRYPTO.ENCRYPT").
 func (et EventType) Channel() string {
 	s := string(et)
 	for i, c := range s {

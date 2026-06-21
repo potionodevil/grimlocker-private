@@ -577,6 +577,62 @@ class TestSyncClient:
         client.delete_folder("f1")
         client.close()
 
+    @patch("grimlocker.client._ws.connect")
+    def test_create_entries_batch(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_conn.recv.side_effect = [
+            _make_result_frame({"success": True}),
+            _make_ok_result(entries_data=[_sample_entry_dict("b1", "Batch 1")]),
+            _make_ok_result(entries_data=[_sample_entry_dict("b2", "Batch 2")]),
+        ]
+        mock_connect.return_value = mock_conn
+
+        client = Client.connect("127.0.0.1", 41753, "token")
+        ids = client.create_entries_batch([
+            {"title": "Batch 1", "category": "PASSWORD", "fields": {"username": "a"}},
+            {"title": "Batch 2", "category": "PASSWORD", "fields": {"username": "b"}},
+        ])
+        assert len(ids) == 2
+        assert ids[0] == "b1"
+        client.close()
+
+    @patch("grimlocker.client._ws.connect")
+    def test_delete_entries_batch(self, mock_connect):
+        mock_conn = MagicMock()
+        mock_conn.recv.side_effect = [
+            _make_result_frame({"success": True}),
+            _make_ok_result(),
+            _make_ok_result(),
+        ]
+        mock_connect.return_value = mock_conn
+
+        client = Client.connect("127.0.0.1", 41753, "token")
+        client.delete_entries_batch(["e1", "e2"])
+        client.close()
+
+    @patch("grimlocker.client._ws.connect")
+    def test_circuit_breaker_opens_after_failures(self, mock_connect):
+        mock_conn = MagicMock()
+        # First 5 calls succeed handshake, then fail on operation
+        mock_conn.recv.side_effect = [
+            _make_result_frame({"success": True}),
+            _make_result_frame({"success": False, "error_code": -100, "error_msg": "internal"}, opcode=_frame.OPCODE_ERROR),
+        ] * 6
+        mock_connect.return_value = mock_conn
+
+        client = Client.connect("127.0.0.1", 41753, "token")
+        # Trigger 5 failures
+        for _ in range(5):
+            try:
+                client.list_entries()
+            except GrimlockerError:
+                pass
+
+        # Circuit should now be open
+        with pytest.raises(CircuitBreakerOpenError):
+            client.list_entries()
+        client.close()
+
 
 # ── Model Serialization Tests ─────────────────────────────────────────────────
 

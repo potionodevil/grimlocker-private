@@ -50,6 +50,10 @@ public class GrimlockerClient implements AutoCloseable {
 
     private final InternalWSClient ws;
 
+    private int consecutiveFailures = 0;
+    private long circuitOpenUntil = 0L;
+    private final Object circuitLock = new Object();
+
     private GrimlockerClient(InternalWSClient ws) {
         this.ws = ws;
     }
@@ -106,6 +110,30 @@ public class GrimlockerClient implements AutoCloseable {
     /** Deletes an entry by ID. */
     public void deleteEntry(String namespace, String entryId) {
         executeQuery("delete_entry", namespace, entryId, "", "", Collections.emptyMap(), 0, 0);
+    }
+
+    /** Creates multiple entries in a batch and returns their IDs. */
+    public List<String> createEntriesBatch(String namespace, List<BatchEntryInput> inputs) {
+        List<String> ids = new ArrayList<>(inputs.size());
+        for (BatchEntryInput input : inputs) {
+            List<Entry> results = createEntry()
+                .namespace(namespace)
+                .title(input.title)
+                .category(input.category)
+                .fields(input.fields)
+                .execute();
+            if (!results.isEmpty()) {
+                ids.add(results.get(0).id);
+            }
+        }
+        return ids;
+    }
+
+    /** Deletes multiple entries in a batch. */
+    public void deleteEntriesBatch(String namespace, List<String> entryIds) {
+        for (String entryId : entryIds) {
+            deleteEntry(namespace, entryId);
+        }
     }
 
     // --- Typed helpers ---
@@ -434,6 +462,60 @@ public class GrimlockerClient implements AutoCloseable {
 
     // --- Internal execution ---
 
+    private byte[] sendFrameWithRetry(byte[] frame) {
+        synchronized (circuitLock) {
+            if (System.currentTimeMillis() < circuitOpenUntil) {
+                throw new CircuitBreakerOpenException("circuit breaker is open");
+            }
+        }
+
+        for (int attempt = 0; attempt < 4; attempt++) {
+            byte[] response = null;
+            boolean isNetworkError = false;
+
+            try {
+                ws.send(frame);
+                response = ws.pendingResponse.poll(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+                if (response == null) {
+                    isNetworkError = true;
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new GrimlockerException("interrupted while waiting for response", e);
+            } catch (Exception e) {
+                isNetworkError = true;
+            }
+
+            if (!isNetworkError && response != null) {
+                synchronized (circuitLock) {
+                    consecutiveFailures = 0;
+                }
+                return response;
+            }
+
+            if (attempt == 3) {
+                synchronized (circuitLock) {
+                    consecutiveFailures++;
+                    if (consecutiveFailures >= 5) {
+                        circuitOpenUntil = System.currentTimeMillis() + 30_000L;
+                    }
+                }
+                throw new GrimlockerException("GQL request failed after " + attempt + " retries");
+            }
+
+            long delayMs = 100L * (1L << attempt);
+            if (delayMs > 2000) delayMs = 2000;
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new GrimlockerException("interrupted during retry delay", e);
+            }
+        }
+
+        throw new GrimlockerException("retry exhaustion");
+    }
+
     List<Entry> executeQuery(
             String operation,
             String namespace,
@@ -447,11 +529,7 @@ public class GrimlockerClient implements AutoCloseable {
         byte[] frame = GQLFrame.encodeQuery(operation, namespace, entryId, category, title, fields, limit, offset);
 
         try {
-            ws.send(frame);
-            byte[] response = ws.pendingResponse.poll(TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            if (response == null) {
-                throw new GrimlockerException("GQL request timed out after " + TIMEOUT_MS + "ms");
-            }
+            byte[] response = sendFrameWithRetry(frame);
 
             byte opcode = GQLFrame.readOpcode(response);
             byte[] jsonPayload = GQLFrame.readPayload(response);
@@ -486,11 +564,7 @@ public class GrimlockerClient implements AutoCloseable {
         byte[] frame = GQLFrame.encodeJsonPayload(operation, namespace, jsonPayload);
 
         try {
-            ws.send(frame);
-            byte[] response = ws.pendingResponse.poll(TIMEOUT_MS, TimeUnit.MILLISECONDS);
-            if (response == null) {
-                throw new GrimlockerException("GQL command timed out after " + TIMEOUT_MS + "ms: " + operation);
-            }
+            byte[] response = sendFrameWithRetry(frame);
 
             byte opcode = GQLFrame.readOpcode(response);
             byte[] jsonBody = GQLFrame.readPayload(response);
@@ -506,7 +580,7 @@ public class GrimlockerClient implements AutoCloseable {
         } catch (GrimlockerException e) {
             throw e;
         } catch (Exception e) {
-            throw new GrimlockerException("executeJsonCommand failed: " + operation + " — " + e.getMessage(), e);
+            throw new GrimlockerException("executeJsonCommand failed: " + operation + " \u2014 " + e.getMessage(), e);
         }
     }
 

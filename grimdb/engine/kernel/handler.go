@@ -1,17 +1,17 @@
-// Package kernel (handler.go) provides the HandlerBuilder — a fluent API for
-// composing bus.Handler functions with cross-cutting concerns.
+// Package kernel (handler.go) stellt den HandlerBuilder bereit — eine fluide API
+// zum Komponieren von bus.Handler-Funktionen mit Cross-Cutting-Concerns.
 //
-// Instead of writing raw handler functions that mix business logic with
-// error recovery and logging, use HandlerBuilder to layer decorators:
+// Statt rohe Handler-Funktionen zu schreiben, die Business-Logik mit Error-Recovery
+// und Logging vermischen, nutze HandlerBuilder, um Decorator zu schichten:
 //
 //	h := kernel.NewHandlerBuilder(myHandlerFunc).
-//	    WithRecovery("[mymodule]"). // catches panics → converts to error
-//	    WithLogging("[mymodule]").  // logs timing + errors
+//	    WithRecovery("[mymodule]"). // fängt Panics → wandelt in Error um
+//	    WithLogging("[mymodule]").  // loggt Timing + Errors
 //	    Build()
 //	bus.Subscribe(kernel.EvMyEvent, h)
 //
-// Decorators are applied outermost-first, so the first decorator added
-// becomes the outermost layer (e.g. Recovery wraps Logging wraps the base).
+// Decorators werden outermost-first angewandt, also wird der erste hinzugefügte
+// Decorator zur äußersten Schicht (z.B. Recovery umschließt Logging umschließt Base).
 package kernel
 
 import (
@@ -22,29 +22,21 @@ import (
 
 // ─── HandlerBuilder ───────────────────────────────────────────────────────────
 
-// HandlerBuilder constructs a Handler by layering decorators over a base function.
-// Call Build() to obtain the final composed Handler.
-//
-// Usage:
-//
-//	h := kernel.NewHandlerBuilder(myHandlerFunc).
-//	    WithLogging("[mymodule]").
-//	    WithRecovery("[mymodule]").
-//	    Build()
-//	bus.Subscribe(kernel.EvMyEvent, h)
+// HandlerBuilder konstruiert einen Handler, indem er Decorator über einer
+// Base-Funktion schichtet. Build() gibt den finalen komponierten Handler zurück.
 type HandlerBuilder struct {
 	base       Handler
 	decorators []func(Handler) Handler
 }
 
-// NewHandlerBuilder creates a HandlerBuilder wrapping the given base Handler.
+// NewHandlerBuilder erzeugt einen HandlerBuilder um den gegebenen Base-Handler.
 func NewHandlerBuilder(h Handler) *HandlerBuilder {
 	return &HandlerBuilder{base: h}
 }
 
-// WithRecovery adds a panic-recovery layer. Any panic in the inner handler is
-// caught, logged with a stack trace, and converted to a non-nil error return.
-// This prevents a misbehaving handler from killing the goroutine silently.
+// WithRecovery fügt eine Panic-Recovery-Schicht hinzu. Jeder Panic im inneren
+// Handler wird gefangen, mit Stacktrace geloggt und in einen non-nil Error
+// umgewandelt. Das verhindert, dass ein fehlerhafter Handler die Goroutine killt.
 func (b *HandlerBuilder) WithRecovery(modulePrefix string) *HandlerBuilder {
 	b.decorators = append(b.decorators, func(next Handler) Handler {
 		return func(e Event) (retErr error) {
@@ -52,8 +44,6 @@ func (b *HandlerBuilder) WithRecovery(modulePrefix string) *HandlerBuilder {
 				if r := recover(); r != nil {
 					log.Printf("%s PANIC in handler for %s: %v\nStack:\n%s",
 						modulePrefix, e.Type, r, debug.Stack())
-					// Do not re-panic — return an error instead so the bus
-					// can log it and continue serving other events.
 					retErr = &handlerPanicError{event: string(e.Type), value: r}
 				}
 			}()
@@ -63,9 +53,9 @@ func (b *HandlerBuilder) WithRecovery(modulePrefix string) *HandlerBuilder {
 	return b
 }
 
-// WithLogging adds structured logging before and after the handler.
-// At DEBUG level: logs entry + exit timing.
-// On error: logs the error with event type.
+// WithLogging fügt strukturiertes Logging vor und nach dem Handler hinzu.
+// Auf DEBUG-Level: Entry + Exit-Timing.
+// Bei Error: loggt den Error mit Event-Type.
 func (b *HandlerBuilder) WithLogging(modulePrefix string) *HandlerBuilder {
 	b.decorators = append(b.decorators, func(next Handler) Handler {
 		return func(e Event) error {
@@ -84,8 +74,8 @@ func (b *HandlerBuilder) WithLogging(modulePrefix string) *HandlerBuilder {
 	return b
 }
 
-// WithMetrics adds basic timing metrics. Currently logs to the standard logger;
-// replace the implementation with your metrics backend (Prometheus, etc.).
+// WithMetrics fügt einfache Timing-Metriken hinzu. Loggt aktuell auf stdout;
+// ersetze die Implementierung mit deinem Metrics-Backend (Prometheus, etc.).
 func (b *HandlerBuilder) WithMetrics(modulePrefix, eventLabel string) *HandlerBuilder {
 	b.decorators = append(b.decorators, func(next Handler) Handler {
 		return func(e Event) error {
@@ -103,11 +93,10 @@ func (b *HandlerBuilder) WithMetrics(modulePrefix, eventLabel string) *HandlerBu
 	return b
 }
 
-// Build applies all registered decorators (outermost-first) and returns the
-// final composed Handler ready for registration with the bus.
+// Build wendet alle registrierten Decorators an (outermost-first) und gibt den
+// finalen komponierten Handler zurück, bereit für die Bus-Registration.
 func (b *HandlerBuilder) Build() Handler {
 	h := b.base
-	// Apply in reverse so that the first decorator added is the outermost layer.
 	for i := len(b.decorators) - 1; i >= 0; i-- {
 		h = b.decorators[i](h)
 	}
@@ -116,20 +105,21 @@ func (b *HandlerBuilder) Build() Handler {
 
 // ─── Standalone Decorator Functions ──────────────────────────────────────────
 
-// WithRecovery wraps a single Handler with panic recovery. Prefer HandlerBuilder
-// for chaining multiple decorators; use this for one-off subscriptions.
+// WithRecovery wrappt einen einzelnen Handler mit Panic Recovery.
+// Bevorzuge HandlerBuilder zum Verketten mehrerer Decorator; nutze das für
+// einmalige Subscriptions.
 func WithRecovery(modulePrefix string, h Handler) Handler {
 	return NewHandlerBuilder(h).WithRecovery(modulePrefix).Build()
 }
 
-// WithLogging wraps a single Handler with entry/exit logging.
+// WithLogging wrappt einen einzelnen Handler mit Entry/Exit-Logging.
 func WithLogging(modulePrefix string, h Handler) Handler {
 	return NewHandlerBuilder(h).WithLogging(modulePrefix).Build()
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
-// handlerPanicError is the synthetic error produced by WithRecovery.
+// handlerPanicError ist der synthetische Error, den WithRecovery produziert.
 type handlerPanicError struct {
 	event string
 	value interface{}

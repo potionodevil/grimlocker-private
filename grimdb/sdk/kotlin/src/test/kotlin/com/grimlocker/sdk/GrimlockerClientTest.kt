@@ -8,6 +8,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 import java.net.HttpURLConnection
+import java.net.MalformedURLException
 import java.net.URL
 
 class GrimlockerClientTest {
@@ -91,6 +92,24 @@ class GrimlockerClientTest {
         client.deleteEntry("e1")
         assertEquals("entry.delete", client.lastAction)
         assertEquals("e1", client.lastPayload["id"])
+    }
+
+    @Test
+    fun createEntriesBatch() {
+        val entries = listOf(
+            mapOf("title" to "Entry 1", "category" to "PASSWORD", "fields" to mapOf("username" to "alice")),
+            mapOf("title" to "Entry 2", "category" to "NOTE", "fields" to mapOf("content" to "hello"))
+        )
+        val ids = client.createEntriesBatch(entries)
+        assertEquals(2, ids.size)
+        assertEquals("new1", ids[0])
+        assertEquals("new1", ids[1])
+    }
+
+    @Test
+    fun deleteEntriesBatch() {
+        client.deleteEntriesBatch(listOf("e1", "e2"))
+        assertEquals(listOf("e1", "e2"), client.deletedIds)
     }
 
     @Test
@@ -264,6 +283,19 @@ class GrimlockerClientTest {
         }
     }
 
+    @Test
+    fun circuitBreakerOpens() {
+        val cbClient = CircuitBreakerTestClient()
+        repeat(5) {
+            assertThrows(MalformedURLException::class.java) {
+                cbClient.listEntries()
+            }
+        }
+        assertThrows(CircuitBreakerOpenException::class.java) {
+            cbClient.listEntries()
+        }
+    }
+
     // ── Test doubles ──────────────────────────────────────────────────────────
 
     class TestClient(private val baseUrl: String, private val token: String) : GrimlockerClient(baseUrl, token) {
@@ -303,8 +335,11 @@ class GrimlockerClientTest {
             record("entry.update", mapOf("id" to id, "fields" to fields))
         }
 
+        val deletedIds = mutableListOf<String>()
+
         override fun deleteEntry(id: String) {
             record("entry.delete", mapOf("id" to id))
+            deletedIds.add(id)
         }
 
         override fun searchEntries(query: String, category: String?): List<VaultEntry> {
@@ -422,4 +457,6 @@ class GrimlockerClientTest {
 
         override fun close() {}
     }
+
+    class CircuitBreakerTestClient : GrimlockerClient("unknown://127.0.0.1:1", "token", timeoutMs = 100)
 }

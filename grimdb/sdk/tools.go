@@ -5,7 +5,7 @@ package sdk
 import (
 	"context"
 
-	"github.com/grimlocker/grimdb/gql"
+	"github.com/grimlocker/grimdb/engine/gql"
 )
 
 // SSHKeyResult holds the result of an Ed25519 SSH key pair generation.

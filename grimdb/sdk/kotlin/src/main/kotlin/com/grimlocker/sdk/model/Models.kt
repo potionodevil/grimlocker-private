@@ -152,3 +152,9 @@ data class VaultStatus(
     val unlocked: Boolean = false,
     val status: String = ""
 )
+
+data class SSHKeyResult(
+    val public_key: String,
+    val fingerprint: String,
+    val entry_id: String? = null
+)

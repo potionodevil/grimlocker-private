@@ -11,17 +11,17 @@ import (
 
 const sessionTTL = 10 * time.Minute
 
-// ImportSession holds Phase-1 state between Peek and Authorize.
+// ImportSession hält den Phase-1-Zustand zwischen Peek und Authorize.
 type ImportSession struct {
-	ID        string
+	ID         string
 	PeekResult engbackup.PeekResult
-	Header    engbackup.BlobHeader
-	BlobPath  string
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	Header     engbackup.BlobHeader
+	BlobPath   string
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
 }
 
-// SessionStore manages active import sessions with TTL-based expiry.
+// SessionStore verwaltet aktive Import-Sessions mit TTL-basiertem Ablauf.
 type SessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]*ImportSession
@@ -31,16 +31,17 @@ func newSessionStore() *SessionStore {
 	return &SessionStore{sessions: make(map[string]*ImportSession)}
 }
 
+// newSession erzeugt eine Session mit zufälliger ID und registriert sie.
 func (s *SessionStore) newSession(header engbackup.BlobHeader, peek engbackup.PeekResult, blobPath string) *ImportSession {
 	id := generateSessionID()
 	now := time.Now()
 	sess := &ImportSession{
-		ID:        id,
+		ID:         id,
 		PeekResult: peek,
-		Header:    header,
-		BlobPath:  blobPath,
-		CreatedAt: now,
-		ExpiresAt: now.Add(sessionTTL),
+		Header:     header,
+		BlobPath:   blobPath,
+		CreatedAt:  now,
+		ExpiresAt:  now.Add(sessionTTL),
 	}
 	s.mu.Lock()
 	s.sessions[id] = sess
@@ -48,6 +49,7 @@ func (s *SessionStore) newSession(header engbackup.BlobHeader, peek engbackup.Pe
 	return sess
 }
 
+// lookup gibt die Session für id zurück oder false, wenn sie nicht existiert oder abgelaufen ist.
 func (s *SessionStore) lookup(id string) (*ImportSession, bool) {
 	s.mu.RLock()
 	sess, ok := s.sessions[id]
@@ -68,6 +70,7 @@ func (s *SessionStore) delete(id string) {
 	s.mu.Unlock()
 }
 
+// pruneExpired entfernt alle abgelaufenen Sessions. Wird vom GC-Goroutine aufgerufen.
 func (s *SessionStore) pruneExpired() {
 	now := time.Now()
 	s.mu.Lock()

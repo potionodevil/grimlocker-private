@@ -1,16 +1,16 @@
-// Package backup (format.go) implements serialization of the encrypted payload.
+// Package backup (format.go) implementiert die Serialisierung des verschlüsselten Payloads.
 //
-// Payload format (after decryption, big-endian):
+// Das Payload-Format (nach Entschlüsselung, Big-Endian):
 //
 //	4 bytes   NumBlocks (uint32)
-//	For each block:
+//	Für jeden Block:
 //	  4 bytes  BlockPayloadLen (uint32)
-//	  N bytes  JSON-encoded storage.Block
+//	  N bytes  JSON-kodierter storage.Block
 //	4 bytes   VaultMetaLen (uint32)
-//	N bytes   JSON-encoded VaultMetaSnapshot
+//	N bytes   JSON-kodiertes VaultMetaSnapshot
 //
-// storage.Block entries carry their original ciphertext from the vault.
-// The backup layer adds a second encryption layer (outer key from buildBlob).
+// storage.Block enthält die originalen verschlüsselten Daten aus dem Vault.
+// Der Backup-Layer verschlüsselt sie ein zweites Mal (Outer Layer via buildBlob).
 package backup
 
 import (
@@ -23,24 +23,26 @@ import (
 	"github.com/grimlocker/grimdb/engine/storage"
 )
 
-// VaultMetaSnapshot is the safe subset of vault metadata stored in a backup.
-// RecoveryPhraseCiphertext is deliberately excluded (separate restore path).
+// VaultMetaSnapshot ist ein sicherer Subset der Vault-Metadaten, der im Backup gespeichert wird.
+// RecoveryPhraseCiphertext wird bewusst ausgeschlossen (separater Restore-Pfad).
 type VaultMetaSnapshot struct {
-	ArgonSalt  []byte `json:"argon_salt"`
+	ArgonSalt    []byte `json:"argon_salt"`
 	RecoveryHash []byte `json:"recovery_hash,omitempty"`
-	ExportedAt int64  `json:"exported_at"`
-	Version    string `json:"version"`
+	ExportedAt   int64  `json:"exported_at"`
+	Version      string `json:"version"`
 }
 
-// EncodePayload serializes blocks + VaultMetaSnapshot into the payload binary format.
-// The resulting byte slice is then encrypted by the caller.
+// EncodePayload serialisiert Blocks + VaultMetaSnapshot in das Payload-Binärformat.
+// Der resultierende Byte-Slice wird anschließend vom Aufrufer verschlüsselt.
 func EncodePayload(blocks []storage.Block, meta VaultMetaSnapshot) ([]byte, error) {
 	var buf bytes.Buffer
 
+	// NumBlocks
 	var nb [4]byte
 	binary.BigEndian.PutUint32(nb[:], uint32(len(blocks)))
 	buf.Write(nb[:])
 
+	// Jeder Block als length-prefixed JSON
 	for i, b := range blocks {
 		data, err := json.Marshal(b)
 		if err != nil {
@@ -52,6 +54,7 @@ func EncodePayload(blocks []storage.Block, meta VaultMetaSnapshot) ([]byte, erro
 		buf.Write(data)
 	}
 
+	// VaultMetaSnapshot als length-prefixed JSON
 	metaData, err := json.Marshal(meta)
 	if err != nil {
 		return nil, fmt.Errorf("format: marshal vault_meta: %w", err)
@@ -64,10 +67,11 @@ func EncodePayload(blocks []storage.Block, meta VaultMetaSnapshot) ([]byte, erro
 	return buf.Bytes(), nil
 }
 
-// DecodePayload deserializes the decrypted payload back into blocks + VaultMetaSnapshot.
+// DecodePayload deserialisiert den entschlüsselten Payload zurück in Blocks + VaultMetaSnapshot.
 func DecodePayload(data []byte) ([]storage.Block, VaultMetaSnapshot, error) {
 	r := bytes.NewReader(data)
 
+	// NumBlocks
 	var nb [4]byte
 	if _, err := io.ReadFull(r, nb[:]); err != nil {
 		return nil, VaultMetaSnapshot{}, fmt.Errorf("format: read num_blocks: %w", err)
@@ -91,6 +95,7 @@ func DecodePayload(data []byte) ([]storage.Block, VaultMetaSnapshot, error) {
 		blocks = append(blocks, b)
 	}
 
+	// VaultMetaSnapshot
 	var mlen [4]byte
 	if _, err := io.ReadFull(r, mlen[:]); err != nil {
 		return nil, VaultMetaSnapshot{}, fmt.Errorf("format: read vault_meta len: %w", err)

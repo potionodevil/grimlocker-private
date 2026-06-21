@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 
-// Parse raw daemon/system error strings into a user-friendly message
+/**
+ * Parst rohe Daemon-/System-Fehlerstrings in benutzerfreundliche Nachrichten.
+ * Der Daemon schickt oft JSON oder kryptische Fehler — das hier normalisiert alles
+ * zu etwas, das ein normaler User versteht.
+ */
 function parseError(raw) {
   if (!raw) return null
   let msg = raw
 
-  // Strip JSON wrappers
+  // JSON-Wrapper entfernen — der Daemon packt Fehler manchmal in { message: "..." }
   try {
     const j = JSON.parse(raw)
     msg = j.message || j.error || j.msg || j.detail || raw
@@ -15,7 +19,7 @@ function parseError(raw) {
   const lower = msg.toLowerCase()
   const isPanic = lower.includes('panic') || lower.includes('critical') || lower.includes('zeroize')
 
-  // Map known patterns to clean messages
+  // Bekannte Fehlermuster auf saubere, deutsche Messages mappen
   let friendly = msg
   if (lower.includes('connection refused') || lower.includes('not connected'))
     friendly = 'Daemon not reachable — is Grimlocker running?'
@@ -30,7 +34,7 @@ function parseError(raw) {
   else if (lower.includes('zeroize') || lower.includes('panic'))
     friendly = 'PANIC — vault has been zeroized'
   else if (msg.length > 120)
-    // Truncate overly long raw errors
+    // Zu lange Fehlertexte abschneiden — das sprengt sonst das UI
     friendly = msg.slice(0, 100) + '…'
 
   return { text: friendly, isPanic }

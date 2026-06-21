@@ -1,20 +1,20 @@
-// Package backup implements the kernel.Module owning the BACKUP channel.
+// Package backup implementiert das kernel.Module, das den BACKUP-Channel besitzt.
 //
-// Two-phase import:
+// Zwei-Phasen-Import:
 //
-//	Phase 1 (BACKUP.PEEK):      Reads plaintext header — no key required.
-//	                             Returns metadata + session_id.
-//	Phase 2 (BACKUP.AUTHORIZE): Decrypts payload with MVK, imports blocks.
-//	                             Verifies hardware tethering (if set).
+//	Phase 1 (BACKUP.PEEK):      Liest Plaintext-Header — kein Key nötig.
+//	                             Gibt Metadaten + session_id zurück.
+//	Phase 2 (BACKUP.AUTHORIZE): Entschlüsselt Payload mit MVK, importiert Blocks.
+//	                             Prüft Hardware-Tethering (wenn gesetzt).
 //
 // Export (BACKUP.EXPORT):
 //
-//	Reads all blocks, encrypts with per-export key (HKDF(MVK, ts)),
-//	writes single-file blob, computes post-write SHA-256 checksum.
+//	Liest alle Blocks aus dem Store, verschlüsselt sie mit per-Export-Key (HKDF(MVK, ts)),
+//	schreibt Single-File-Blob, berechnet Post-Write-SHA256-Checksum.
 //
 // Checksum (BACKUP.CHECKSUM):
 //
-//	Standalone SHA-256 of any file — no vault unlock required.
+//	Standalone SHA-256 einer bestehenden Datei — kein Vault-Unlock nötig.
 package backup
 
 import (
@@ -33,39 +33,47 @@ import (
 
 const moduleID = "backup"
 
-// GrimlockerVersion is injected by main.go at startup.
+// GrimlockerVersion wird beim Bauen injiziert (via main.go oder Linker-Flag).
+// Fallback auf "unknown" wenn nicht gesetzt.
 var GrimlockerVersion = "unknown"
 
-// ExportPolicyFn is called before an export. nil = allow all (single-user).
-// Enterprise tier can inject RBAC checks here.
+// ExportPolicyFn wird vor einem Export aufgerufen. nil = erlaubt (Single-User).
+// Enterprise-Tier kann RBAC-Checks hier einhängen.
 type ExportPolicyFn func(origin string) error
 
-// KeyResolver resolves an MVK handle to raw key bytes.
+// KeyResolver löst einen MVK-Handle zu den rohen Key-Bytes auf.
+// Wird vom Security-Modul bereitgestellt.
 type KeyResolver func(handle string) ([]byte, bool)
 
-// ArgonSaltResolver returns the current vault ArgonSalt.
+// ArgonSaltResolver gibt den aktuellen ArgonSalt der Vault zurück.
+// Wird für Tethering und Import benötigt.
 type ArgonSaltResolver func() ([]byte, error)
 
-// Module is the kernel.Module handling all BACKUP.* events.
+// Module ist das kernel.Module, das alle BACKUP.*-Events verarbeitet.
 type Module struct {
-	crypto       crypto.Provider
-	keyResolver  KeyResolver
+	crypto      crypto.Provider
+	keyResolver KeyResolver
 	saltResolver ArgonSaltResolver
-	store        storage.BlockStore
-	policy       ExportPolicyFn
-	dispatcher   kernel.Dispatcher
-	registry     *HandlerRegistry
-	sessions     *SessionStore
-	stopGC       chan struct{}
+	store       storage.BlockStore
+	policy      ExportPolicyFn
+	dispatcher  kernel.Dispatcher
+	registry    *HandlerRegistry
+	sessions    *SessionStore
+	stopGC      chan struct{}
 }
 
-// NewModule creates the backup module.
+// NewModule erstellt das Backup-Modul.
+//   - cryptoP:     Crypto-Provider (ChaCha20, HKDF)
+//   - keys:        MVK-Handle-Resolver vom Security-Modul
+//   - saltFn:      ArgonSalt-Resolver der Vault
+//   - store:       BlockStore für Bulk-Read/Write beim Export/Import
+//   - policy:      optional; nil = alle Exports erlaubt
 func NewModule(
-	cryptoP  crypto.Provider,
-	keys     KeyResolver,
-	saltFn   ArgonSaltResolver,
-	store    storage.BlockStore,
-	policy   ExportPolicyFn,
+	cryptoP    crypto.Provider,
+	keys       KeyResolver,
+	saltFn     ArgonSaltResolver,
+	store      storage.BlockStore,
+	policy     ExportPolicyFn,
 ) *Module {
 	return &Module{
 		crypto:       cryptoP,
@@ -85,6 +93,7 @@ func (m *Module) Start(ctx context.Context, d kernel.Dispatcher) error {
 	m.dispatcher = d
 	m.registry = m.buildRegistry()
 
+	// Session-GC: bereinigt abgelaufene Sessions alle 60 Sekunden
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
@@ -164,7 +173,7 @@ func (m *Module) buildRegistry() *HandlerRegistry {
 	return r
 }
 
-// ─── Handlers ─────────────────────────────────────────────────────────────────
+// ─── Handler ──────────────────────────────────────────────────────────────────
 
 func (m *Module) handleExport(e kernel.Event) error {
 	var req engbackup.ExportRequest
@@ -178,7 +187,7 @@ func (m *Module) handleExport(e kernel.Event) error {
 		}
 	}
 
-	mvk, argonSalt, err := m.resolveMVKAndSalt(req.DestPath, "")
+	mvk, argonSalt, err := m.resolveMVKAndSalt("export", "")
 	if err != nil {
 		return m.replyExportError(e, err)
 	}
@@ -188,6 +197,7 @@ func (m *Module) handleExport(e kernel.Event) error {
 		return m.replyExportError(e, gerrors.Wrap(gerrors.ErrCodeBackupChecksumFailed, "export failed", err))
 	}
 
+	// BACKUP.CHECKSUM_COMPLETE emittieren
 	completePayload, _ := json.Marshal(engbackup.ChecksumCompleteEvent{
 		Path:            req.DestPath,
 		SHA256:          sha256hex,
@@ -195,9 +205,14 @@ func (m *Module) handleExport(e kernel.Event) error {
 	})
 	_ = m.dispatcher.Dispatch(kernel.NewEvent(moduleID, kernel.EvBackupChecksumComplete, completePayload))
 
+	// Audit-Log
 	m.audit(fmt.Sprintf("vault exported to %s (%d entries)", req.DestPath, count))
 
-	res, _ := json.Marshal(engbackup.ExportResult{Path: req.DestPath, SHA256: sha256hex, EntryCount: count})
+	res, _ := json.Marshal(engbackup.ExportResult{
+		Path:       req.DestPath,
+		SHA256:     sha256hex,
+		EntryCount: count,
+	})
 	return m.dispatcher.Dispatch(kernel.ReplyEvent(moduleID, kernel.EvBackupResult, e, res))
 }
 
@@ -222,7 +237,7 @@ func (m *Module) handleAuthorize(e kernel.Event) error {
 		return m.replyAuthorizeError(e, gerrors.NewProtocolError("authorize_unmarshal", err))
 	}
 
-	mvk, argonSalt, err := m.resolveMVKAndSalt("", req.KeyHandle)
+	mvk, argonSalt, err := m.resolveMVKAndSalt("authorize", req.KeyHandle)
 	if err != nil {
 		return m.replyAuthorizeError(e, err)
 	}
@@ -234,7 +249,8 @@ func (m *Module) handleAuthorize(e kernel.Event) error {
 			code = ge.Code
 		}
 		res, _ := json.Marshal(engbackup.AuthorizeResult{Error: err.Error(), ErrorCode: code})
-		return m.dispatcher.Dispatch(kernel.ReplyEvent(moduleID, kernel.EvBackupResult, e, res))
+		reply := kernel.ReplyEvent(moduleID, kernel.EvBackupResult, e, res)
+		return m.dispatcher.Dispatch(reply)
 	}
 
 	m.audit(fmt.Sprintf("vault imported from air-gap backup (imported=%d, skipped=%d)", imported, skipped))
@@ -258,9 +274,12 @@ func (m *Module) handleChecksum(e kernel.Event) error {
 	return m.dispatcher.Dispatch(kernel.ReplyEvent(moduleID, kernel.EvBackupResult, e, res))
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Hilfsfunktionen ──────────────────────────────────────────────────────────
 
-func (m *Module) resolveMVKAndSalt(_, keyHandle string) (mvk, argonSalt []byte, err error) {
+// resolveMVKAndSalt löst MVK (über keyHandle oder saltResolver) und ArgonSalt auf.
+// Bei leerem keyHandle wird nur der ArgonSalt gebraucht (z.B. für Peek — aber Peek
+// ruft diese Funktion gar nicht auf). Für Export/Authorize wird keyHandle benötigt.
+func (m *Module) resolveMVKAndSalt(op, keyHandle string) (mvk, argonSalt []byte, err error) {
 	if keyHandle != "" {
 		var ok bool
 		mvk, ok = m.keyResolver(keyHandle)
@@ -268,15 +287,20 @@ func (m *Module) resolveMVKAndSalt(_, keyHandle string) (mvk, argonSalt []byte, 
 			return nil, nil, gerrors.NewCryptoHandleUnknownError(keyHandle)
 		}
 	}
+
 	argonSalt, err = m.saltResolver()
 	if err != nil {
-		return nil, nil, gerrors.NewSecurityMVKMissingError("backup")
+		return nil, nil, gerrors.NewSecurityMVKMissingError(op)
 	}
 	return mvk, argonSalt, nil
 }
 
 func (m *Module) audit(msg string) {
-	payload, _ := json.Marshal(map[string]string{"module": moduleID, "message": msg, "level": "info"})
+	payload, _ := json.Marshal(map[string]string{
+		"module":  moduleID,
+		"message": msg,
+		"level":   "info",
+	})
 	_ = m.dispatcher.Dispatch(kernel.NewEvent(moduleID, kernel.EvSecAudit, payload))
 }
 

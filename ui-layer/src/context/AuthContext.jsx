@@ -87,8 +87,8 @@ export function AuthProvider({ children }) {
       if (!phrase) {
         throw new Error('Failed to generate recovery phrase')
       }
-      // After init, the daemon auto-unlocks but we still need the session key
-      // on the frontend side. Explicitly unlock to establish the SKE key.
+      // Nach dem Init ist der Daemon zwar schon automatisch unlocked, aber das Frontend
+      // hat noch keinen Session-Key. Wir unlocken explizit, damit der SKE-Key etabliert wird.
       try {
         await tauriBridge.unlockVault(password)
       } catch (unlockErr) {

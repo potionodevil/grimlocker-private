@@ -12,8 +12,8 @@ import (
 	"github.com/grimlocker/grimdb/engine/storage"
 )
 
-// peekBlob reads the plaintext header of a .grimbak file and creates an ImportSession.
-// No key material required — vault does NOT need to be unlocked.
+// peekBlob liest den Plaintext-Header einer .grimbak-Datei und erzeugt eine ImportSession.
+// Kein Key-Material nötig — Vault muss NICHT entsperrt sein.
 func peekBlob(sessions *SessionStore, sourcePath string) (engbackup.PeekResult, error) {
 	f, err := os.Open(sourcePath)
 	if err != nil {
@@ -40,15 +40,15 @@ func peekBlob(sessions *SessionStore, sourcePath string) (engbackup.PeekResult, 
 	return peek, nil
 }
 
-// authorizeImport executes Phase 2: tether check, decryption, block import.
+// authorizeImport führt Phase 2 durch: Tether-Prüfung, Entschlüsselung, Block-Import.
 func authorizeImport(
-	sessions  *SessionStore,
-	cryptoP   crypto.Provider,
-	store     storage.BlockStore,
-	sessionID string,
-	mvk       []byte,
-	argonSalt []byte,
-	merge     bool,
+	sessions    *SessionStore,
+	cryptoP     crypto.Provider,
+	store       storage.BlockStore,
+	sessionID   string,
+	mvk         []byte,
+	argonSalt   []byte,
+	merge        bool,
 ) (imported, skipped uint32, err error) {
 	sess, ok := sessions.lookup(sessionID)
 	if !ok {
@@ -57,6 +57,7 @@ func authorizeImport(
 
 	hdr := sess.Header
 
+	// Hardware-Tether-Prüfung
 	if hdr.HardwareTethered {
 		match, err := tethersMatch(cryptoP, mvk, argonSalt, hdr)
 		if err != nil {
@@ -68,11 +69,13 @@ func authorizeImport(
 		}
 	}
 
+	// Backup-Key ableiten
 	backupKey, err := deriveBackupKey(cryptoP, mvk, hdr.ExportTimestamp)
 	if err != nil {
 		return 0, 0, fmt.Errorf("authorize: derive backup key: %w", err)
 	}
 
+	// Verschlüsselten Payload lesen
 	f, err := os.Open(sess.BlobPath)
 	if err != nil {
 		return 0, 0, fmt.Errorf("authorize: open blob: %w", err)
@@ -89,16 +92,19 @@ func authorizeImport(
 		return 0, 0, fmt.Errorf("authorize: read payload: %w", err)
 	}
 
+	// Entschlüsseln
 	plainPayload, err := cryptoP.Decrypt(backupKey, nonce, encPayload, nil)
 	if err != nil {
 		return 0, 0, gerrors.NewBackupDecryptFailedError(err)
 	}
 
+	// Payload parsen
 	blocks, _, err := engbackup.DecodePayload(plainPayload)
 	if err != nil {
 		return 0, 0, fmt.Errorf("authorize: decode payload: %w", err)
 	}
 
+	// Blocks schreiben
 	var existingIDs map[string]bool
 	if merge {
 		metas, err := store.ListBlocks()

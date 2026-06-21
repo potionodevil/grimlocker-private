@@ -103,4 +103,10 @@ struct UploadProgress {
     double percent() const { return total_bytes ? (bytes_sent * 100.0 / total_bytes) : 100.0; }
 };
 
+struct SSHKeyResult {
+    std::string public_key;
+    std::string fingerprint;
+    std::string entry_id;
+};
+
 } // namespace grimlocker

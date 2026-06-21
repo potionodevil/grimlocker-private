@@ -1,5 +1,5 @@
 export function StrengthDot({ score = 0 }) {
-  // score: 0–5
+  // score von 0 bis 5 — je mehr Punkte leuchten, desto stärker das Passwort
   const color = score <= 2 ? 'var(--danger)' : score === 3 ? 'var(--warning)' : 'var(--success)'
 
   return (

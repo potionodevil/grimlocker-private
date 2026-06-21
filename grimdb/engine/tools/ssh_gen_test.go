@@ -15,22 +15,22 @@ func TestGenerateEd25519Pair_BasicShape(t *testing.T) {
 		t.Fatalf("GenerateEd25519Pair: %v", err)
 	}
 
-	// Public key line must start with the OpenSSH type prefix.
+	// Public-Key-Zeile muss mit dem OpenSSH-Type-Präfix starten.
 	if !strings.HasPrefix(pair.PublicKey, "ssh-ed25519 ") {
 		t.Errorf("public key does not start with 'ssh-ed25519 ': %q", pair.PublicKey[:min(50, len(pair.PublicKey))])
 	}
 
-	// Public key line must contain the comment.
+	// Public-Key-Zeile muss den Kommentar enthalten.
 	if !strings.Contains(pair.PublicKey, "test@grimlocker") {
 		t.Errorf("public key line missing comment: %q", pair.PublicKey)
 	}
 
-	// Private key PEM must be a valid OpenSSH key block.
+	// Private-Key-PEM muss ein gültiger OpenSSH-Key-Block sein.
 	if !bytes.Contains(pair.PrivateKeyPEM, []byte("OPENSSH PRIVATE KEY")) {
 		t.Errorf("private key PEM missing OPENSSH PRIVATE KEY header")
 	}
 
-	// Fingerprint must start with "SHA256:".
+	// Fingerprint muss mit "SHA256:" beginnen.
 	if !strings.HasPrefix(pair.Fingerprint, "SHA256:") {
 		t.Errorf("fingerprint unexpected format: %q", pair.Fingerprint)
 	}
@@ -60,7 +60,7 @@ func TestGenerateEd25519Pair_PublicKeyValid(t *testing.T) {
 		t.Fatalf("GenerateEd25519Pair: %v", err)
 	}
 
-	// Parse the OpenSSH authorized_keys line to verify it's a valid Ed25519 key.
+	// Parse die OpenSSH authorized_keys-Zeile und stell sicher, dass es ein gültiger Ed25519-Key ist.
 	parsed, comment, options, rest, parseErr := ssh.ParseAuthorizedKey([]byte(pair.PublicKey))
 	if parseErr != nil {
 		t.Fatalf("ssh.ParseAuthorizedKey: %v", parseErr)
@@ -76,7 +76,7 @@ func TestGenerateEd25519Pair_PublicKeyValid(t *testing.T) {
 		t.Errorf("expected comment %q, got %q", "verify@grimlocker", comment)
 	}
 
-	// The Ed25519 public key is 32 bytes — verify via the CryptoPublicKey interface.
+	// Ed25519 Public Key ist 32 Bytes — verifizieren via CryptoPublicKey-Interface.
 	if cryptoPub, ok := parsed.(ssh.CryptoPublicKey); ok {
 		edPub, ok := cryptoPub.CryptoPublicKey().(ed25519.PublicKey)
 		if !ok {
@@ -95,7 +95,7 @@ func TestGenerateEd25519Pair_EmptyComment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateEd25519Pair with empty comment: %v", err)
 	}
-	// Must still produce a valid public key line.
+	// Auch ohne Comment muss ein gültiger Public Key rauskommen.
 	if !strings.HasPrefix(pair.PublicKey, "ssh-ed25519 ") {
 		t.Errorf("unexpected public key format: %q", pair.PublicKey)
 	}
@@ -107,7 +107,7 @@ func TestGenerateEd25519Pair_PrivateKeyParseable(t *testing.T) {
 		t.Fatalf("GenerateEd25519Pair: %v", err)
 	}
 
-	// Ensure the PEM block is parseable by golang.org/x/crypto/ssh.
+	// PEM-Block muss von golang.org/x/crypto/ssh parsbars sein.
 	privKey, err := ssh.ParseRawPrivateKey(pair.PrivateKeyPEM)
 	if err != nil {
 		t.Fatalf("ssh.ParseRawPrivateKey: %v", err)
@@ -129,18 +129,18 @@ func TestGenerateEd25519Pair_WithPassphrase(t *testing.T) {
 		t.Fatalf("GenerateEd25519Pair with passphrase: %v", err)
 	}
 
-	// The PEM should still be a valid OpenSSH private key block.
+	// PEM muss trotz Passphrase ein gültiger OpenSSH-Block sein.
 	if !bytes.Contains(pair.PrivateKeyPEM, []byte("OPENSSH PRIVATE KEY")) {
 		t.Errorf("encrypted private key PEM missing OPENSSH PRIVATE KEY header")
 	}
 
-	// Attempting to parse without passphrase must fail.
+	// Ohne Passphrase muss das Parsen fehlschlagen.
 	_, err = ssh.ParseRawPrivateKey(pair.PrivateKeyPEM)
 	if err == nil {
 		t.Fatal("expected error when parsing passphrase-protected key without passphrase, got nil")
 	}
 
-	// Parsing with the correct passphrase must succeed.
+	// Mit der richtigen Passphrase muss es klappen.
 	_, err = ssh.ParseRawPrivateKeyWithPassphrase(pair.PrivateKeyPEM, []byte("correct-horse-battery-staple"))
 	if err != nil {
 		t.Fatalf("ssh.ParseRawPrivateKeyWithPassphrase: %v", err)

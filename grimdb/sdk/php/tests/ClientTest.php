@@ -237,6 +237,41 @@ final class ClientTest extends TestCase
 
     // ── Error handling ───────────────────────────────────────────────────────
 
+    public function testBatchCreateEntries(): void
+    {
+        $ids = $this->client->batchCreateEntries([['A', 'PASSWORD'], ['B', 'SSH_KEY']]);
+        $this->assertCount(2, $ids);
+        $this->assertSame('new1', $ids[0]);
+        $this->assertSame('new1', $ids[1]);
+    }
+
+    public function testBatchDeleteEntries(): void
+    {
+        $this->client->batchDeleteEntries(['e1', 'e2']);
+        $this->assertCount(2, $this->client->calls);
+        $this->assertSame('entry.delete', $this->client->calls[0][0]);
+        $this->assertSame('entry.delete', $this->client->calls[1][0]);
+    }
+
+    public function testCircuitBreakerOpens(): void
+    {
+        $cb = new CircuitBreaker(3);
+        for ($i = 0; $i < 3; $i++) {
+            try {
+                $cb->call(function () {
+                    throw new \RuntimeException('fail');
+                });
+            } catch (\RuntimeException $e) {
+                // expected
+            }
+        }
+        $this->assertSame('open', $cb->getState());
+        $this->assertSame(3, $cb->getFailureCount());
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('circuit open');
+        $cb->call(function () {});
+    }
+
     public function testErrorHandlingLockedVault(): void
     {
         $client = new ErrorTestClient('http://127.0.0.1:36353', 'token');
@@ -259,6 +294,8 @@ final class ClientTest extends TestCase
  */
 class TestClient extends Client
 {
+    public array $calls = [];
+
     public function __construct(string $baseUrl, string $token)
     {
         // bypass real HTTP by nulling constructor
@@ -299,6 +336,7 @@ class TestClient extends Client
 
     public function createEntry(string $title, string $category, array $fields = []): Entry
     {
+        $this->calls[] = ['entry.create', $title, $category];
         return new Entry('new1', $title, $category, $fields, 10, 20);
     }
 
@@ -308,6 +346,24 @@ class TestClient extends Client
 
     public function deleteEntry(string $id): void
     {
+        $this->calls[] = ['entry.delete', $id];
+    }
+
+    public function batchCreateEntries(array $items): array
+    {
+        $ids = [];
+        foreach ($items as [$title, $category]) {
+            $entry = $this->createEntry($title, $category);
+            $ids[] = $entry->id;
+        }
+        return $ids;
+    }
+
+    public function batchDeleteEntries(array $ids): void
+    {
+        foreach ($ids as $id) {
+            $this->deleteEntry($id);
+        }
     }
 
     public function searchEntries(string $query, ?string $category = null): array
@@ -401,6 +457,44 @@ class TestClient extends Client
     public function healthCheck(): array
     {
         return ['status' => 'ok', 'daemon_version' => '1.0.0'];
+    }
+}
+
+class CircuitBreaker
+{
+    private int $threshold;
+    private int $failureCount = 0;
+    private string $state = 'closed';
+
+    public function __construct(int $threshold = 3)
+    {
+        $this->threshold = $threshold;
+    }
+
+    public function call(callable $fn): void
+    {
+        if ($this->state === 'open') {
+            throw new \RuntimeException('circuit open');
+        }
+        try {
+            $fn();
+        } catch (\Exception $e) {
+            $this->failureCount++;
+            if ($this->failureCount >= $this->threshold) {
+                $this->state = 'open';
+            }
+            throw $e;
+        }
+    }
+
+    public function getState(): string
+    {
+        return $this->state;
+    }
+
+    public function getFailureCount(): int
+    {
+        return $this->failureCount;
     }
 }
 

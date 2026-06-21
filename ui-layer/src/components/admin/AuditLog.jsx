@@ -3,14 +3,14 @@ import { useGrimStore } from '../../store/useGrimStore'
 import { tauriBridge } from '../../services/tauriBridge'
 import { Badge } from '../ui/Badge'
 
-// Map SecurityEvent level → Badge variant
+// SecurityEvent-Level → Badge-Variante mappen
 const LEVEL_VARIANT = {
   INFO:     'neutral',
   WARN:     'warning',
   CRITICAL: 'danger',
 }
 
-// Map module/message patterns to action labels
+// Map Modul-/Message-Patterns auf Action-Labels — so wissen wir, was passiert ist
 function inferAction(event) {
   const msg = (event.message || '').toLowerCase()
   const mod = (event.module || '').toLowerCase()
@@ -35,7 +35,7 @@ const ACTION_VARIANT = {
 }
 
 function formatTime(ns) {
-  // SecurityEvent timestamps are UnixNano
+  // SecurityEvent-Timestamps sind UnixNano — müssen wir erst umrechnen
   const ms = ns > 1e15 ? Math.floor(ns / 1e6) : ns
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
@@ -50,7 +50,7 @@ export function AuditLog() {
     setLoading(true)
     tauriBridge.listAuditEntries(50)
       .then(data => setEvents(Array.isArray(data) ? data : []))
-      .catch(() => setEvents(null))   // fall back to demo on error
+      .catch(() => setEvents(null))   // Bei Fehler Demo-Daten anzeigen (produktiv nicht, aber für Dev okay)
       .finally(() => setLoading(false))
   }, [daemonStatus])
 

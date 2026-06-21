@@ -7,17 +7,20 @@ import (
 	"github.com/grimlocker/grimdb/engine/storage"
 )
 
-// DeniableStrategy implements plausible-deniability by maintaining a parallel
-// set of decoy blocks. When triggered with "decoy", subsequent reads return
-// decoy content instead of real content. This is injected into BlockStore
-// at wire-up time.
+// DeniableStrategy implementiert Plausible Deniability durch einen parallelen Satz
+// von Decoy-Blöcken. Bei Aktivierung ("decoy") geben Reads den Decoy-Inhalt zurück
+// statt den echten. Wird beim Wire-up in den BlockStore injiziert.
+//
+// Security-Tradeoff: Ein Angreifer mit physikalischem Zugriff kann die Block-Liste
+// sehen und die Anzahl der Blöcke vergleichen. Wer viele Decoys braucht, sollte
+// die Block-Anzahl ebenfalls verschleiern (Padding-Blöcke).
 type DeniableStrategy struct {
 	mu          sync.RWMutex
 	decoyBlocks map[string]storage.Block
-	active      bool // true when decoy mode is active
+	active      bool // true = decoy mode aktiv
 }
 
-// NewDeniableStrategy creates a DeniableStrategy with an empty decoy store.
+// NewDeniableStrategy erzeugt eine DeniableStrategy mit leerem Decoy-Store.
 func NewDeniableStrategy() *DeniableStrategy {
 	return &DeniableStrategy{
 		decoyBlocks: make(map[string]storage.Block),
@@ -26,21 +29,21 @@ func NewDeniableStrategy() *DeniableStrategy {
 
 func (d *DeniableStrategy) Name() string { return "deniable" }
 
-// SetDecoy registers a decoy block for the given ID. The decoy block's Data
-// must already be encrypted ciphertext indistinguishable from real data.
+// SetDecoy registriert einen Decoy-Block für die gegebene ID. Der Decoy-Block muss
+// bereits verschlüsselten Ciphertext enthalten — nicht vom echten Block unterscheidbar.
 func (d *DeniableStrategy) SetDecoy(b storage.Block) {
 	d.mu.Lock()
 	d.decoyBlocks[b.ID] = b
 	d.mu.Unlock()
 }
 
-// OnWrite is a pass-through — decoy blocks are registered via SetDecoy, not Write.
+// OnWrite ist ein reiner Passthrough — Decoys werden via SetDecoy registriert, nicht via Write.
 func (d *DeniableStrategy) OnWrite(b storage.Block) (storage.Block, error) {
 	return b, nil
 }
 
-// OnRead returns the decoy block when deniable mode is active and a decoy
-// exists for the requested ID; otherwise returns the real block.
+// OnRead gibt den Decoy-Block zurück, wenn Deniable Mode aktiv ist und ein Decoy
+// existiert. Sonst den echten Block.
 func (d *DeniableStrategy) OnRead(b storage.Block) (storage.Block, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
@@ -52,7 +55,7 @@ func (d *DeniableStrategy) OnRead(b storage.Block) (storage.Block, error) {
 	return b, nil
 }
 
-// OnTrigger activates ("decoy") or deactivates ("real") deniable mode.
+// OnTrigger aktiviert ("decoy") oder deaktiviert ("real") den Deniable Mode.
 func (d *DeniableStrategy) OnTrigger(key string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

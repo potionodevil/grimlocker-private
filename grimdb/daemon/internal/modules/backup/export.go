@@ -15,27 +15,29 @@ import (
 	"github.com/grimlocker/grimdb/engine/storage"
 )
 
+// buildBlobKeyInfo ist das HKDF-Info-Label für den per-Export-Backup-Key.
 var buildBlobKeyInfo = []byte("GRIMBAK-EXPORT-KEY-v1")
 
-// deriveBackupKey derives the per-export encryption key from the MVK and timestamp.
-// Deterministically reproducible: HKDF-SHA256(MVK, salt=timestamp, info=label).
+// deriveBackupKey leitet den per-Export-Verschlüsselungskey aus dem MVK und dem Export-Timestamp ab.
+// Der Key ist deterministisch reproduzierbar: HKDF-SHA256(MVK, salt=timestamp, info=label).
 func deriveBackupKey(cryptoP crypto.Provider, mvk []byte, exportTimestamp int64) ([]byte, error) {
 	var tsBuf [8]byte
 	binary.BigEndian.PutUint64(tsBuf[:], uint64(exportTimestamp))
 	return cryptoP.DeriveHKDF(mvk, tsBuf[:], buildBlobKeyInfo, 32)
 }
 
-// buildBlob creates the complete .grimbak file at destPath.
-// Returns SHA-256 hex of the written file (post-write checksum) and entry count.
+// buildBlob erstellt die vollständige .grimbak-Datei und schreibt sie nach destPath.
+// Gibt den SHA-256-Hex-String des geschriebenen Files zurück (Post-Write-Checksum).
 func buildBlob(
-	cryptoP   crypto.Provider,
-	store     storage.BlockStore,
-	mvk       []byte,
-	argonSalt []byte,
-	destPath  string,
-	tether    bool,
-	version   string,
+	cryptoP    crypto.Provider,
+	store      storage.BlockStore,
+	mvk        []byte,
+	argonSalt  []byte,
+	destPath   string,
+	tether     bool,
+	version    string,
 ) (sha256hex string, entryCount uint32, err error) {
+	// Alle Blöcke aus dem Store lesen
 	metas, err := store.ListBlocks()
 	if err != nil {
 		return "", 0, fmt.Errorf("export: list blocks: %w", err)
@@ -50,6 +52,7 @@ func buildBlob(
 	}
 	entryCount = uint32(len(blocks))
 
+	// VaultMetaSnapshot bauen
 	exportTs := time.Now().Unix()
 	meta := engbackup.VaultMetaSnapshot{
 		ArgonSalt:  argonSalt,
@@ -57,11 +60,13 @@ func buildBlob(
 		Version:    version,
 	}
 
+	// Payload serialisieren
 	plainPayload, err := engbackup.EncodePayload(blocks, meta)
 	if err != nil {
 		return "", 0, fmt.Errorf("export: encode payload: %w", err)
 	}
 
+	// Backup-Key ableiten + Payload verschlüsseln
 	backupKey, err := deriveBackupKey(cryptoP, mvk, exportTs)
 	if err != nil {
 		return "", 0, fmt.Errorf("export: derive backup key: %w", err)
@@ -77,12 +82,13 @@ func buildBlob(
 		return "", 0, fmt.Errorf("export: encrypt payload: %w", err)
 	}
 
+	// Header zusammenbauen
 	hdr := engbackup.BlobHeader{
-		FormatVersion:     engbackup.FormatVersionV1,
-		ExportTimestamp:   exportTs,
+		FormatVersion:    engbackup.FormatVersionV1,
+		ExportTimestamp:  exportTs,
 		GrimlockerVersion: version,
-		EntryCount:        entryCount,
-		HardwareTethered:  tether,
+		EntryCount:       entryCount,
+		HardwareTethered: tether,
 	}
 	if tether {
 		hdr.Flags |= engbackup.FlagHardwareTethered
@@ -93,6 +99,7 @@ func buildBlob(
 		hdr.HardwareID = computeCommitment(vaultID, exportTs)
 	}
 
+	// Datei schreiben
 	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return "", 0, fmt.Errorf("export: open dest file: %w", err)
@@ -115,6 +122,7 @@ func buildBlob(
 		return "", 0, writeErr
 	}
 
+	// Post-Write-Checksum: Re-Read der Datei um Bit-Flips zu erkennen
 	sha256hex, err = checksumFile(destPath)
 	if err != nil {
 		return "", 0, fmt.Errorf("export: post-write checksum: %w", err)
@@ -123,7 +131,7 @@ func buildBlob(
 	return sha256hex, entryCount, nil
 }
 
-// checksumFile computes SHA-256 over the given file and returns the hex string.
+// checksumFile berechnet SHA-256 über die gegebene Datei und gibt den Hex-String zurück.
 func checksumFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {

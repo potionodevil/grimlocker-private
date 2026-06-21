@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/grimlocker/grimdb/kernel"
+	"github.com/grimlocker/grimdb/engine/kernel"
 )
 
 // Dispatcher is the restricted plugin view of the kernel bus.

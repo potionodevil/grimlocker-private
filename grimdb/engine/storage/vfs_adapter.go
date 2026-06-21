@@ -1,6 +1,6 @@
-// Package storage provides the virtual encrypted filesystem (VFS) built on top
-// of the BlockStore. No OS FUSE driver is required — the VFS works on all
-// platforms by mapping file names to encrypted Block IDs.
+// Package storage implementiert das Virtual Encrypted Filesystem (VFS) auf Basis
+// des BlockStore. Anders als bei FUSE braucht's keinen OS-Treiber — das VFS läuft
+// auf allen Plattformen, indem es Dateinamen auf verschlüsselte Block-IDs mapped.
 package storage
 
 import (
@@ -14,7 +14,7 @@ import (
 	"github.com/grimlocker/grimdb/engine/crypto"
 )
 
-// VFSMeta holds the plaintext metadata stored alongside every VFS file.
+// VFSMeta hält die Plaintext-Metadaten, die neben jeder VFS-Datei gespeichert werden.
 type VFSMeta struct {
 	Name      string `json:"name"`
 	Size      int64  `json:"size"`
@@ -23,30 +23,30 @@ type VFSMeta struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
-// VFS presents a file-named interface over an encrypted BlockStore.
+// VFS bietet ein dateinamen-basiertes Interface über dem verschlüsselten BlockStore.
 //
-// File → Block mapping:
+// File → Block-Mapping:
 //   blockID      = hex(HMAC-SHA256(filenameKey, filename))
 //   metaBlockID  = blockID + "_meta"
 //
-// The filename key is derived from the MVK so that block IDs are deterministic
-// and can be resolved in O(1) without a plaintext index.
+// Der filenameKey wird aus dem MVK abgeleitet, sodass Block-IDs deterministisch
+// sind und in O(1) aufgelöst werden können — ohne Plaintext-Index.
 type VFS struct {
 	bs          BlockStore
 	provider    crypto.Provider
-	filenameKey []byte // 32-byte HMAC key derived from MVK
-	mvk         []byte // held only for encryption operations
+	filenameKey []byte // 32-Byte-HMAC-Key, abgeleitet vom MVK
+	mvk         []byte // nur für Encryption-Vorgänge gehalten
 }
 
-// NewVFS creates a VFS backed by bs. mvk is used to derive the filename key
-// and as the encryption key for file contents and metadata.
+// NewVFS erzeugt ein VFS backed by bs. Der MVK wird für filenameKey-Derivation
+// und für die Ver-/Entschlüsselung von Datei-Inhalten und Metadaten verwendet.
 func NewVFS(bs BlockStore, p crypto.Provider, mvk []byte) (*VFS, error) {
 	if len(mvk) != 32 {
 		return nil, fmt.Errorf("vfs: mvk must be 32 bytes, got %d", len(mvk))
 	}
 
-	// Derive a separate filename key so that knowing a blockID does not reveal
-	// the encryption key (and vice versa).
+	// Ein separater filenameKey wird abgeleitet, damit eine bekannte Block-ID
+	// nicht den Encryption-Key verrät (und umgekehrt).
 	fnKey, err := p.DeriveHKDF(mvk, nil, []byte("grimlocker-vfs-filename-v1"), 32)
 	if err != nil {
 		return nil, fmt.Errorf("vfs: derive filename key: %w", err)
@@ -60,7 +60,7 @@ func NewVFS(bs BlockStore, p crypto.Provider, mvk []byte) (*VFS, error) {
 	}, nil
 }
 
-// Write encrypts data and stores it as a Block, then stores encrypted metadata.
+// Write encryptet data und speichert es als Block plus verschlüsselte Metadaten.
 func (v *VFS) Write(name string, data []byte) error {
 	if name == "" {
 		return fmt.Errorf("vfs: filename must not be empty")
@@ -68,7 +68,7 @@ func (v *VFS) Write(name string, data []byte) error {
 
 	blockID := v.blockID(name)
 
-	// Encrypt the file content.
+	// File-Content encrypten.
 	nonce, err := v.provider.NewNonce()
 	if err != nil {
 		return fmt.Errorf("vfs write %q: nonce: %w", name, err)
@@ -96,7 +96,7 @@ func (v *VFS) Write(name string, data []byte) error {
 		return fmt.Errorf("vfs write %q: store block: %w", name, err)
 	}
 
-	// Store encrypted metadata.
+	// Metadaten verschlüsselt ablegen.
 	meta := VFSMeta{
 		Name:      name,
 		Size:      int64(len(data)),
@@ -107,7 +107,7 @@ func (v *VFS) Write(name string, data []byte) error {
 	return v.writeMeta(blockID, meta)
 }
 
-// Read decrypts and returns the content of the named file.
+// Read entschlüsselt und gibt den Inhalt der genannten Datei zurück.
 func (v *VFS) Read(name string) ([]byte, error) {
 	blockID := v.blockID(name)
 
@@ -126,26 +126,26 @@ func (v *VFS) Read(name string) ([]byte, error) {
 	return pt, nil
 }
 
-// Delete removes the data block and metadata block for name.
+// Delete entfernt den Daten-Block und den Meta-Block für name.
 func (v *VFS) Delete(name string) error {
 	blockID := v.blockID(name)
 
 	if err := v.bs.DeleteBlock(blockID); err != nil {
 		return fmt.Errorf("vfs delete %q data: %w", name, err)
 	}
-	// Best-effort metadata deletion; ignore not-found errors.
+	// Metadaten-Löschung ist best-effort; not-found-Fehler werden ignoriert.
 	_ = v.bs.DeleteBlock(blockID + "_meta")
 	return nil
 }
 
-// Stat returns the decrypted metadata for name.
+// Stat gibt die entschlüsselten Metadaten für name zurück.
 func (v *VFS) Stat(name string) (VFSMeta, error) {
 	blockID := v.blockID(name)
 	return v.readMeta(blockID)
 }
 
-// List returns the plaintext names of all files in the VFS.
-// It iterates all blocks, skips metadata blocks, and decrypts each _meta block.
+// List gibt die Plaintext-Namen aller Dateien im VFS zurück.
+// Iteriert über alle Blöcke, überspringt Meta-Blöcke und entschlüsselt _meta-Blöcke.
 func (v *VFS) List() ([]string, error) {
 	metas, err := v.bs.ListBlocks()
 	if err != nil {
@@ -154,13 +154,12 @@ func (v *VFS) List() ([]string, error) {
 
 	var names []string
 	for _, bm := range metas {
-		// Skip metadata blocks — they are surfaced via Stat, not List.
+		// Meta-Blöcke überspringen — die werden via Stat abgefragt, nicht via List.
 		if len(bm.ID) > 5 && bm.ID[len(bm.ID)-5:] == "_meta" {
 			continue
 		}
 		meta, err := v.readMeta(bm.ID)
 		if err != nil {
-			// Block has no metadata (e.g. a non-VFS block); skip it.
 			continue
 		}
 		names = append(names, meta.Name)
@@ -170,8 +169,8 @@ func (v *VFS) List() ([]string, error) {
 
 // --- private helpers ---
 
-// blockID returns the deterministic block ID for the given filename.
-// Uses HMAC-SHA256 over the filename to prevent enumeration.
+// blockID berechnet die deterministische Block-ID aus dem Dateinamen.
+// HMAC-SHA256 verhindert Enumeration der Dateinamen.
 func (v *VFS) blockID(name string) string {
 	mac := hmac.New(sha256.New, v.filenameKey)
 	mac.Write([]byte(name))

@@ -3,15 +3,14 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { tauriBridge } from '../../services/tauriBridge'
 
 /**
- * PanicButton — Admin-only control that triggers an immediate hard lockdown.
+ * PanicButton — Admin-Only-Control, das einen sofortigen Hard-Lockdown auslöst.
  *
- * Activation requires two confirmations:
- *   1. First: a styled "Are you sure?" dialog.
- *   2. Second: passphrase entry to prove admin identity.
+ * Aktivierung erfordert zwei Bestätigungen:
+ *   1. "Bist du sicher?"-Dialog
+ *   2. Passphrase-Eingabe zur Admin-Identitätsprüfung
  *
- * After activation, the server destroys all key material and the app reloads.
- *
- * Only render this component when the current user has the "admin" role.
+ * Nach der Aktivierung zerstört der Server sämtliches Key-Material und die App lädt neu.
+ * Nur rendern, wenn der aktuelle User die "admin"-Rolle hat.
  */
 export function PanicButton({ userRoles = [] }) {
   const isAdmin = userRoles.includes('admin')
@@ -40,7 +39,7 @@ export function PanicButton({ userRoles = [] }) {
     try {
       await tauriBridge.activatePanicButton(passphrase)
       setStep('done')
-      // Give the server a moment to complete lockdown, then reload.
+      // Dem Server einen Moment geben, den Lockdown abzuschliessen, dann neuladen
       setTimeout(() => window.location.reload(), 2000)
     } catch (e) {
       setError(e.message || 'Aktivierung fehlgeschlagen.')

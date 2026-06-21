@@ -16,29 +16,29 @@ import (
 
 const ingestChunkSize = 4 * 1024 * 1024 // 4MB chunks
 
-// BlobManifest describes an ingested file's structure, checksums and encoding.
+// BlobManifest beschreibt Struktur, Checksummen und Encoding einer ingestierten Datei.
 type BlobManifest struct {
-	ID              string   `json:"id"`               // UUID (internal reference)
-	ManifestBlockID string   `json:"manifest_block_id"` // full block store key: "blob-{uuid}-manifest"
+	ID              string   `json:"id"`               // UUID (interne Referenz)
+	ManifestBlockID string   `json:"manifest_block_id"` // vollständiger Block-Store-Key: "blob-{uuid}-manifest"
 	FileName        string   `json:"file_name"`
 	MIMEType        string   `json:"mime_type"`
 	TotalSize       int64    `json:"total_size"`
 	ChunkIDs        []string `json:"chunk_ids"`
-	SHA256          []byte   `json:"sha256"`              // SHA-256 of full plaintext (before compression)
-	Compressed      bool     `json:"compressed"`          // true → chunks were zstd-compressed before encryption
-	Algorithm       string   `json:"algorithm"`           // "zstd" | "none" — compression algorithm used
-	FolderID        string   `json:"folder_id,omitempty"` // folder this file belongs to, "" = root
+	SHA256          []byte   `json:"sha256"`              // SHA-256 des vollständigen Plaintexts (vor Compression)
+	Compressed      bool     `json:"compressed"`          // true → chunks waren zstd-komprimiert vor Verschlüsselung
+	Algorithm       string   `json:"algorithm"`           // "zstd" | "none"
+	FolderID        string   `json:"folder_id,omitempty"` // Folder, zu dem die Datei gehört, "" = root
 	CreatedAt       int64    `json:"created_at"`
 }
 
-// IngestEngine streams file ingestion with atomic transactions and progress reporting.
+// IngestEngine streamt Datei-Ingestion mit atomaren Transaktionen und Progress-Reporting.
 // Pipeline: Read → Hash → Compress (zstd) → Encrypt (ChaCha20-Poly1305) → Write Block
 type IngestEngine struct {
 	store  BlockStore
 	crypto crypto.Provider
 }
 
-// NewIngestEngine creates an IngestEngine.
+// NewIngestEngine erzeugt einen IngestEngine.
 func NewIngestEngine(store BlockStore, cp crypto.Provider) *IngestEngine {
 	return &IngestEngine{
 		store:  store,
@@ -46,10 +46,10 @@ func NewIngestEngine(store BlockStore, cp crypto.Provider) *IngestEngine {
 	}
 }
 
-// Ingest streams binary data from r, optionally compresses it, encrypts it in
-// 4MB chunks with the given MVK, writes to BlockStore, and returns a signed
-// BlobManifest. On error, performs rollback.
-// progressFn is called with (bytesRead, totalSize) for progress reporting.
+// Ingest streamt Binary-Daten von r, komprimiert optional, encryptet in 4MB-Chunks
+// mit dem gegebenen MVK, schreibt in den BlockStore und gibt ein signiertes
+// BlobManifest zurück. Bei Fehler erfolgt Rollback.
+// progressFn wird mit (bytesRead, totalSize) für Fortschrittsmeldungen aufgerufen.
 func (e *IngestEngine) Ingest(
 	ctx context.Context,
 	mvk []byte,
@@ -60,8 +60,8 @@ func (e *IngestEngine) Ingest(
 	return e.IngestWithOptions(ctx, mvk, name, mimeType, r, true, progressFn)
 }
 
-// IngestWithOptions is like Ingest but allows disabling compression
-// (useful for already-compressed file types like JPEG, MP4, ZIP).
+// IngestWithOptions ist wie Ingest, erlaubt aber das Deaktivieren der Compression
+// (nützlich für bereits komprimierte Formate wie JPEG, MP4, ZIP).
 func (e *IngestEngine) IngestWithOptions(
 	ctx context.Context,
 	mvk []byte,
@@ -80,7 +80,7 @@ func (e *IngestEngine) IngestWithOptions(
 	totalBytesRead := int64(0)
 	chunkNum := 0
 
-	// Read and (optionally compress then) encrypt in 4MB chunks.
+	// Read → Hash → optional Compress → Encrypt in 4MB-Chunks.
 	buf := make([]byte, ingestChunkSize)
 	for {
 		select {
@@ -95,22 +95,22 @@ func (e *IngestEngine) IngestWithOptions(
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
 
-			// 1. Hash the plaintext before any transformation.
+			// 1. Plaintext vor jeder Transformation hashen.
 			_, _ = hasher.Write(chunk)
 
-			// 2. Compress if enabled — prepends a marker byte.
+			// 2. Compression (optional) — ein Marker-Byte wird vorangestellt.
 			chunkToEncrypt := chunk
 			if compress {
 				chunkToEncrypt = CompressInPlace(chunk)
 			} else {
-				// Prepend uncompressed marker so Decompress is always idempotent.
+				// Unkomprimierten Marker voranstellen, damit Decompress immer idempotent ist.
 				marked := make([]byte, 1+len(chunk))
 				marked[0] = markerUncompressed
 				copy(marked[1:], chunk)
 				chunkToEncrypt = marked
 			}
 
-			// 3. Encrypt the (possibly compressed) chunk.
+			// 3. (Komprimierten) Chunk verschlüsseln.
 			nonce, errN := e.crypto.NewNonce()
 			if errN != nil {
 				e.deleteChunks(chunkIDs)
@@ -125,7 +125,7 @@ func (e *IngestEngine) IngestWithOptions(
 					fmt.Sprintf("encrypt_chunk_%d", chunkNum), errC)
 			}
 
-			// 4. Write encrypted block.
+			// 4. Verschlüsselten Block schreiben.
 			block := Block{
 				ID:       chunkID,
 				Nonce:    nonce[:],
@@ -142,7 +142,6 @@ func (e *IngestEngine) IngestWithOptions(
 			totalBytesRead += int64(n)
 			chunkNum++
 
-			// Report progress.
 			if progressFn != nil {
 				progressFn(totalBytesRead, totalBytesRead)
 			}
@@ -162,7 +161,7 @@ func (e *IngestEngine) IngestWithOptions(
 		algorithm = "zstd"
 	}
 
-	// Build and write manifest block.
+	// Manifest-Block bauen und schreiben.
 	manifest := BlobManifest{
 		ID:              manifestID,
 		ManifestBlockID: fmt.Sprintf("blob-%s-manifest", manifestID),
@@ -188,9 +187,8 @@ func (e *IngestEngine) IngestWithOptions(
 		return BlobManifest{}, gerrors.NewStorageIOError("write_manifest", manifestBlockID, err)
 	}
 
-	// Critical: flush the index to disk after writing manifest.
-	// Without this, the index may not be persisted and data can become
-	// inconsistent if the connection closes before the next operation.
+	// Wichtig: Nach dem Manifest-Schreiben den Index flushen.
+	// Sonst kann der Index inkonsistent werden, wenn die Verbindung vor der nächsten Operation schließt.
 	if err := e.store.Flush(); err != nil {
 		log.Printf("[IngestEngine] [Code %d] Flush after manifest write failed: %v — rolling back",
 			gerrors.ErrCodeStorageIndexFailed, err)
@@ -198,7 +196,6 @@ func (e *IngestEngine) IngestWithOptions(
 		return BlobManifest{}, gerrors.NewStorageIndexError("flush_after_ingest", err)
 	}
 
-	// Final progress callback.
 	if progressFn != nil {
 		progressFn(totalBytesRead, totalBytesRead)
 	}
@@ -206,8 +203,8 @@ func (e *IngestEngine) IngestWithOptions(
 	return manifest, nil
 }
 
-// ReadManifest reads a BlobManifest from the block store by its manifest block ID.
-// The manifest block ID is of the form "blob-{uuid}-manifest".
+// ReadManifest liest ein BlobManifest aus dem BlockStore anhand der Manifest-Block-ID.
+// Die Manifest-Block-ID hat das Format "blob-{uuid}-manifest".
 func (e *IngestEngine) ReadManifest(manifestBlockID string) (BlobManifest, error) {
 	block, err := e.store.ReadBlock(manifestBlockID)
 	if err != nil {
@@ -227,8 +224,8 @@ func (e *IngestEngine) ReadManifest(manifestBlockID string) (BlobManifest, error
 	return manifest, nil
 }
 
-// RetrieveBlob decrypts and optionally decompresses all chunks for a given
-// BlobManifest and writes the plaintext to w.
+// RetrieveBlob entschlüsselt und dekomprimiert alle Chunks eines BlobManifests
+// und schreibt den Plaintext in w.
 func (e *IngestEngine) RetrieveBlob(
 	ctx context.Context,
 	mvk []byte,
@@ -249,8 +246,6 @@ func (e *IngestEngine) RetrieveBlob(
 
 		block, err := e.store.ReadBlock(chunkID)
 		if err != nil {
-			// Preserve the typed error from ReadBlock (e.g. StorageNotFound, StorageCorruption)
-			// but add retrieve context on top if it's a plain error.
 			if _, ok := err.(*gerrors.GrimlockError); ok {
 				return err
 			}
@@ -258,7 +253,6 @@ func (e *IngestEngine) RetrieveBlob(
 				fmt.Sprintf("read_chunk_%d", i), chunkID, err)
 		}
 
-		// Decrypt.
 		if len(block.Nonce) < 12 {
 			return gerrors.NewStorageCorruptionError(
 				fmt.Sprintf("nonce_too_short_chunk_%d", i), chunkID,
@@ -269,7 +263,7 @@ func (e *IngestEngine) RetrieveBlob(
 			return gerrors.NewCryptoDecryptionError(chunkID, err)
 		}
 
-		// Decompress (marker-aware — handles both old and new blocks).
+		// Dekomprimieren (Marker-bewusst — handled alte und neue Blöcke).
 		decompressed, err := Decompress(plaintext)
 		if err != nil {
 			return gerrors.NewStorageCorruptionError(
@@ -286,8 +280,8 @@ func (e *IngestEngine) RetrieveBlob(
 	return nil
 }
 
-// deleteChunks performs rollback by deleting all written chunk blocks.
-// Failures are logged but not returned — rollback is best-effort.
+// deleteChunks macht Rollback durch Löschen aller geschriebenen Chunk-Blöcke.
+// Fehler werden geloggt aber nicht zurückgegeben — Rollback ist best-effort.
 func (e *IngestEngine) deleteChunks(chunkIDs []string) {
 	for _, id := range chunkIDs {
 		if err := e.store.DeleteBlock(id); err != nil {
@@ -297,7 +291,7 @@ func (e *IngestEngine) deleteChunks(chunkIDs []string) {
 	}
 }
 
-// generateUUID generates a random UUID v4 string.
+// generateUUID erzeugt eine zufällige UUID v4.
 func generateUUID() string {
 	var b [16]byte
 	_, _ = rand.Read(b[:])
