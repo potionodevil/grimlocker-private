@@ -126,7 +126,7 @@ func main() {
 			return meta.ArgonSalt, nil
 		},
 		blockStore,
-		nil, // no export policy for single-user tier; enterprise can inject RBAC here
+		backupExportPolicy(),
 	)
 	if err := reg.Add(backupMod); err != nil {
 		log.Printf("[Omega] Register backup module: %v (non-fatal)", err)
@@ -481,7 +481,8 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		healthInfo := map[string]interface{}{
 			"status": "ready",
-			"tier":   vault.Tier(),
+			"tier":   daemonTier(),
+			"role":   sessionUserRole(""),
 		}
 		authed := r.Header.Get("X-Grimlocker-Token") == token || r.URL.Query().Get("token") == token
 		if authed {
