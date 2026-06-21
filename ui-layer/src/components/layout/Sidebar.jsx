@@ -31,6 +31,7 @@ const ICONS = {
   tag:       'M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 0 1 0 2.828l-7 7a2 2 0 0 1-2.828 0l-7-7A2 2 0 0 1 3 12V7a4 4 0 0 1 4-4z',
   lock:      'M12 15v2m-6 4h12a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2zm10-10V7a4 4 0 0 0-8 0v4h8z',
   sync:      'M4 4v5h.582m15.356 2A8.001 8.001 0 0 0 4.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 0 1-15.357-2m15.357 2H15',
+  backup:    'M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-4-4 4m0 0-4-4m4 4V4',
 }
 
 // ── Farbpunkte für die Gruppen (ein Dutzend Farben, mehr braucht kein Mensch) ─
@@ -127,6 +128,9 @@ export function Sidebar({
 }) {
   const { preferences } = useGrimStore()
   const passwordGroups = preferences.passwordGroups || []
+  const appTier = useGrimStore((s) => s.appTier)
+  const userRole = useGrimStore((s) => s.userRole)
+  const canAccessBackup = appTier === 'single' || userRole === 'admin'
 
   const [sectionsOpen, setSectionsOpen] = useState({
     vault: true,
@@ -341,6 +345,15 @@ export function Sidebar({
                 active={activeView === 'sync'}
                 onClick={onNavigate}
               />
+              {canAccessBackup && (
+                <NavItem
+                  id="backup"
+                  label="Backup"
+                  icon={ICONS.backup}
+                  active={activeView === 'backup'}
+                  onClick={onNavigate}
+                />
+              )}
             </div>
           )}
         </div>

@@ -32,6 +32,8 @@ export const useGrimStore = create((set, get) => ({
   throughputData: [],
   operationsLog: [],
   daemonStatus: 'offline',
+  appTier: 'single',
+  userRole: 'admin',
 
   entries: [],
   activeEntry: null,
@@ -211,6 +213,8 @@ export const useGrimStore = create((set, get) => ({
   },
 
   setDaemonStatus: (status) => set({ daemonStatus: status }),
+  setAppTier: (tier) => set({ appTier: tier }),
+  setUserRole: (role) => set({ userRole: role }),
 }))
 
 let zeroizeInterval = null
