@@ -15,6 +15,7 @@ import (
 //	4000-4999  Security / Lockdown / Memory
 //	5000-5999  Kernel / Bus / Event
 //	6000-6999  API / Protocol / Transport
+//	7000-7099  Backup / Air-Gap Export-Import
 
 // ─── Auth Errors (1000-1999) ──────────────────────────────────────────────────
 
@@ -407,4 +408,54 @@ func (e *GrimlockError) WithModule(moduleID string) *GrimlockError {
 func (e *GrimlockError) WithEvent(eventType string) *GrimlockError {
 	e.EventType = eventType
 	return e
+}
+
+// ─── Backup Errors (7000-7099) ────────────────────────────────────────────────
+
+const (
+	ErrCodeBackupInvalidMagic    = 7001 // File does not start with GRIMBAK magic
+	ErrCodeBackupVersionMismatch = 7002 // FormatVersion not supported
+	ErrCodeBackupTetherMismatch  = 7003 // HardwareID does not match current vault
+	ErrCodeBackupSessionNotFound = 7004 // session_id unknown or expired
+	ErrCodeBackupSessionExpired  = 7005 // Session TTL exceeded
+	ErrCodeBackupDecryptFailed   = 7006 // Payload decryption failed (wrong key or corrupted)
+	ErrCodeBackupChecksumFailed  = 7007 // Post-write SHA-256 mismatch
+	ErrCodeBackupHeaderTampered  = 7008 // HeaderHMAC mismatch — header may be tampered
+)
+
+func NewBackupInvalidMagicError(path string) *GrimlockError {
+	return newError(ErrCodeBackupInvalidMagic, "not a valid GRIMBAK backup file", nil,
+		ErrorContext{Operation: "backup_peek", Details: map[string]string{"path": path}}, false)
+}
+
+func NewBackupVersionMismatchError(got uint8) *GrimlockError {
+	return newError(ErrCodeBackupVersionMismatch, "unsupported backup format version", nil,
+		ErrorContext{Operation: "backup_peek",
+			Details: map[string]string{"got": fmt.Sprintf("%d", got), "supported": "1"}}, false)
+}
+
+func NewBackupTetherMismatchError() *GrimlockError {
+	return newError(ErrCodeBackupTetherMismatch, "backup is tethered to a different vault — import denied", nil,
+		ErrorContext{Operation: "backup_authorize"}, false)
+}
+
+func NewBackupSessionNotFoundError(sessionID string) *GrimlockError {
+	return newError(ErrCodeBackupSessionNotFound, "backup import session not found or expired", nil,
+		ErrorContext{Operation: "backup_authorize",
+			Details: map[string]string{"session_id": safePrefix(sessionID, 8)}}, false)
+}
+
+func NewBackupDecryptFailedError(cause error) *GrimlockError {
+	return newError(ErrCodeBackupDecryptFailed, "backup payload decryption failed — wrong key or corrupted file", cause,
+		ErrorContext{Operation: "backup_authorize"}, true)
+}
+
+func NewBackupChecksumFailedError(path string) *GrimlockError {
+	return newError(ErrCodeBackupChecksumFailed, "post-write checksum mismatch — possible bit-flip during write", nil,
+		ErrorContext{Operation: "backup_export", Details: map[string]string{"path": path}}, false)
+}
+
+func NewBackupHeaderTamperedError(path string) *GrimlockError {
+	return newError(ErrCodeBackupHeaderTampered, "backup header integrity check failed — file may be tampered", nil,
+		ErrorContext{Operation: "backup_peek", Details: map[string]string{"path": path}}, false)
 }
