@@ -105,6 +105,15 @@ const (
 	EvSystemError       EventType = "SYSTEM.ERROR"
 	EvSystemHealthCheck EventType = "SYSTEM.HEALTH_CHECK"
 	EvSystemLog         EventType = "SYSTEM.LOG"
+
+	// BACKUP channel — air-gap export and two-phase import
+	// Payload schemas are defined in engine/backup/types.go.
+	EvBackupExport           EventType = "BACKUP.EXPORT"
+	EvBackupPeek             EventType = "BACKUP.PEEK"
+	EvBackupAuthorize        EventType = "BACKUP.AUTHORIZE"
+	EvBackupChecksum         EventType = "BACKUP.CHECKSUM"
+	EvBackupResult           EventType = "BACKUP.RESULT"
+	EvBackupChecksumComplete EventType = "BACKUP.CHECKSUM_COMPLETE"
 )
 
 // Event is the unit of communication between all modules. Payloads are JSON.

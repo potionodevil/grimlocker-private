@@ -28,6 +28,7 @@ import (
 	gqldisp "github.com/grimlocker/grimdb/daemon/internal/gql"
 	dwkernel "github.com/grimlocker/grimdb/daemon/internal/kernel"
 	dwsec "github.com/grimlocker/grimdb/daemon/internal/security"
+	backupmod "github.com/grimlocker/grimdb/daemon/internal/modules/backup"
 	toolmod "github.com/grimlocker/grimdb/daemon/internal/modules/tools"
 	workspace "github.com/grimlocker/grimdb/daemon/internal/workspace"
 	"github.com/grimlocker/grimdb/engine/kernel"
@@ -110,6 +111,25 @@ func main() {
 	toolsMod := toolmod.NewModule(blockStore)
 	if err := reg.Add(toolsMod); err != nil {
 		log.Printf("[Omega] Register tools module: %v (non-fatal)", err)
+	}
+
+	// ── 5d. Backup module (BACKUP channel — Air-Gap Export/Import) ───────────
+	backupmod.GrimlockerVersion = daemonVersion
+	backupMod := backupmod.NewModule(
+		cryptoProv,
+		func(handle string) ([]byte, bool) { return secMod.RetrieveMVK(handle) },
+		func() ([]byte, error) {
+			meta, err := grimdb.LoadMeta(appDir)
+			if err != nil {
+				return nil, err
+			}
+			return meta.ArgonSalt, nil
+		},
+		blockStore,
+		nil, // no export policy for single-user tier; enterprise can inject RBAC here
+	)
+	if err := reg.Add(backupMod); err != nil {
+		log.Printf("[Omega] Register backup module: %v (non-fatal)", err)
 	}
 
 	// ── 6. Auth handler (in-bus, via provider interface) ─────────────────────
