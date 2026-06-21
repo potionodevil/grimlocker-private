@@ -118,6 +118,13 @@ const MSG_SYNC_RESULT           = 0x72 // SKE-encrypted JSON sync state
 const MSG_AUDIT_LIST            = 0x73 // [2-byte big-endian n] — request last n audit entries
 const MSG_AUDIT_RESULT          = 0x74 // SKE-encrypted JSON []SecurityEvent
 
+// Air-Gap-Backup — Export, Peek (Phase 1), Authorize (Phase 2), Checksum
+const MSG_BACKUP_EXPORT         = 0x80 // {dest_path, hardware_tether}
+const MSG_BACKUP_PEEK           = 0x81 // {source_path}
+const MSG_BACKUP_AUTHORIZE      = 0x82 // {session_id, merge}
+const MSG_BACKUP_CHECKSUM       = 0x83 // {path}
+const MSG_BACKUP_RESULT         = 0x84 // JSON result (ExportResult|PeekResult|AuthorizeResult|ChecksumResult)
+
 /** Menschenlesbare Namen für jeden Message-Type — wird fürs Throughput-Logging gebraucht. */
 const OP_NAMES = {
   0x01: 'GET_HEADER',
@@ -425,6 +432,14 @@ class TauriBridge {
             this.reconnectAttempts = 0
             useGrimStore.getState().setDaemonStatus('online')
             this._emit('connected')
+            // Tier + Role aus /health laden (non-blocking, non-fatal)
+            fetch(`http://127.0.0.1:${this.port}/health?token=${encodeURIComponent(this.token)}`)
+              .then(r => r.json())
+              .then(info => {
+                useGrimStore.getState().setAppTier(info.tier || 'single')
+                useGrimStore.getState().setUserRole(info.role || 'admin')
+              })
+              .catch(() => {})
             resolve()
           })
         })
@@ -2021,14 +2036,18 @@ class TauriBridge {
             resolve(raw)
           }
         } catch (e) {
-          reject(e)
+          const msg = e?.message ?? ''
+          if (msg.includes('sync unavailable') || msg.includes('not valid JSON') || msg.includes('Unexpected token')) {
+            resolve({ peers: [], last_sync_at: 0, device_id: '' })
+          } else {
+            reject(e)
+          }
         }
       })
 
       const errHandler = this.on(MSG_ERROR, (payload) => {
         handler(); errHandler()
         const msg = new TextDecoder().decode(payload)
-        // "sync unavailable" is not a fatal error — resolve with empty state
         if (msg.includes('sync unavailable')) {
           resolve({ peers: [], last_sync_at: 0, device_id: '' })
         } else {
@@ -2061,6 +2080,119 @@ class TauriBridge {
       })
 
       this._send(MSG_SYNC_TRIGGER)
+    })
+  }
+
+  // ── Air-Gap-Backup ────────────────────────────────────────────────────────
+
+  /**
+   * Exportiert den Vault in eine .grimbak-Datei.
+   * @param {string} destPath — Ziel-Dateipfad
+   * @param {boolean} hardwareTether — Backup an diese Hardware binden
+   * @returns {Promise<{path:string, sha256:string, entry_count:number}>}
+   */
+  exportBackup(destPath, hardwareTether = false) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_BACKUP_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const result = JSON.parse(new TextDecoder().decode(payload))
+          if (result.error) { reject(new Error(result.error)); return }
+          resolve(result)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_BACKUP_EXPORT, new TextEncoder().encode(
+        JSON.stringify({ dest_path: destPath, hardware_tether: hardwareTether })
+      ))
+    })
+  }
+
+  /**
+   * Phase 1 — Liest den Plaintext-Header einer .grimbak-Datei ohne Entschlüsselung.
+   * @param {string} sourcePath — Quell-Dateipfad
+   * @returns {Promise<PeekResult>}
+   */
+  peekBackup(sourcePath) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_BACKUP_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const result = JSON.parse(new TextDecoder().decode(payload))
+          if (result.error) { reject(new Error(result.error)); return }
+          resolve(result)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_BACKUP_PEEK, new TextEncoder().encode(
+        JSON.stringify({ source_path: sourcePath })
+      ))
+    })
+  }
+
+  /**
+   * Phase 2 — Importiert ein Backup mit der session_id aus Phase 1 (peekBackup).
+   * Vault muss entsperrt sein.
+   * @param {string} sessionId — Session-ID aus peekBackup()
+   * @param {boolean} merge — true = bestehende IDs überspringen; false = überschreiben
+   * @returns {Promise<{imported_count:number, skipped_count:number}>}
+   */
+  authorizeBackup(sessionId, merge = false) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_BACKUP_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const result = JSON.parse(new TextDecoder().decode(payload))
+          if (result.error) { reject(new Error(result.error)); return }
+          resolve(result)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_BACKUP_AUTHORIZE, new TextEncoder().encode(
+        JSON.stringify({ session_id: sessionId, merge })
+      ))
+    })
+  }
+
+  /**
+   * Berechnet SHA-256 über eine .grimbak-Datei (kein Vault-Unlock nötig).
+   * @param {string} path — Dateipfad
+   * @returns {Promise<{path:string, sha256:string}>}
+   */
+  checksumBackup(path) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_BACKUP_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const result = JSON.parse(new TextDecoder().decode(payload))
+          if (result.error) { reject(new Error(result.error)); return }
+          resolve(result)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_BACKUP_CHECKSUM, new TextEncoder().encode(
+        JSON.stringify({ path })
+      ))
     })
   }
 

@@ -11,6 +11,7 @@ import { AuditLog } from '../admin/AuditLog'
 import { PolicyEditor } from '../admin/PolicyEditor'
 import { HealthCards } from '../admin/HealthCards'
 import { SyncPanel } from '../admin/SyncPanel'
+import { BackupPanel } from '../admin/BackupPanel'
 import { PreferencesPanel } from '../preferences/PreferencesPanel'
 import { DebugPanel } from '../debug/DebugPanel'
 import { FileVaultBrowser } from '../vault/FileVaultBrowser'
@@ -79,6 +80,7 @@ export function AppShell() {
     )
     if (view === 'health') return <div className="p-6"><HealthCards /></div>
     if (view === 'sync') return <SyncPanel />
+    if (view === 'backup') return <BackupPanel />
     if (view === 'FILE_VAULT') return (
       <FileVaultBrowser
         jumpToFolder={activeFileVaultFolder}
