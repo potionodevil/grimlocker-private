@@ -42,8 +42,6 @@ import (
 
 	gorillaws "github.com/gorilla/websocket"
 )
-
-// daemonVersion is set at build time via: -ldflags "-X main.daemonVersion=..."
 var daemonVersion = "omega-2026-05-24-v3"
 
 func main() {
@@ -69,9 +67,6 @@ func main() {
 		log.Fatalf("[Omega] Failed to create app directory: %v", err)
 	}
 
-	// ── DEV ONLY: Vault-Reset bei jedem Start ────────────────────────────────
-	// Auf true setzen um alle Vault-Daten beim Start zu löschen (frischer Start).
-	// TODO: Diese Zeile + den if-Block vor dem Prod-Release löschen!
 	const devReset = false
 	if devReset {
 		log.Printf("[Omega] [DEV] devReset=true — lösche Vault-Daten in: %s", appDir)
