@@ -52,6 +52,18 @@ export const useGrimStore = create((set, get) => ({
 
   setConnected: (connected) => set({ connected }),
 
+  // Lockdown state — called by LockdownScreen when auth fails with lockdown metadata
+  setLockdownState: ({ isLockdown, isCritical, overrideAttemptsLeft, lockdownTimestamp }) =>
+    set((s) => ({
+      isLockdown: isLockdown ?? s.isLockdown,
+      isCritical: isCritical ?? s.isCritical,
+      header: {
+        ...s.header,
+        overrideAttemptsLeft: overrideAttemptsLeft ?? s.header.overrideAttemptsLeft,
+        lockdownTimestamp:    lockdownTimestamp    ?? s.header.lockdownTimestamp,
+      },
+    })),
+
   setEntries: (entries) => set({ entries }),
   setActiveEntry: (activeEntry) => set({ activeEntry }),
   clearActiveEntry: () => set({ activeEntry: null }),

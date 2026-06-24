@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { tauriBridge } from '../../services/tauriBridge'
 import { useGrimStore } from '../../store/useGrimStore'
 import { FileVaultUpload } from './FileVaultUpload'
+import { NoteEditor } from './NoteView'
 
 // Passphrase-Modi für SSH-Key-Generierung:
 // 'none'   — keine Passphrase (Key funktioniert ohne)
@@ -27,6 +28,18 @@ const ENTRY_TYPES = [
     label: 'Certificate',
     category: 'CERTIFICATE',
     fields: ['title', 'domain', 'certificate', 'privateKey', 'notes'],
+  },
+  {
+    id: 'totp',
+    label: 'TOTP / 2FA',
+    category: 'TOTP',
+    fields: [], // TOTP hat ein eigenes Formular
+  },
+  {
+    id: 'note',
+    label: 'Sichere Notiz',
+    category: 'NOTE',
+    fields: ['title', 'notes'],
   },
   {
     id: 'file_vault',
@@ -57,22 +70,35 @@ export function AddEntryModal({ open, onClose }) {
     if (!form.title?.trim()) return
     setSaving(true)
 
-    const entry = {
-      type,
-      category: activeType.category,
-      title:        form.title?.trim() || 'Untitled',
-      username:     form.username     || '',
-      password:     form.password     || '',
-      url:          form.url          || '',
-      notes:        form.notes        || '',
-      privateKey:   form.privateKey   || '',
-      publicKey:    form.publicKey    || '',
-      domain:       form.domain       || '',
-      certificate:  form.certificate  || '',
-    }
-
     try {
-      await tauriBridge.saveEntry(entry)
+      // TOTP-Einträge werden via generateTOTP mit save_to_vault=true gespeichert.
+      if (type === 'totp') {
+        if (!form.totpSecret?.trim()) { alert('TOTP-Secret fehlt.'); setSaving(false); return }
+        await tauriBridge.generateTOTP({
+          secret: form.totpSecret.trim(),
+          issuer: form.title.trim(),
+          account: form.totpAccount?.trim() ?? '',
+          algorithm: form.totpAlgorithm || 'SHA1',
+          digits: parseInt(form.totpDigits ?? '6', 10),
+          period: parseInt(form.totpPeriod ?? '30', 10),
+          saveToVault: true,
+        })
+      } else {
+        const entry = {
+          type,
+          category: activeType.category,
+          title:        form.title?.trim() || 'Untitled',
+          username:     form.username     || '',
+          password:     form.password     || '',
+          url:          form.url          || '',
+          notes:        form.notes        || '',
+          privateKey:   form.privateKey   || '',
+          publicKey:    form.publicKey    || '',
+          domain:       form.domain       || '',
+          certificate:  form.certificate  || '',
+        }
+        await tauriBridge.saveEntry(entry)
+      }
       await fetchEntries()
       onClose()
       setForm({})
@@ -178,15 +204,15 @@ export function AddEntryModal({ open, onClose }) {
 
               {/* Type selector */}
               <div className="px-5 py-3 border-b border-border shrink-0">
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
                   {ENTRY_TYPES.map((t) => (
                     <button
                       key={t.id}
                       onClick={() => { setType(t.id); setForm({}); setSshMode('generate'); setPassphrase('none'); setCustomPass('') }}
                       className={[
-                        'px-3 h-7 rounded-md text-sm transition-fast',
+                        'px-3 h-7 rounded-md text-xs font-medium whitespace-nowrap shrink-0 transition-fast',
                         type === t.id
-                          ? 'bg-accent-subtle text-accent font-medium'
+                          ? 'bg-accent text-white'
                           : 'text-text-secondary hover:text-text-primary hover:bg-surface-subtle',
                       ].join(' ')}
                     >
@@ -352,6 +378,64 @@ export function AddEntryModal({ open, onClose }) {
                           </>
                         )}
                       </>
+                    ) : type === 'totp' ? (
+                      /* ── TOTP entry form ── */
+                      <div className="space-y-3">
+                        {[
+                          { key: 'title',         label: 'Bezeichnung (Issuer) *',  placeholder: 'z.B. GitHub, Google' },
+                          { key: 'totpAccount',   label: 'Account (E-Mail)',         placeholder: 'user@example.com' },
+                          { key: 'totpSecret',    label: 'TOTP-Secret (Base32) *',  placeholder: 'JBSWY3DPEHPK3PXP', mono: true },
+                        ].map(({ key, label, placeholder, mono }) => (
+                          <div key={key}>
+                            <label className="block text-sm text-text-secondary mb-1">{label}</label>
+                            <input
+                              type="text"
+                              value={form[key] || ''}
+                              onChange={(e) => update(key, e.target.value)}
+                              placeholder={placeholder}
+                              className={`w-full h-9 px-3 rounded-md bg-surface-base border border-border text-text-primary text-sm placeholder:text-text-disabled focus:outline-none focus:ring-2 focus:ring-accent/30 focus:border-accent transition-fast ${mono ? 'font-mono' : ''}`}
+                            />
+                          </div>
+                        ))}
+                        <div className="flex gap-3">
+                          <div className="flex-1">
+                            <label className="block text-sm text-text-secondary mb-1">Algorithmus</label>
+                            <select
+                              value={form.totpAlgorithm || 'SHA1'}
+                              onChange={(e) => update('totpAlgorithm', e.target.value)}
+                              className="w-full h-9 px-3 rounded-md bg-surface-base border border-border text-text-primary text-sm focus:outline-none focus:ring-2 focus:ring-accent/30"
+                            >
+                              <option>SHA1</option>
+                              <option>SHA256</option>
+                              <option>SHA512</option>
+                            </select>
+                          </div>
+                          <div className="w-24">
+                            <label className="block text-sm text-text-secondary mb-1">Stellen</label>
+                            <select
+                              value={form.totpDigits || '6'}
+                              onChange={(e) => update('totpDigits', e.target.value)}
+                              className="w-full h-9 px-3 rounded-md bg-surface-base border border-border text-text-primary text-sm focus:outline-none"
+                            >
+                              <option>6</option>
+                              <option>8</option>
+                            </select>
+                          </div>
+                          <div className="w-24">
+                            <label className="block text-sm text-text-secondary mb-1">Period (s)</label>
+                            <input
+                              type="number"
+                              value={form.totpPeriod || '30'}
+                              onChange={(e) => update('totpPeriod', e.target.value)}
+                              min="15" max="120"
+                              className="w-full h-9 px-3 rounded-md bg-surface-base border border-border text-text-primary text-sm focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                        <p className="text-xs text-text-tertiary">
+                          Das Secret findest du beim Einrichten der 2FA deines Dienstes — oft als QR-Code oder als Base32-String angezeigt.
+                        </p>
+                      </div>
                     ) : (
                       /* ── Non-SSH entry types ── */
                       <>
@@ -361,7 +445,13 @@ export function AddEntryModal({ open, onClose }) {
                               {field.replace(/([A-Z])/g, ' $1').trim()}
                               {field === 'title' && <span className="text-danger ml-0.5">*</span>}
                             </label>
-                            {field === 'notes' || field === 'privateKey' || field === 'publicKey' || field === 'certificate' ? (
+                            {field === 'notes' && type === 'note' ? (
+                              <NoteEditor
+                                value={form[field] || ''}
+                                onChange={(v) => update(field, v)}
+                                rows={10}
+                              />
+                            ) : field === 'notes' || field === 'privateKey' || field === 'publicKey' || field === 'certificate' ? (
                               <textarea
                                 value={form[field] || ''}
                                 onChange={(e) => update(field, e.target.value)}

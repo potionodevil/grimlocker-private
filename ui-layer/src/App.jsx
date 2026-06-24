@@ -6,6 +6,7 @@ import { VaultDashboard } from './components/dashboard/VaultDashboard'
 import { TerminalError } from './components/shared/TerminalError'
 import { SetupScreen } from './components/auth/SetupScreen'
 import { LoginScreen } from './components/auth/LoginScreen'
+import { SplashScreen } from './components/shared/SplashScreen'
 import { AuthProvider, useAuth, AUTH_STATE } from './context/AuthContext'
 import { useWindowClose } from './hooks/useWindowClose'
 import { useAutofill } from './hooks/useAutofill'
@@ -27,48 +28,92 @@ const pageVariants = {
   },
 }
 
-function AuthErrorScreen({ error, retryCount, onRetry }) {
-  const [retrying, setRetrying] = useState(false)
-
-  const handleRetry = async () => {
-    setRetrying(true)
-    onRetry()
-  }
-
+function AuthErrorScreen({ error, onRetry }) {
   return (
-    <div className="min-h-screen bg-surface-app flex items-center justify-center p-6">
-      <div className="max-w-md w-full border border-danger/40 rounded-lg p-6 bg-danger-subtle/50">
-        <div className="flex items-center gap-3 mb-4">
-          <svg className="w-5 h-5 text-danger shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-          </svg>
-          <p className="text-danger text-sm font-semibold">Authentication Error</p>
-        </div>
-        {error && (
-          <p className="text-text-secondary text-xs font-mono mb-4 break-all">{error}</p>
-        )}
-        {retryCount > 0 && (
-          <p className="text-text-tertiary text-xs mb-4">{retryCount} attempt{retryCount > 1 ? 's' : ''} made</p>
-        )}
-        <button
-          onClick={handleRetry}
-          disabled={retrying}
-          className="w-full py-2 px-4 rounded-md text-sm font-medium bg-danger/20 text-danger border border-danger/30 hover:bg-danger/30 transition-colors disabled:opacity-50"
-        >
-          {retrying ? 'Retrying...' : 'Retry Connection'}
-        </button>
+    <div style={{
+      position: 'fixed', inset: 0,
+      background: 'var(--surface-app, #0f0f11)',
+      display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      gap: 0,
+    }}>
+      {/* Sad face */}
+      <div style={{ fontSize: 72, lineHeight: 1, marginBottom: 24, userSelect: 'none' }}>
+        😔
       </div>
+
+      <p style={{
+        fontSize: 20, fontWeight: 700,
+        color: 'var(--text-primary, #f0f0f0)',
+        margin: '0 0 10px',
+        letterSpacing: '-0.01em',
+      }}>
+        Da ist etwas schiefgelaufen
+      </p>
+
+      <p style={{
+        fontSize: 13,
+        color: 'var(--text-tertiary, #888)',
+        margin: '0 0 32px',
+        maxWidth: 320, textAlign: 'center', lineHeight: 1.5,
+      }}>
+        Der Vault-Daemon konnte nicht gestartet werden.{error ? ` (${error})` : ''}
+      </p>
+
+      <button
+        onClick={onRetry}
+        style={{
+          padding: '10px 28px',
+          borderRadius: 8,
+          border: '1px solid var(--accent, #4F8EF7)',
+          background: 'transparent',
+          color: 'var(--accent, #4F8EF7)',
+          fontSize: 14, fontWeight: 600,
+          cursor: 'pointer',
+          transition: 'background 0.15s',
+          marginBottom: 12,
+        }}
+        onMouseEnter={e => e.currentTarget.style.background = 'color-mix(in srgb, var(--accent, #4F8EF7) 12%, transparent)'}
+        onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+      >
+        Erneut versuchen
+      </button>
+
+      <button
+        onClick={() => window.location.reload()}
+        style={{
+          padding: '8px 20px',
+          borderRadius: 8,
+          border: '1px solid var(--border-default, #2a2a2e)',
+          background: 'transparent',
+          color: 'var(--text-tertiary, #888)',
+          fontSize: 13, cursor: 'pointer',
+          transition: 'border-color 0.15s',
+        }}
+        onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--text-tertiary, #888)'}
+        onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-default, #2a2a2e)'}
+      >
+        App neu laden
+      </button>
     </div>
   )
 }
 
+const MIN_SPLASH_MS = 1400
+
 function AppContent() {
-  const { authState, error: authError, retryCheck, retryCount } = useAuth()
+  const { authState, error: authError, retryCheck } = useAuth()
   const { error, setError, setConnected, initPreferences, loadWorkspaces } = useGrimStore()
   const { showLocked, handleUnlock, handleCancelLocked } = useAutofill()
+  const [splashDone, setSplashDone] = useState(false)
   useWindowClose()
 
   useEffect(() => { initPreferences() }, [initPreferences])
+
+  useEffect(() => {
+    const t = setTimeout(() => setSplashDone(true), MIN_SPLASH_MS)
+    return () => clearTimeout(t)
+  }, [])
 
   const attemptConnect = useCallback(async () => {
     try {
@@ -104,12 +149,8 @@ function AppContent() {
   }, [attemptConnect, setError, setConnected, loadWorkspaces])
 
   const renderView = () => {
-    if (authState === AUTH_STATE.CHECKING) {
-      return (
-        <div className="min-h-screen bg-surface-app flex items-center justify-center">
-          <div className="text-text-secondary text-sm">Initializing vault...</div>
-        </div>
-      )
+    if (authState === AUTH_STATE.CHECKING || !splashDone) {
+      return <SplashScreen />
     }
 
     if (authState === AUTH_STATE.SETUP) {
@@ -125,7 +166,7 @@ function AppContent() {
     }
 
     if (authState === AUTH_STATE.ERROR) {
-      return <AuthErrorScreen error={authError} retryCount={retryCount} onRetry={retryCheck} />
+      return <AuthErrorScreen error={authError} onRetry={retryCheck} />
     }
 
     return <SetupScreen />
