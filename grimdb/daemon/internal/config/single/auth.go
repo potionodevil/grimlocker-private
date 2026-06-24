@@ -85,11 +85,12 @@ func (a *LocalAuth) HandleUnlockEvent(
 			if state == security.LockdownHard {
 				lockdownErr := gerrors.NewAuthLockdownError(0)
 				log.Printf("[unlock:FAIL:1/7] lockdown triggered: %s", lockdownErr.Error())
-				return replyAuthFail(bus, e, "too many failures: hard lockdown")
+				return replyAuthFailLockdown(bus, e, "too many failures: hard lockdown", 0, 0, true)
 			}
 			remaining := a.secMod.Lockdown().RemainingAttempts()
+			until := a.secMod.Lockdown().LockdownUntil().Unix()
 			log.Printf("[unlock:FAIL:1/7] %s", gerrors.NewAuthLockdownError(remaining).Error())
-			return replyAuthFail(bus, e, "invalid password")
+			return replyAuthFailLockdown(bus, e, "invalid password", remaining, until, false)
 		}
 		log.Printf("[unlock:1/7] UnlockVault OK (key len=%d)", len(mvk))
 
@@ -202,10 +203,18 @@ func (a *LocalAuth) Tier() string { return "local-argon2id" }
 
 // replyAuthFail emits an AUTH.RESULT failure event.
 func replyAuthFail(bus kernel.Dispatcher, req kernel.Event, reason string) error {
-	log.Printf("[auth:FAIL] replyAuthFail reason=%q (req.ID=%s)", reason, req.ID)
+	return replyAuthFailLockdown(bus, req, reason, 0, 0, false)
+}
+
+// replyAuthFailLockdown emits AUTH.RESULT failure with lockdown metadata.
+func replyAuthFailLockdown(bus kernel.Dispatcher, req kernel.Event, reason string, remaining int, lockdownUntil int64, hardLockdown bool) error {
+	log.Printf("[auth:FAIL] reason=%q remaining=%d lockdown_until=%d hard=%v", reason, remaining, lockdownUntil, hardLockdown)
 	payload, _ := json.Marshal(map[string]interface{}{
-		"success": false,
-		"reason":  reason,
+		"success":        false,
+		"reason":         reason,
+		"remaining":      remaining,
+		"lockdown_until": lockdownUntil,
+		"hard_lockdown":  hardLockdown,
 	})
 	reply := kernel.ReplyEvent("auth", kernel.EvAuthResult, req, payload)
 	return bus.Dispatch(reply)

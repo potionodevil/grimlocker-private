@@ -83,15 +83,36 @@ func (t *InMemoryWriteTransaction) DeleteBlock(id string) error {
 }
 
 // Commit wendet alle staged Writes und dann Deletes an.
-// Bei partiellem Fehler bleiben die erfolgreich geschriebenen Blöcke erhalten —
-// das ist eine "Best-Effort-Atomic"-Implementierung. Echten atomaren Commit
-// gibt's nur mit WAL-Backed-Store.
+// Wenn der zugrunde liegende Store BlockStoreV2 implementiert (WAL-backed),
+// wird eine echte atomare WAL-Transaktion verwendet.
+// Andernfalls: Best-Effort sequential (kein echter Rollback bei Crash).
 func (t *InMemoryWriteTransaction) Commit() error {
 	if t.done {
 		return ErrTransactionClosed
 	}
 	t.done = true
 
+	// WAL-backed atomar wenn möglich
+	if v2, ok := t.store.(BlockStoreV2); ok {
+		walTx, err := v2.BeginWrite()
+		if err == nil {
+			for _, b := range t.writes {
+				if err := walTx.WriteBlock(b); err != nil {
+					walTx.Rollback()
+					return err
+				}
+			}
+			for _, id := range t.deletes {
+				if err := walTx.DeleteBlock(id); err != nil {
+					walTx.Rollback()
+					return err
+				}
+			}
+			return walTx.Commit()
+		}
+	}
+
+	// Fallback: sequential writes (kein WAL)
 	for _, b := range t.writes {
 		if err := t.store.WriteBlock(b); err != nil {
 			return err

@@ -32,8 +32,16 @@ import (
 // BlobMagic ist die 8-Byte-Signatur am Anfang jeder .grimbak-Datei.
 var BlobMagic = [8]byte{0x47, 0x52, 0x49, 0x4D, 0x42, 0x41, 0x4B, 0x00}
 
-// FormatVersionV1 ist die aktuelle Format-Version.
+// FormatVersionV1 ist die ursprüngliche Format-Version.
 const FormatVersionV1 uint8 = 0x01
+
+// FormatVersionV2 fügt Sequenznummer, ExpiresAt und Delta-Felder zum Header hinzu.
+// V2-Extension-Block (nach EntryCount, vor HeaderHMAC):
+//   4 bytes  BackupSequence (uint32, big-endian)
+//   8 bytes  ExpiresAt (int64, big-endian; 0 = kein TTL)
+//   1 byte   IsDelta (0x00=nein, 0x01=ja)
+//   8 bytes  BaseExportTimestamp (int64, big-endian; 0 wenn !IsDelta)
+const FormatVersionV2 uint8 = 0x02
 
 // headerHMACKey leitet den konstanten HMAC-Key für die Header-Integritätsprüfung ab.
 // Nutzt HKDF-SHA256 mit einem Zero-Secret — produziert einen deterministischen Key,
@@ -57,38 +65,51 @@ func computeHeaderHMAC(headerBytes []byte) []byte {
 }
 
 // EncodeHeader schreibt den Plaintext-Header (inkl. HMAC, exkl. verschlüsselter Payload) in w.
-// encryptedPayloadLen, nonce und encryptedPayload werden danach separat geschrieben.
+// Bei h.FormatVersion >= 2 wird der V2-Extension-Block vor dem HMAC eingefügt.
 func EncodeHeader(w io.Writer, h BlobHeader, encryptedPayloadLen uint32, nonce []byte) error {
 	var buf bytes.Buffer
 
-	// Magic
 	buf.Write(BlobMagic[:])
-	// FormatVersion
 	buf.WriteByte(h.FormatVersion)
-	// Flags
 	buf.WriteByte(byte(h.Flags))
-	// ExportTimestampUnix
 	var ts [8]byte
 	binary.BigEndian.PutUint64(ts[:], uint64(h.ExportTimestamp))
 	buf.Write(ts[:])
-	// GrimlockerVersion
 	vb := []byte(h.GrimlockerVersion)
 	var vlen [4]byte
 	binary.BigEndian.PutUint32(vlen[:], uint32(len(vb)))
 	buf.Write(vlen[:])
 	buf.Write(vb)
-	// HardwareID
 	buf.Write(h.HardwareID[:])
-	// EntryCount
 	var ec [4]byte
 	binary.BigEndian.PutUint32(ec[:], h.EntryCount)
 	buf.Write(ec[:])
 
-	// HeaderHMAC über alles Bisherige
+	// V2 extension block
+	if h.FormatVersion >= FormatVersionV2 {
+		var seq [4]byte
+		binary.BigEndian.PutUint32(seq[:], h.BackupSequence)
+		buf.Write(seq[:])
+		var exp [8]byte
+		binary.BigEndian.PutUint64(exp[:], uint64(h.ExpiresAt))
+		buf.Write(exp[:])
+		if h.IsDelta {
+			buf.WriteByte(0x01)
+		} else {
+			buf.WriteByte(0x00)
+		}
+		var base [8]byte
+		binary.BigEndian.PutUint64(base[:], uint64(h.BaseExportTimestamp))
+		buf.Write(base[:])
+		// Ed25519 public key (32 bytes) — only when FlagSigned is set
+		if h.Flags&FlagSigned != 0 {
+			buf.Write(h.SignaturePublicKey[:])
+		}
+	}
+
 	mac := computeHeaderHMAC(buf.Bytes())
 	buf.Write(mac)
 
-	// EncryptedPayloadLen + Nonce
 	var pl [4]byte
 	binary.BigEndian.PutUint32(pl[:], encryptedPayloadLen)
 	buf.Write(pl[:])
@@ -121,7 +142,7 @@ func DecodeHeader(r io.Reader) (h BlobHeader, encryptedPayloadLen uint32, nonce 
 		return h, 0, nil, fmt.Errorf("blob: read version: %w", err)
 	}
 	h.FormatVersion = version[0]
-	if h.FormatVersion != FormatVersionV1 {
+	if h.FormatVersion != FormatVersionV1 && h.FormatVersion != FormatVersionV2 {
 		return h, 0, nil, fmt.Errorf("blob: unsupported format version %d", h.FormatVersion)
 	}
 
@@ -165,8 +186,40 @@ func DecodeHeader(r io.Reader) (h BlobHeader, encryptedPayloadLen uint32, nonce 
 	}
 	h.EntryCount = binary.BigEndian.Uint32(ec[:])
 
+	// ── V2 extension block ────────────────────────────────────────────────────
+	var seqB [4]byte
+	var expB [8]byte
+	var isDeltaByte [1]byte
+	var baseB [8]byte
+	var pubKeyB [32]byte
+	if h.FormatVersion >= FormatVersionV2 {
+		if _, err = io.ReadFull(r, seqB[:]); err != nil {
+			return h, 0, nil, fmt.Errorf("blob: read backup_sequence: %w", err)
+		}
+		h.BackupSequence = binary.BigEndian.Uint32(seqB[:])
+		if _, err = io.ReadFull(r, expB[:]); err != nil {
+			return h, 0, nil, fmt.Errorf("blob: read expires_at: %w", err)
+		}
+		h.ExpiresAt = int64(binary.BigEndian.Uint64(expB[:]))
+		if _, err = io.ReadFull(r, isDeltaByte[:]); err != nil {
+			return h, 0, nil, fmt.Errorf("blob: read is_delta: %w", err)
+		}
+		h.IsDelta = isDeltaByte[0] == 0x01
+		h.Flags |= FlagDelta * BlobFlags(isDeltaByte[0]&0x01)
+		if _, err = io.ReadFull(r, baseB[:]); err != nil {
+			return h, 0, nil, fmt.Errorf("blob: read base_export_timestamp: %w", err)
+		}
+		h.BaseExportTimestamp = int64(binary.BigEndian.Uint64(baseB[:]))
+		// Ed25519 public key — only when FlagSigned
+		if h.Flags&FlagSigned != 0 {
+			if _, err = io.ReadFull(r, pubKeyB[:]); err != nil {
+				return h, 0, nil, fmt.Errorf("blob: read signature_public_key: %w", err)
+			}
+			h.SignaturePublicKey = pubKeyB
+		}
+	}
+
 	// Reconstruct the bytes we just read to verify HMAC.
-	// Wir re-assemblieren den Header-Buffer um den HMAC zu prüfen.
 	var headerBuf bytes.Buffer
 	headerBuf.Write(magic[:])
 	headerBuf.Write(version[:])
@@ -176,6 +229,15 @@ func DecodeHeader(r io.Reader) (h BlobHeader, encryptedPayloadLen uint32, nonce 
 	headerBuf.Write(vb)
 	headerBuf.Write(h.HardwareID[:])
 	headerBuf.Write(ec[:])
+	if h.FormatVersion >= FormatVersionV2 {
+		headerBuf.Write(seqB[:])
+		headerBuf.Write(expB[:])
+		headerBuf.Write(isDeltaByte[:])
+		headerBuf.Write(baseB[:])
+		if h.Flags&FlagSigned != 0 {
+			headerBuf.Write(pubKeyB[:])
+		}
+	}
 
 	// HeaderHMAC
 	var storedMAC [32]byte

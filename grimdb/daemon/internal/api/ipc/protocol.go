@@ -127,6 +127,45 @@ const (
 	MsgAuditList   byte = 0x73 // client → server: [2-byte big-endian n] — request last n audit entries
 	MsgAuditResult byte = 0x74 // server → client: SKE-encrypted JSON []SecurityEvent
 
+	// Air-gap backup
+	MsgBackupExport    byte = 0x80 // client → server: JSON {dest_path, hardware_tether}
+	MsgBackupPeek      byte = 0x81 // client → server: JSON {source_path}
+	MsgBackupAuthorize byte = 0x82 // client → server: JSON {session_id, merge}
+	MsgBackupChecksum  byte = 0x83 // client → server: JSON {path}
+	MsgBackupResult    byte = 0x84 // server → client: JSON (ExportResult|PeekResult|AuthorizeResult|ChecksumResult)
+
+	// TOTP / 2FA
+	MsgTOTPGenerate byte = 0x90 // client → server: JSON {secret,issuer,account,algorithm,digits,period,save_to_vault}
+	MsgTOTPResult   byte = 0x91 // server → client: JSON {code, expires_in, counter, entry_id?}
+
+	// Password health analysis
+	MsgHealthAnalyze byte = 0x92 // client → server: {} — analyse all vault entries
+	MsgHealthResult  byte = 0x93 // server → client: JSON {weak:[], reused:[], old:[], breached:[]}
+
+	// CSV import
+	MsgImportCSV    byte = 0x94 // client → server: JSON {csv_content, format}
+	MsgImportResult byte = 0x95 // server → client: JSON {imported, skipped, errors[]}
+
+	// Entry version history
+	MsgEntryHistory       byte = 0x96 // client → server: JSON {id}
+	MsgEntryRestore       byte = 0x97 // client → server: JSON {id, snap_id}
+	MsgEntryHistoryResult byte = 0x98 // server → client: JSON {id, snapshots:[{snap_id,ts,data}]}
+
+	// Shamir secret sharing
+	MsgShamirSplit   byte = 0x99 // client → server: JSON {secret_hex, n, k}
+	MsgShamirCombine byte = 0x9A // client → server: JSON {shares:[{x,y_hex}]}
+	MsgShamirResult  byte = 0x9B // server → client: JSON {shares:[]} or {secret_hex}
+
+	// Secure share
+	MsgShareCreate byte = 0x9C // client → server: JSON {entry_id, ttl_hours, one_time}
+	MsgShareRedeem byte = 0x9D // client → server: JSON {token}
+	MsgShareRevoke byte = 0x9E // client → server: JSON {share_id}
+	MsgShareResult byte = 0x9F // server → client: JSON {token, expires_at} or {entry_json}
+
+	// Password recovery via recovery phrase
+	MsgChangePasswordRecovery byte = 0xA0 // client → server: JSON {recovery_phrase, new_password}
+	MsgChangePasswordResult   byte = 0xA1 // server → client: JSON {success, new_recovery_phrase}
+
 	CookieSize   = 32
 	UnixSockPath = "/tmp/grimlocker.sock"
 	WinPipePath  = `\\.\\pipe\\grimlocker`

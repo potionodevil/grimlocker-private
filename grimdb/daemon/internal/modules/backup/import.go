@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -27,17 +28,39 @@ func peekBlob(sessions *SessionStore, sourcePath string) (engbackup.PeekResult, 
 	}
 
 	peek := engbackup.PeekResult{
-		ExportTimestamp:   hdr.ExportTimestamp,
-		GrimlockerVersion: hdr.GrimlockerVersion,
-		EntryCount:        hdr.EntryCount,
-		HardwareTethered:  hdr.HardwareTethered,
-		HardwareIDHex:     hex.EncodeToString(hdr.HardwareID[:]),
-		HeaderIntegrityOK: hdr.HeaderHMACValid,
+		ExportTimestamp:     hdr.ExportTimestamp,
+		GrimlockerVersion:   hdr.GrimlockerVersion,
+		EntryCount:          hdr.EntryCount,
+		HardwareTethered:    hdr.HardwareTethered,
+		HardwareIDHex:       hex.EncodeToString(hdr.HardwareID[:]),
+		HeaderIntegrityOK:   hdr.HeaderHMACValid,
+		BackupSequence:      hdr.BackupSequence,
+		ExpiresAt:           hdr.ExpiresAt,
+		IsDelta:             hdr.IsDelta,
+		BaseExportTimestamp: hdr.BaseExportTimestamp,
+	}
+
+	// Ed25519-Signatur prüfen, wenn FlagSigned gesetzt ist.
+	if hdr.Flags&engbackup.FlagSigned != 0 {
+		peek.SignaturePubKeyHex = hex.EncodeToString(hdr.SignaturePublicKey[:])
+		peek.SignatureValid = verifyBlobSignature(sourcePath, hdr)
 	}
 
 	sess := sessions.newSession(hdr, peek, sourcePath)
 	peek.SessionID = sess.ID
 	return peek, nil
+}
+
+// verifyBlobSignature liest die 64-Byte-Signatur am Ende der Blob-Datei und prüft sie
+// gegen den Public Key im Header. Gibt false zurück bei I/O-Fehler oder ungültiger Signatur.
+func verifyBlobSignature(path string, hdr engbackup.BlobHeader) bool {
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) < ed25519.SignatureSize {
+		return false
+	}
+	blob := data[:len(data)-ed25519.SignatureSize]
+	sig  := data[len(data)-ed25519.SignatureSize:]
+	return engbackup.VerifyBlobSignature(blob, sig, ed25519.PublicKey(hdr.SignaturePublicKey[:]))
 }
 
 // authorizeImport führt Phase 2 durch: Tether-Prüfung, Entschlüsselung, Block-Import.

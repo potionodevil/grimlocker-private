@@ -94,6 +94,24 @@ const (
 	ErrCodeBackupHeaderTampered  = 7008 // HeaderHMAC-Mismatch — Header manipuliert
 )
 
+// ─── TOTP Errors (8000-8099) ──────────────────────────────────────────────────
+
+const (
+	ErrCodeTOTPInvalidSecret = 8001 // Base32-Secret ungültig oder leer
+	ErrCodeTOTPInvalidAlgo   = 8002 // Algorithmus nicht unterstützt (nur SHA1, SHA256, SHA512)
+	ErrCodeTOTPInvalidDigits = 8003 // Digits muss 6 oder 8 sein
+	ErrCodeTOTPInvalidPeriod = 8004 // Period muss > 0 sein (typisch 30s)
+	ErrCodeTOTPDecodeError   = 8006 // Base32-Decode fehlgeschlagen
+	ErrCodeTOTPSaveError     = 8007 // Eintrag konnte nicht im Vault gespeichert werden
+)
+
+// ─── Backup Rollback / TTL Errors ─────────────────────────────────────────────
+
+const (
+	ErrCodeBackupRollback = 7009 // Rollback-Angriff: Backup älter als zuletzt importiertes
+	ErrCodeBackupExpired  = 7010 // Backup-TTL überschritten
+)
+
 // ─── Core Error Type ──────────────────────────────────────────────────────────
 
 // ErrorContext trägt strukturierte Diagnose-Daten, die an jeden GrimlockError angehängt werden.

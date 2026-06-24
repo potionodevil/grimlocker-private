@@ -51,15 +51,17 @@ type ArgonSaltResolver func() ([]byte, error)
 
 // Module ist das kernel.Module, das alle BACKUP.*-Events verarbeitet.
 type Module struct {
-	crypto      crypto.Provider
-	keyResolver KeyResolver
-	saltResolver ArgonSaltResolver
-	store       storage.BlockStore
-	policy      ExportPolicyFn
-	dispatcher  kernel.Dispatcher
-	registry    *HandlerRegistry
-	sessions    *SessionStore
-	stopGC      chan struct{}
+	crypto               crypto.Provider
+	keyResolver          KeyResolver
+	saltResolver         ArgonSaltResolver
+	store                storage.BlockStore
+	policy               ExportPolicyFn
+	dispatcher           kernel.Dispatcher
+	registry             *HandlerRegistry
+	sessions             *SessionStore
+	stopGC               chan struct{}
+	exportSequence       uint32 // monoton steigend — jeder Export erhöht um 1
+	lastImportedSequence uint32 // Rollback-Schutz: Import verweigert wenn seq < dieser Wert
 }
 
 // NewModule erstellt das Backup-Modul.
@@ -114,6 +116,12 @@ func (m *Module) Start(ctx context.Context, d kernel.Dispatcher) error {
 func (m *Module) Stop() error {
 	close(m.stopGC)
 	return nil
+}
+
+// nextSequence atomically increments and returns the export sequence number.
+func (m *Module) nextSequence() uint32 {
+	m.exportSequence++
+	return m.exportSequence
 }
 
 func (m *Module) Handle(e kernel.Event) error {
@@ -192,7 +200,7 @@ func (m *Module) handleExport(e kernel.Event) error {
 		return m.replyExportError(e, err)
 	}
 
-	sha256hex, count, err := buildBlob(m.crypto, m.store, mvk, argonSalt, req.DestPath, req.HardwareTether, GrimlockerVersion)
+	sha256hex, count, err := buildBlob(m.crypto, m.store, mvk, argonSalt, req, GrimlockerVersion, m.nextSequence())
 	if err != nil {
 		return m.replyExportError(e, gerrors.Wrap(gerrors.ErrCodeBackupChecksumFailed, "export failed", err))
 	}
@@ -242,6 +250,20 @@ func (m *Module) handleAuthorize(e kernel.Event) error {
 		return m.replyAuthorizeError(e, err)
 	}
 
+	// ── Rollback check: refuse if this backup is older than the last imported ──
+	sess, sessOk := m.sessions.lookup(req.SessionID)
+	if sessOk && sess.Header.BackupSequence > 0 && sess.Header.BackupSequence < m.lastImportedSequence {
+		rollbackErr := gerrors.Wrap(gerrors.ErrCodeBackupRollback, "rollback detected: backup sequence older than last import", nil)
+		res, _ := json.Marshal(engbackup.AuthorizeResult{Error: rollbackErr.Error(), ErrorCode: gerrors.ErrCodeBackupRollback})
+		return m.dispatcher.Dispatch(kernel.ReplyEvent(moduleID, kernel.EvBackupResult, e, res))
+	}
+	// ── TTL check ─────────────────────────────────────────────────────────────
+	if sessOk && sess.Header.ExpiresAt > 0 && time.Now().Unix() > sess.Header.ExpiresAt {
+		expErr := gerrors.Wrap(gerrors.ErrCodeBackupExpired, "backup has expired", nil)
+		res, _ := json.Marshal(engbackup.AuthorizeResult{Error: expErr.Error(), ErrorCode: gerrors.ErrCodeBackupExpired})
+		return m.dispatcher.Dispatch(kernel.ReplyEvent(moduleID, kernel.EvBackupResult, e, res))
+	}
+
 	imported, skipped, err := authorizeImport(m.sessions, m.crypto, m.store, req.SessionID, mvk, argonSalt, req.Merge)
 	if err != nil {
 		code := 0
@@ -251,6 +273,11 @@ func (m *Module) handleAuthorize(e kernel.Event) error {
 		res, _ := json.Marshal(engbackup.AuthorizeResult{Error: err.Error(), ErrorCode: code})
 		reply := kernel.ReplyEvent(moduleID, kernel.EvBackupResult, e, res)
 		return m.dispatcher.Dispatch(reply)
+	}
+
+	// Update the last imported sequence for future rollback protection.
+	if sessOk && sess.Header.BackupSequence > m.lastImportedSequence {
+		m.lastImportedSequence = sess.Header.BackupSequence
 	}
 
 	m.audit(fmt.Sprintf("vault imported from air-gap backup (imported=%d, skipped=%d)", imported, skipped))

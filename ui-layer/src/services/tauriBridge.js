@@ -118,6 +118,41 @@ const MSG_SYNC_RESULT           = 0x72 // SKE-encrypted JSON sync state
 const MSG_AUDIT_LIST            = 0x73 // [2-byte big-endian n] — request last n audit entries
 const MSG_AUDIT_RESULT          = 0x74 // SKE-encrypted JSON []SecurityEvent
 
+// Air-Gap-Backup — Export, Peek (Phase 1), Authorize (Phase 2), Checksum
+const MSG_BACKUP_EXPORT         = 0x80 // {dest_path, hardware_tether}
+const MSG_BACKUP_PEEK           = 0x81 // {source_path}
+const MSG_BACKUP_AUTHORIZE      = 0x82 // {session_id, merge}
+const MSG_BACKUP_CHECKSUM       = 0x83 // {path}
+const MSG_BACKUP_RESULT         = 0x84 // JSON result (ExportResult|PeekResult|AuthorizeResult|ChecksumResult)
+
+// TOTP — RFC 6238 One-Time Password Generierung
+const MSG_TOTP_GENERATE         = 0x90 // {secret, issuer, account, algorithm, digits, period, save_to_vault}
+const MSG_TOTP_RESULT           = 0x91 // {code, expires_in, counter, entry_id?}
+
+// Passwort-Gesundheitsanalyse
+const MSG_HEALTH_ANALYZE        = 0x92 // {} — analysiert alle Vault-Einträge
+const MSG_HEALTH_RESULT         = 0x93 // {weak:[], reused:[], old:[], breached:[]}
+
+// CSV-Import
+const MSG_IMPORT_CSV            = 0x94 // {csv_content, format}
+const MSG_IMPORT_RESULT         = 0x95 // {imported, skipped, errors[]}
+
+// Entry Version History
+const MSG_ENTRY_HISTORY         = 0x96 // {id}
+const MSG_ENTRY_RESTORE         = 0x97 // {id, snap_id}
+const MSG_ENTRY_HISTORY_RESULT  = 0x98 // {id, snapshots:[{snap_id,ts,data}]}
+
+// Shamir Secret Sharing
+const MSG_SHAMIR_SPLIT          = 0x99 // {secret_hex, n, k}
+const MSG_SHAMIR_COMBINE        = 0x9A // {shares:[{x,y_hex}]}
+const MSG_SHAMIR_RESULT         = 0x9B // {shares:[]} or {secret_hex}
+
+// Secure Share (einmalige Entry-Freigabe)
+const MSG_SHARE_CREATE          = 0x9C // {entry_id, ttl_hours, one_time}
+const MSG_SHARE_REDEEM          = 0x9D // {token}
+const MSG_SHARE_REVOKE          = 0x9E // {share_id}
+const MSG_SHARE_RESULT          = 0x9F // {token, expires_at} or {entry_json}
+
 /** Menschenlesbare Namen für jeden Message-Type — wird fürs Throughput-Logging gebraucht. */
 const OP_NAMES = {
   0x01: 'GET_HEADER',
@@ -425,6 +460,14 @@ class TauriBridge {
             this.reconnectAttempts = 0
             useGrimStore.getState().setDaemonStatus('online')
             this._emit('connected')
+            // Tier + Role aus /health laden (non-blocking, non-fatal)
+            fetch(`http://127.0.0.1:${this.port}/health?token=${encodeURIComponent(this.token)}`)
+              .then(r => r.json())
+              .then(info => {
+                useGrimStore.getState().setAppTier(info.tier || 'single')
+                useGrimStore.getState().setUserRole(info.role || 'admin')
+              })
+              .catch(() => {})
             resolve()
           })
         })
@@ -804,10 +847,9 @@ class TauriBridge {
 
       const handler = this.on(MSG_UNLOCK_RESULT, (payload) => {
         handler()
+        errorHandler()
         const result = new TextDecoder().decode(payload)
 
-        // The unlock response JSON includes a session_key field (base64-encoded).
-        // Try to extract and store it for SKE.
         try {
           const parsed = JSON.parse(result)
           if (parsed.session_key) {
@@ -816,7 +858,16 @@ class TauriBridge {
               this.setSessionKey(keyBytes)
             }
           }
-          resolve({ success: result === 'success' || parsed.success === true })
+          if (parsed.success === true) {
+            resolve({ success: true })
+          } else {
+            // Pass through lockdown metadata so callers can update store
+            const err = new Error(parsed.reason || 'Authentication failed')
+            err.remaining      = parsed.remaining      ?? null
+            err.lockdownUntil  = parsed.lockdown_until ?? null
+            err.hardLockdown   = !!parsed.hard_lockdown
+            reject(err)
+          }
         } catch {
           resolve({ success: result === 'success' })
         }
@@ -2021,14 +2072,18 @@ class TauriBridge {
             resolve(raw)
           }
         } catch (e) {
-          reject(e)
+          const msg = e?.message ?? ''
+          if (msg.includes('sync unavailable') || msg.includes('not valid JSON') || msg.includes('Unexpected token')) {
+            resolve({ peers: [], last_sync_at: 0, device_id: '' })
+          } else {
+            reject(e)
+          }
         }
       })
 
       const errHandler = this.on(MSG_ERROR, (payload) => {
         handler(); errHandler()
         const msg = new TextDecoder().decode(payload)
-        // "sync unavailable" is not a fatal error — resolve with empty state
         if (msg.includes('sync unavailable')) {
           resolve({ peers: [], last_sync_at: 0, device_id: '' })
         } else {
@@ -2061,6 +2116,370 @@ class TauriBridge {
       })
 
       this._send(MSG_SYNC_TRIGGER)
+    })
+  }
+
+  // ── Air-Gap-Backup ────────────────────────────────────────────────────────
+
+  /**
+   * Exportiert den Vault in eine .grimbak-Datei.
+   * @param {string} destPath — Ziel-Dateipfad
+   * @param {boolean} hardwareTether — Backup an diese Hardware binden
+   * @returns {Promise<{path:string, sha256:string, entry_count:number}>}
+   */
+  exportBackup(destPath, hardwareTether = false) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_BACKUP_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const result = JSON.parse(new TextDecoder().decode(payload))
+          if (result.error) { reject(new Error(result.error)); return }
+          resolve(result)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_BACKUP_EXPORT, new TextEncoder().encode(
+        JSON.stringify({ dest_path: destPath, hardware_tether: hardwareTether })
+      ))
+    })
+  }
+
+  /**
+   * Phase 1 — Liest den Plaintext-Header einer .grimbak-Datei ohne Entschlüsselung.
+   * @param {string} sourcePath — Quell-Dateipfad
+   * @returns {Promise<PeekResult>}
+   */
+  peekBackup(sourcePath) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_BACKUP_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const result = JSON.parse(new TextDecoder().decode(payload))
+          if (result.error) { reject(new Error(result.error)); return }
+          resolve(result)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_BACKUP_PEEK, new TextEncoder().encode(
+        JSON.stringify({ source_path: sourcePath })
+      ))
+    })
+  }
+
+  /**
+   * Phase 2 — Importiert ein Backup mit der session_id aus Phase 1 (peekBackup).
+   * Vault muss entsperrt sein.
+   * @param {string} sessionId — Session-ID aus peekBackup()
+   * @param {boolean} merge — true = bestehende IDs überspringen; false = überschreiben
+   * @returns {Promise<{imported_count:number, skipped_count:number}>}
+   */
+  authorizeBackup(sessionId, merge = false) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_BACKUP_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const result = JSON.parse(new TextDecoder().decode(payload))
+          if (result.error) { reject(new Error(result.error)); return }
+          resolve(result)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_BACKUP_AUTHORIZE, new TextEncoder().encode(
+        JSON.stringify({ session_id: sessionId, merge })
+      ))
+    })
+  }
+
+  /**
+   * Berechnet SHA-256 über eine .grimbak-Datei (kein Vault-Unlock nötig).
+   * @param {string} path — Dateipfad
+   * @returns {Promise<{path:string, sha256:string}>}
+   */
+  checksumBackup(path) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+
+      const handler = this.on(MSG_BACKUP_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const result = JSON.parse(new TextDecoder().decode(payload))
+          if (result.error) { reject(new Error(result.error)); return }
+          resolve(result)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_BACKUP_CHECKSUM, new TextEncoder().encode(
+        JSON.stringify({ path })
+      ))
+    })
+  }
+
+  /**
+   * Generiert einen aktuellen TOTP-Code für das gegebene Secret.
+   * Wenn save_to_vault=true, wird ein TOTP-Eintrag im Vault angelegt.
+   * @param {object} params — {secret, issuer?, account?, algorithm?, digits?, period?, saveToVault?}
+   * @returns {Promise<{code, expires_in, counter, entry_id?}>}
+   */
+  generateTOTP({ secret, issuer = '', account = '', algorithm = 'SHA1', digits = 6, period = 30, saveToVault = false } = {}) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_TOTP_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const data = JSON.parse(new TextDecoder().decode(payload))
+          if (data.error) { reject(new Error(data.error)); return }
+          resolve(data)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_TOTP_GENERATE, new TextEncoder().encode(JSON.stringify({
+        secret, issuer, account, algorithm, digits, period, save_to_vault: saveToVault,
+      })))
+    })
+  }
+
+  /**
+   * Analysiert alle Vault-Einträge auf Passwort-Gesundheit.
+   * @returns {Promise<{weak, reused, old, breached, score}>}
+   */
+  analyzeHealth() {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_HEALTH_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const data = JSON.parse(new TextDecoder().decode(payload))
+          if (data.error) { reject(new Error(data.error)); return }
+          resolve(data)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_HEALTH_ANALYZE, new Uint8Array(0))
+    })
+  }
+
+  /**
+   * Importiert Passwörter aus CSV-Inhalt (1Password, Bitwarden, Chrome, KeePass).
+   * @param {string} csvContent — der vollständige CSV-Inhalt als String
+   * @param {string} format — 'auto' | '1password' | 'bitwarden' | 'chrome' | 'keepass'
+   * @returns {Promise<{imported, skipped, errors, preview}>}
+   */
+  importCSV(csvContent, format = 'auto') {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_IMPORT_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const data = JSON.parse(new TextDecoder().decode(payload))
+          if (data.error) { reject(new Error(data.error)); return }
+          resolve(data)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_IMPORT_CSV, new TextEncoder().encode(JSON.stringify({ csv_content: csvContent, format })))
+    })
+  }
+
+  /**
+   * Listet alle History-Snapshots für einen Entry auf.
+   * @param {string} id — Entry-ID
+   * @returns {Promise<{id, snapshots: Array<{snap_id, ts, data}>}>}
+   */
+  getEntryHistory(id) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_ENTRY_HISTORY_RESULT, (payload) => {
+        handler(); errHandler()
+        try { resolve(JSON.parse(new TextDecoder().decode(payload))) } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_ENTRY_HISTORY, new TextEncoder().encode(JSON.stringify({ id })))
+    })
+  }
+
+  /**
+   * Stellt einen History-Snapshot als aktuellen Entry wieder her.
+   * @param {string} id — Entry-ID
+   * @param {string} snapId — Snapshot-ID (_hist_...)
+   * @returns {Promise<{status, id, snap_id}>}
+   */
+  restoreEntryVersion(id, snapId) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_ENTRY_HISTORY_RESULT, (payload) => {
+        handler(); errHandler()
+        try { resolve(JSON.parse(new TextDecoder().decode(payload))) } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_ENTRY_RESTORE, new TextEncoder().encode(JSON.stringify({ id, snap_id: snapId })))
+    })
+  }
+
+  /**
+   * Teilt ein Secret (hex) in N Shares auf, von denen K benötigt werden.
+   * @param {string} secretHex — hex-kodiertes Secret
+   * @param {number} n — Gesamtzahl Shares
+   * @param {number} k — Mindestzahl für Rekonstruktion
+   * @returns {Promise<{shares: Array<{x, y_hex}>, n, k}>}
+   */
+  shamirSplit(secretHex, n, k) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_SHAMIR_RESULT, (payload) => {
+        handler(); errHandler()
+        try { resolve(JSON.parse(new TextDecoder().decode(payload))) } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_SHAMIR_SPLIT, new TextEncoder().encode(JSON.stringify({ secret_hex: secretHex, n, k })))
+    })
+  }
+
+  /**
+   * Stellt ein Secret aus Shares wieder her.
+   * @param {Array<{x: number, y_hex: string}>} shares
+   * @returns {Promise<{secret_hex: string}>}
+   */
+  shamirCombine(shares) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_SHAMIR_RESULT, (payload) => {
+        handler(); errHandler()
+        try { resolve(JSON.parse(new TextDecoder().decode(payload))) } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_SHAMIR_COMBINE, new TextEncoder().encode(JSON.stringify({ shares })))
+    })
+  }
+
+  /**
+   * Erstellt einen Share-Link für einen Vault-Eintrag.
+   * @param {string} entryId
+   * @param {number} ttlHours — Gültigkeitsdauer in Stunden (default 24)
+   * @param {boolean} oneTime — Link wird nach erstem Einlösen ungültig (default true)
+   * @returns {Promise<{share_id, token, expires_at}>}
+   */
+  createShare(entryId, ttlHours = 24, oneTime = true) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_SHARE_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const r = JSON.parse(new TextDecoder().decode(payload))
+          if (r.error) reject(new Error(r.error)); else resolve(r)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_SHARE_CREATE, new TextEncoder().encode(JSON.stringify({ entry_id: entryId, ttl_hours: ttlHours, one_time: oneTime })))
+    })
+  }
+
+  /**
+   * Löst einen Share-Token ein und gibt den Entry zurück.
+   * @param {string} token — "grimshare://..." Token
+   * @returns {Promise<{entry_json: string}>}
+   */
+  redeemShare(token) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_SHARE_RESULT, (payload) => {
+        handler(); errHandler()
+        try {
+          const r = JSON.parse(new TextDecoder().decode(payload))
+          if (r.error) reject(new Error(r.error)); else resolve(r)
+        } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_SHARE_REDEEM, new TextEncoder().encode(JSON.stringify({ token })))
+    })
+  }
+
+  /**
+   * Widerruft einen Share-Link.
+   * @param {string} shareId
+   * @returns {Promise<{status, share_id}>}
+   */
+  revokeShare(shareId) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const handler = this.on(MSG_SHARE_RESULT, (payload) => {
+        handler(); errHandler()
+        try { resolve(JSON.parse(new TextDecoder().decode(payload))) } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_SHARE_REVOKE, new TextEncoder().encode(JSON.stringify({ share_id: shareId })))
+    })
+  }
+
+  // ── Password Recovery ──────────────────────────────────────────────────────
+
+  /** Setzt das Master-Passwort über die Recovery-Phrase zurück.
+   * Gibt die neue Recovery-Phrase zurück (muss sofort gespeichert werden).
+   * Alle verschlüsselten Einträge gehen verloren — neuer MVK kann alte nicht entschlüsseln.
+   */
+  changePasswordWithRecovery(recoveryPhrase, newPassword) {
+    return new Promise((resolve, reject) => {
+      if (!this.connected) { reject(new Error('Not connected')); return }
+      const MSG_CHANGE_PASSWORD_RECOVERY = 0xA0
+      const MSG_CHANGE_PASSWORD_RESULT   = 0xA1
+      const handler = this.on(MSG_CHANGE_PASSWORD_RESULT, (payload) => {
+        handler(); errHandler()
+        try { resolve(JSON.parse(new TextDecoder().decode(payload))) } catch (e) { reject(e) }
+      })
+      const errHandler = this.on(MSG_ERROR, (payload) => {
+        handler(); errHandler()
+        reject(new Error(new TextDecoder().decode(payload)))
+      })
+      this._send(MSG_CHANGE_PASSWORD_RECOVERY, new TextEncoder().encode(
+        JSON.stringify({ recovery_phrase: recoveryPhrase, new_password: newPassword })
+      ))
     })
   }
 

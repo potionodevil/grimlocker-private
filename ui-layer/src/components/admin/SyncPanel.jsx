@@ -41,7 +41,7 @@ export function SyncPanel() {
       setLastSync(result.last_sync_at ? new Date(result.last_sync_at) : null)
       setDeviceId(result.device_id || null)
     } catch (err) {
-      setError(err?.message || 'Failed to fetch sync status')
+      setError('Sync-Status konnte nicht geladen werden. Prüfe die Daemon-Verbindung.')
       setPeers([])
     }
   }, [])
@@ -65,7 +65,7 @@ export function SyncPanel() {
       await loadPeers()
       setLastSync(new Date())
     } catch (err) {
-      setError(err?.message || 'Sync failed')
+      setError('Sync fehlgeschlagen. Bitte erneut versuchen.')
     } finally {
       setSyncing(false)
     }

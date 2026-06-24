@@ -38,23 +38,24 @@ func NewModule(blockStore storage.BlockStore) *Module {
 }
 
 func (m *Module) ID() string         { return "tools" }
-func (m *Module) Channels() []string { return []string{"TOOL"} }
+func (m *Module) Channels() []string { return []string{"TOOL", "TOTP"} }
 
 func (m *Module) Start(ctx context.Context, d kernel.Dispatcher) error {
 	m.dispatcher = d
 	m.handlers = m.buildHandlers()
-	log.Printf("[tools] Module started — handlers: TOOL.SSH_GEN")
+	log.Printf("[tools] Module started — handlers: TOOL.SSH_GEN, TOTP.GENERATE")
 	return nil
 }
 
 func (m *Module) Stop() error { return nil }
 
-// buildHandlers returns the static handler registry for all TOOL.* events.
+// buildHandlers returns the static handler registry for all TOOL.* and TOTP.* events.
 func (m *Module) buildHandlers() map[kernel.EventType]toolHandlerFn {
 	return map[kernel.EventType]toolHandlerFn{
-		kernel.EvToolSSHGen: m.handleSSHGen,
-		// No-op: reply events reach all channel subscribers but we don't need to handle them.
-		kernel.EvToolResult: func(kernel.Event) error { return nil },
+		kernel.EvToolSSHGen:  m.handleSSHGen,
+		kernel.EvToolResult:  func(kernel.Event) error { return nil },
+		kernel.EvTOTPGenerate: m.handleTOTPGenerate,
+		kernel.EvTOTPResult:  func(kernel.Event) error { return nil },
 	}
 }
 
@@ -206,6 +207,115 @@ func (m *Module) replyError(req kernel.Event, err error) error {
 	if dErr := m.dispatcher.Dispatch(reply); dErr != nil {
 		return fmt.Errorf("%w (reply dispatch: %v)", err, dErr)
 	}
+	return err
+}
+
+// handleTOTPGenerate processes a TOTP.GENERATE event.
+//
+// Request payload (JSON):
+//
+//	{
+//	  "secret":     "JBSWY3DPEHPK3PXP",  // Base32-encoded shared secret
+//	  "issuer":     "GitHub",              // optional — shown in UI
+//	  "account":    "user@example.com",    // optional — shown in UI
+//	  "algorithm":  "SHA1",               // SHA1 | SHA256 | SHA512 (default SHA1)
+//	  "digits":     6,                    // 6 or 8 (default 6)
+//	  "period":     30,                   // seconds (default 30)
+//	  "save_to_vault": true               // persist as TOTP vault entry
+//	}
+//
+// Response (TOTP.RESULT payload, JSON):
+//
+//	{
+//	  "code":       "123456",
+//	  "expires_in": 17,
+//	  "entry_id":   "uuid"   // only when save_to_vault=true
+//	}
+func (m *Module) handleTOTPGenerate(e kernel.Event) error {
+	var req struct {
+		Secret      string `json:"secret"`
+		Issuer      string `json:"issuer"`
+		Account     string `json:"account"`
+		Algorithm   string `json:"algorithm"`
+		Digits      int    `json:"digits"`
+		Period      int    `json:"period"`
+		SaveToVault bool   `json:"save_to_vault"`
+	}
+	req.Digits = 6
+	req.Period = 30
+	req.Algorithm = "SHA1"
+
+	if len(e.Payload) > 0 {
+		if err := json.Unmarshal(e.Payload, &req); err != nil {
+			return m.replyTOTPError(e, fmt.Errorf("invalid TOTP request: %w", err))
+		}
+	}
+
+	result, err := engtools.GenerateTOTP(engtools.TOTPParams{
+		Secret:    req.Secret,
+		Algorithm: engtools.TOTPAlgorithm(req.Algorithm),
+		Digits:    req.Digits,
+		Period:    req.Period,
+	}, time.Now())
+	if err != nil {
+		return m.replyTOTPError(e, err)
+	}
+
+	entryID := ""
+	if req.SaveToVault && m.blockStore != nil {
+		now := time.Now().UnixNano()
+		entryID = newUUID()
+		title := req.Issuer
+		if title == "" {
+			title = req.Account
+		}
+		if title == "" {
+			title = "TOTP"
+		}
+		entry := storage.VaultEntry{
+			ID:       entryID,
+			Title:    title,
+			Category: storage.CategoryTOTP,
+			Type:     "totp",
+			Fields: map[string]string{
+				"secret":    req.Secret,
+				"issuer":    req.Issuer,
+				"account":   req.Account,
+				"algorithm": req.Algorithm,
+				"digits":    fmt.Sprintf("%d", req.Digits),
+				"period":    fmt.Sprintf("%d", req.Period),
+			},
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		entryJSON, _ := json.Marshal(entry)
+		block := storage.Block{
+			ID:       entryID,
+			Data:     entryJSON,
+			Category: storage.CategoryTOTP,
+		}
+		if err := m.blockStore.WriteBlock(block); err != nil {
+			log.Printf("[tools:TOTP_GENERATE] vault save failed: %v", err)
+			entryID = ""
+		}
+	}
+
+	resp := map[string]interface{}{
+		"code":       result.Code,
+		"expires_in": result.ExpiresIn,
+		"counter":    result.Counter,
+		"entry_id":   entryID,
+	}
+	respJSON, _ := json.Marshal(resp)
+	reply := kernel.ReplyEvent(m.ID(), kernel.EvTOTPResult, e, respJSON)
+	return m.dispatcher.Dispatch(reply)
+}
+
+func (m *Module) replyTOTPError(req kernel.Event, err error) error {
+	log.Printf("[tools:TOTP] error: %v", err)
+	payload, _ := json.Marshal(map[string]string{"error": err.Error()})
+	reply := kernel.ReplyEvent(m.ID(), kernel.EvTOTPResult, req, payload)
+	_ = m.dispatcher.Dispatch(reply)
 	return err
 }
 

@@ -46,13 +46,15 @@ const (
 	EvStorageReady          EventType = "STORAGE.READY"
 
 	// ENTRY-Channel — owned by entry handler module
-	EvEntryCreate EventType = "ENTRY.CREATE"
-	EvEntryRead   EventType = "ENTRY.READ"
-	EvEntryUpdate EventType = "ENTRY.UPDATE"
-	EvEntryDelete EventType = "ENTRY.DELETE"
-	EvEntryIngest EventType = "ENTRY.INGEST"
-	EvEntryResult EventType = "ENTRY.RESULT"
-	EvEntryQuery  EventType = "ENTRY.QUERY"
+	EvEntryCreate  EventType = "ENTRY.CREATE"
+	EvEntryRead    EventType = "ENTRY.READ"
+	EvEntryUpdate  EventType = "ENTRY.UPDATE"
+	EvEntryDelete  EventType = "ENTRY.DELETE"
+	EvEntryIngest  EventType = "ENTRY.INGEST"
+	EvEntryResult  EventType = "ENTRY.RESULT"
+	EvEntryQuery   EventType = "ENTRY.QUERY"
+	EvEntryHistory EventType = "ENTRY.HISTORY" // list version snapshots for an entry
+	EvEntryRestore EventType = "ENTRY.RESTORE"  // restore a specific version snapshot
 
 	// TOOL-Channel — owned by tools module
 	EvToolSSHGen EventType = "TOOL.SSH_GEN"
@@ -105,6 +107,29 @@ const (
 	EvSystemError       EventType = "SYSTEM.ERROR"
 	EvSystemHealthCheck EventType = "SYSTEM.HEALTH_CHECK"
 	EvSystemLog         EventType = "SYSTEM.LOG"
+
+	// TOTP-Channel — RFC 6238 one-time password generation
+	EvTOTPGenerate EventType = "TOTP.GENERATE"
+	EvTOTPResult   EventType = "TOTP.RESULT"
+
+	// HEALTH-Channel — password health analysis
+	EvHealthAnalyze EventType = "HEALTH.ANALYZE"
+	EvHealthResult  EventType = "HEALTH.RESULT"
+
+	// IMPORT-Channel — CSV import from other password managers
+	EvImportCSV    EventType = "IMPORT.CSV"
+	EvImportResult EventType = "IMPORT.RESULT"
+
+	// SHAMIR-Channel — Secret Sharing für Backup-Key
+	EvShamirSplit   EventType = "SHAMIR.SPLIT"   // teile secret in N Shares auf
+	EvShamirCombine EventType = "SHAMIR.COMBINE"  // stelle secret aus K Shares wieder her
+	EvShamirResult  EventType = "SHAMIR.RESULT"   // Antwort auf SPLIT oder COMBINE
+
+	// SHARE-Channel — sichere Freigabe von Vault-Einträgen
+	EvShareCreate EventType = "SHARE.CREATE"  // erstelle verschlüsselten Share-Link
+	EvShareRedeem EventType = "SHARE.REDEEM"  // löse einen Share-Link ein
+	EvShareRevoke EventType = "SHARE.REVOKE"  // widerrufe einen Share-Link
+	EvShareResult EventType = "SHARE.RESULT"  // Antwort
 
 	// BACKUP-Channel — air-gap export and two-phase import
 	// Payload schemas are defined in engine/backup/types.go.

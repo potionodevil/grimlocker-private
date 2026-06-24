@@ -56,19 +56,26 @@ type blockRecord struct {
 // Nutzt ChaCha20-Poly1305 mit dem MVK für Index- und Entry-Encryption.
 // Der MVK wird nie im Heap gelagert — Caller stellen einen Resolver via
 // SetMVKFunc bereit und entziehen ihn via ZeroMVK.
+//
+// WAL (Write-Ahead Log): Wenn wal != nil, wird jede Schreiboperation in
+// vault_wal.enc protokolliert, bevor der Index aktualisiert wird. Das erlaubt
+// crash-sichere Multi-Block-Transaktionen via BeginWrite().
 type BlockStoreImpl struct {
 	mu        sync.RWMutex
 	filePath  string
 	indexPath string
+	appDir    string
 	index     map[string]blockRecord
 	getMVK    func() []byte
 	strategy  storage.StorageStrategy
+	wal       *WALManager // nil bis SetMVKFunc aufgerufen wird
 }
 
 func NewBlockStoreImpl(appDir string) *BlockStoreImpl {
 	return &BlockStoreImpl{
 		filePath:  appDir + "/vault_entries.enc",
 		indexPath: appDir + "/vault_index.enc",
+		appDir:    appDir,
 		index:     make(map[string]blockRecord),
 		strategy:  storage.NopStrategy{},
 	}
@@ -84,10 +91,20 @@ func (bs *BlockStoreImpl) mvk() []byte {
 // SetMVKFunc speichert eine Funktion, die den MVK aus locked Memory holt.
 // Nach erfolgreichem UnlockVault aufrufen. Der zurückgegebene Key lebt in locked
 // Memory — es wird keine Heap-Kopie erstellt.
+// Öffnet gleichzeitig den WAL-Manager falls noch nicht geschehen.
 func (bs *BlockStoreImpl) SetMVKFunc(fn func() []byte) {
 	bs.mu.Lock()
+	defer bs.mu.Unlock()
 	bs.getMVK = fn
-	bs.mu.Unlock()
+	if bs.wal == nil && bs.appDir != "" {
+		wal, err := openWALManager(bs.appDir, fn)
+		if err != nil {
+			log.Printf("[blockstore] WAL konnte nicht geöffnet werden: %v — fahre ohne WAL fort", err)
+		} else {
+			bs.wal = wal
+			log.Printf("[blockstore] WAL aktiviert: %s/%s", bs.appDir, walFileName)
+		}
+	}
 }
 
 // ZeroMVK entfernt die Key-Referenz und löscht den Index.
@@ -96,6 +113,10 @@ func (bs *BlockStoreImpl) ZeroMVK() {
 	bs.mu.Lock()
 	bs.getMVK = nil
 	bs.index = make(map[string]blockRecord)
+	if bs.wal != nil {
+		bs.wal.close()
+		bs.wal = nil
+	}
 	bs.mu.Unlock()
 }
 
@@ -114,66 +135,123 @@ func (bs *BlockStoreImpl) LoadIndex() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			bs.index = make(map[string]blockRecord)
-			return nil
+		} else {
+			return gerrors.NewStorageIOError("open_index", "", err)
 		}
-		return gerrors.NewStorageIOError("open_index", "", err)
-	}
-	defer f.Close()
+	} else {
+		defer f.Close()
 
-	lenBuf := make([]byte, 4)
-	if _, err := io.ReadFull(f, lenBuf); err != nil {
-		if err == io.EOF {
-			return nil
+		lenBuf := make([]byte, 4)
+		if _, err := io.ReadFull(f, lenBuf); err != nil {
+			if err == io.EOF {
+				bs.index = make(map[string]blockRecord)
+			} else {
+				return gerrors.NewStorageIOError("read_index_length", "", err)
+			}
+		} else {
+			indexLen := binary.BigEndian.Uint32(lenBuf)
+			nonce := make([]byte, 12)
+			if _, err := io.ReadFull(f, nonce); err != nil {
+				return gerrors.NewStorageIOError("read_index_nonce", "", err)
+			}
+
+			ct := make([]byte, indexLen)
+			if _, err := io.ReadFull(f, ct); err != nil {
+				return gerrors.NewStorageIOError("read_encrypted_index", "", err)
+			}
+
+			if err := crypto.ValidateKeyLength(bs.mvk()); err != nil {
+				return gerrors.NewCryptoInvalidKeyError(len(bs.mvk()))
+			}
+			cipher, err := chacha20poly1305.New(bs.mvk())
+			if err != nil {
+				return gerrors.NewCryptoDecryptionError("", err)
+			}
+
+			indexJSON, err := cipher.Open(nil, nonce, ct, nil)
+			if err != nil {
+				return gerrors.NewCryptoDecryptionError("vault_index", err)
+			}
+
+			var idx map[string]blockRecord
+			if err := json.Unmarshal(indexJSON, &idx); err != nil {
+				return gerrors.NewStorageCorruptionError("unmarshal_index", "",
+					map[string]string{"json_error": err.Error()})
+			}
+			bs.index = idx
 		}
-		return gerrors.NewStorageIOError("read_index_length", "", err)
 	}
 
-	indexLen := binary.BigEndian.Uint32(lenBuf)
-	nonce := make([]byte, 12)
-	if _, err := io.ReadFull(f, nonce); err != nil {
-		return gerrors.NewStorageIOError("read_index_nonce", "", err)
+	// WAL-Recovery: Committed Transaktionen replayan, die noch nicht im Index sind.
+	if bs.wal != nil {
+		recovered, err := recoverWAL(bs.wal, bs.index)
+		if err != nil {
+			log.Printf("[blockstore] WAL-Recovery Fehler: %v", err)
+		} else {
+			bs.index = recovered
+		}
 	}
 
-	ct := make([]byte, indexLen)
-	if _, err := io.ReadFull(f, ct); err != nil {
-		return gerrors.NewStorageIOError("read_encrypted_index", "", err)
-	}
-
-	if err := crypto.ValidateKeyLength(bs.mvk()); err != nil {
-		return gerrors.NewCryptoInvalidKeyError(len(bs.mvk()))
-	}
-	cipher, err := chacha20poly1305.New(bs.mvk())
-	if err != nil {
-		return gerrors.NewCryptoDecryptionError("", err)
-	}
-
-	indexJSON, err := cipher.Open(nil, nonce, ct, nil)
-	if err != nil {
-		return gerrors.NewCryptoDecryptionError("vault_index", err)
-	}
-
-	var idx map[string]blockRecord
-	if err := json.Unmarshal(indexJSON, &idx); err != nil {
-		return gerrors.NewStorageCorruptionError("unmarshal_index", "",
-			map[string]string{"json_error": err.Error()})
-	}
-	bs.index = idx
-
-	stats := make([]string, 0, len(bs.index))
-	for id := range bs.index {
-		stats = append(stats, id)
-	}
-	log.Printf("[blockstore] LoadIndex — %d entries loaded: %v", len(bs.index), stats)
+	log.Printf("[blockstore] LoadIndex — %d entries geladen", len(bs.index))
 	return nil
+}
+
+// appendBlockDataLocked schreibt nonce+hmac+data an vault_entries.enc und gibt
+// den Daten-Offset (nach nonce+hmac) zurück. Der Caller muss bs.mu halten.
+// Aktualisiert b.Nonce, b.HMAC, b.CreatedAt, b.UpdatedAt in-place.
+func (bs *BlockStoreImpl) appendBlockDataLocked(b *storage.Block) (int64, error) {
+	now := time.Now().UnixNano()
+	if b.CreatedAt == 0 {
+		b.CreatedAt = now
+	}
+	b.UpdatedAt = now
+
+	if len(b.Nonce) == 0 {
+		b.Nonce = make([]byte, 12)
+		if _, err := rand.Read(b.Nonce); err != nil {
+			return 0, gerrors.NewStorageIOError("nonce_generation", b.ID, err)
+		}
+	}
+
+	hmacKey := deriveHMACKey(bs.mvk())
+	mac := hmac.New(sha256.New, hmacKey[:])
+	mac.Write([]byte(b.ID))
+	mac.Write(b.Nonce)
+	mac.Write(b.Data)
+	b.HMAC = mac.Sum(nil)
+
+	f, err := os.OpenFile(bs.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return 0, gerrors.NewStorageIOError("open_data_file", b.ID, err)
+	}
+
+	stat, _ := f.Stat()
+	dataOffset := stat.Size() + 12 + 32 // hinter nonce(12) + hmac(32)
+
+	if _, err := f.Write(b.Nonce); err != nil {
+		f.Close()
+		return 0, gerrors.NewStorageIOError("write_block_nonce", b.ID, err)
+	}
+	if _, err := f.Write(b.HMAC); err != nil {
+		f.Close()
+		return 0, gerrors.NewStorageIOError("write_block_hmac", b.ID, err)
+	}
+	if _, err := f.Write(b.Data); err != nil {
+		f.Close()
+		return 0, gerrors.NewStorageIOError("write_block_data", b.ID, err)
+	}
+	if err := f.Close(); err != nil {
+		return 0, gerrors.NewStorageIOError("close_data_file", b.ID, err)
+	}
+
+	return dataOffset, nil
 }
 
 // WriteBlock encryptet und appended einen Block an vault_entries.enc,
 // dann wird der encrypted Index atomar aktualisiert.
 //
-// Data muss je nach Strategy Plaintext oder Ciphertext sein (NopStrategy lässt
-// alles unverändert). WriteBlock generiert ein random 12-Byte-Nonce, leitet einen
-// HMAC-Key aus dem MVK ab, berechnet HMAC-SHA256(id ‖ nonce ‖ data), schreibt
-// nonce+hmac+data an die Datei und persistiert den Index.
+// Wenn WAL aktiv ist, wird der Write als autocommit-Transaktion geloggt:
+// Crash nach dem Schreiben aber vor dem Index-Persist → Recovery via WAL.
 //
 // Der Vault muss unlocked sein (MVK-Resolver gesetzt), bevor WriteBlock aufgerufen wird.
 func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
@@ -189,55 +267,29 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 	}
 	b = b2
 
-	now := time.Now().UnixNano()
-	if b.CreatedAt == 0 {
-		b.CreatedAt = now
-	}
-	b.UpdatedAt = now
-
-	if len(b.Nonce) == 0 {
-		b.Nonce = make([]byte, 12)
-		if _, err := rand.Read(b.Nonce); err != nil {
-			return gerrors.NewStorageIOError("nonce_generation", b.ID, err)
+	// WAL autocommit: TxBegin
+	txID := ""
+	if bs.wal != nil {
+		txID, err = generateTxID()
+		if err == nil {
+			_ = bs.wal.appendRecord(walRecord{
+				Type:      walTypeTxBegin,
+				TxID:      txID,
+				Timestamp: time.Now().UnixNano(),
+			})
 		}
 	}
 
-	hmacKey := deriveHMACKey(bs.mvk())
-	mac := hmac.New(sha256.New, hmacKey[:])
-	mac.Write([]byte(b.ID))
-	mac.Write(b.Nonce)
-	mac.Write(b.Data)
-	b.HMAC = mac.Sum(nil)
-
-	dataFile := bs.filePath
-
-	f, err := os.OpenFile(dataFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	offset, err := bs.appendBlockDataLocked(&b)
 	if err != nil {
-		return gerrors.NewStorageIOError("open_data_file", b.ID, err)
-	}
-
-	stat, _ := f.Stat()
-	dataOffset := stat.Size() + 12 + 32
-
-	if _, err := f.Write(b.Nonce); err != nil {
-		f.Close()
-		return gerrors.NewStorageIOError("write_block_nonce", b.ID, err)
-	}
-	if _, err := f.Write(b.HMAC); err != nil {
-		f.Close()
-		return gerrors.NewStorageIOError("write_block_hmac", b.ID, err)
-	}
-	if _, err := f.Write(b.Data); err != nil {
-		f.Close()
-		return gerrors.NewStorageIOError("write_block_data", b.ID, err)
-	}
-
-	if err := f.Close(); err != nil {
-		return gerrors.NewStorageIOError("close_data_file", b.ID, err)
+		if bs.wal != nil && txID != "" {
+			_ = bs.wal.appendRecord(walRecord{Type: walTypeRollback, TxID: txID})
+		}
+		return err
 	}
 
 	bs.index[b.ID] = blockRecord{
-		Offset:    dataOffset,
+		Offset:    offset,
 		Length:    int64(len(b.Data)),
 		Nonce:     b.Nonce,
 		HMAC:      b.HMAC,
@@ -246,32 +298,112 @@ func (bs *BlockStoreImpl) WriteBlock(b storage.Block) error {
 		UpdatedAt: b.UpdatedAt,
 	}
 
-	log.Printf("[blockstore] WriteBlock — id=%s offset=%d dataLen=%d", b.ID, dataOffset, len(b.Data))
+	// WAL Write-Record + Commit
+	if bs.wal != nil && txID != "" {
+		_ = bs.wal.appendRecord(walRecord{
+			Type:      walTypeWrite,
+			TxID:      txID,
+			BlockID:   b.ID,
+			Offset:    offset,
+			Length:    int64(len(b.Data)),
+			Nonce:     b.Nonce,
+			HMAC:      b.HMAC,
+			Category:  b.Category,
+			CreatedAt: b.CreatedAt,
+			UpdatedAt: b.UpdatedAt,
+		})
+		_ = bs.wal.appendRecord(walRecord{Type: walTypeCommit, TxID: txID})
+	}
 
-	return bs.persistIndexLocked()
+	log.Printf("[blockstore] WriteBlock — id=%s offset=%d dataLen=%d", b.ID, offset, len(b.Data))
+
+	if err := bs.persistIndexLocked(); err != nil {
+		return err
+	}
+
+	// WAL Checkpoint nach erfolgreichem Index-Persist
+	if bs.wal != nil {
+		_ = bs.wal.checkpoint()
+	}
+
+	return nil
 }
 
-// ReadBlock retrieviert einen Block aus dem Store anhand der ID, verifiziert den HMAC
-// und gibt den rohen (noch verschlüsselten) Ciphertext in Block.Data zurück.
-//
-// HMAC-Verifikation nutzt constant-time-Vergleich, um Timing-Angriffe zu verhindern.
-// Bei Fehlschlag kommt ErrCodeStorageCorruption (2002) — das bedeutet entweder
-// manipulierte Daten oder einen falschen MVK (z.B. falsches Passwort).
-//
-// ErrCodeStorageNotFound (2003) wenn die Block-ID nicht im Index ist.
-// ErrCodeStorageIO (2001) bei Disk-Read-Fehlern.
-func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
-	bs.mu.RLock()
-	rec, exists := bs.index[id]
-	filePath := bs.filePath
-	mvk := bs.mvk()
-	bs.mu.RUnlock()
+// BeginWrite startet eine WAL-backed Write-Transaktion für atomare Multi-Block-Writes.
+// Implementiert storage.BlockStoreV2.
+func (bs *BlockStoreImpl) BeginWrite() (storage.WriteTransaction, error) {
+	if bs.wal == nil {
+		return storage.NewInMemoryWriteTransaction(bs), nil // Fallback ohne WAL
+	}
+	return newWALTransaction(bs)
+}
 
+// BeginRead startet einen konsistenten Read-Only-Snapshot. Implementiert storage.BlockStoreV2.
+func (bs *BlockStoreImpl) BeginRead() (storage.ReadTransaction, error) {
+	bs.mu.RLock()
+	snapshot := make(map[string]blockRecord, len(bs.index))
+	for k, v := range bs.index {
+		snapshot[k] = v
+	}
+	filePath := bs.filePath
+	store := bs
+	bs.mu.RUnlock()
+	return &blockStoreReadTx{index: snapshot, filePath: filePath, store: store}, nil
+}
+
+// blockStoreReadTx ist ein Snapshot-Read für BlockStoreV2.BeginRead().
+type blockStoreReadTx struct {
+	index    map[string]blockRecord
+	filePath string
+	store    *BlockStoreImpl
+}
+
+func (r *blockStoreReadTx) ReadBlock(id string) (storage.Block, error) {
+	rec, exists := r.index[id]
 	if !exists {
 		return storage.Block{}, gerrors.NewStorageNotFoundError(id)
 	}
+	return r.store.readBlockFromDisk(id, rec)
+}
 
-	f, err := os.Open(filePath)
+func (r *blockStoreReadTx) ListBlocks() ([]storage.BlockMeta, error) {
+	result := make([]storage.BlockMeta, 0, len(r.index))
+	for id, rec := range r.index {
+		result = append(result, storage.BlockMeta{
+			ID:        id,
+			Size:      rec.Length,
+			Category:  rec.Category,
+			CreatedAt: rec.CreatedAt,
+			UpdatedAt: rec.UpdatedAt,
+		})
+	}
+	return result, nil
+}
+
+func (r *blockStoreReadTx) QueryBlocks(category storage.Category) ([]storage.BlockMeta, error) {
+	result := make([]storage.BlockMeta, 0)
+	for id, rec := range r.index {
+		if category == "" || rec.Category == category {
+			result = append(result, storage.BlockMeta{
+				ID:        id,
+				Size:      rec.Length,
+				Category:  rec.Category,
+				CreatedAt: rec.CreatedAt,
+				UpdatedAt: rec.UpdatedAt,
+			})
+		}
+	}
+	return result, nil
+}
+
+func (r *blockStoreReadTx) Close() {}
+
+// readBlockFromDisk liest und verifiziert einen Block von Disk ohne Lock.
+// Wird von ReadBlock und blockStoreReadTx genutzt.
+func (bs *BlockStoreImpl) readBlockFromDisk(id string, rec blockRecord) (storage.Block, error) {
+	mvk := bs.mvk()
+
+	f, err := os.Open(bs.filePath)
 	if err != nil {
 		return storage.Block{}, gerrors.NewStorageIOError("open_data_file", id, err)
 	}
@@ -282,7 +414,6 @@ func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
 		return storage.Block{}, gerrors.NewStorageIOError("read_block_data", id, err)
 	}
 
-	// HMAC verifizieren, bevor wir die Daten rausgeben.
 	hmacKey := deriveHMACKey(mvk)
 	mac := hmac.New(sha256.New, hmacKey[:])
 	mac.Write([]byte(id))
@@ -301,8 +432,20 @@ func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
 		CreatedAt: rec.CreatedAt,
 		UpdatedAt: rec.UpdatedAt,
 	}
-
 	return bs.strategy.OnRead(b)
+}
+
+// ReadBlock retrieviert einen Block aus dem Store anhand der ID, verifiziert den HMAC
+// und gibt den rohen (noch verschlüsselten) Ciphertext in Block.Data zurück.
+func (bs *BlockStoreImpl) ReadBlock(id string) (storage.Block, error) {
+	bs.mu.RLock()
+	rec, exists := bs.index[id]
+	bs.mu.RUnlock()
+
+	if !exists {
+		return storage.Block{}, gerrors.NewStorageNotFoundError(id)
+	}
+	return bs.readBlockFromDisk(id, rec)
 }
 
 // DeleteBlock macht sicheres Löschen: Überschreibt den Ciphertext-Bereich auf
@@ -321,13 +464,29 @@ func (bs *BlockStoreImpl) DeleteBlock(id string) error {
 		return nil
 	}
 
-	// Ciphertext-Bereich auf der Platte mit Nullen überschreiben.
+	// WAL Delete-Record schreiben
+	if bs.wal != nil {
+		txID, err := generateTxID()
+		if err == nil {
+			_ = bs.wal.appendRecord(walRecord{Type: walTypeTxBegin, TxID: txID, Timestamp: time.Now().UnixNano()})
+			_ = bs.wal.appendRecord(walRecord{Type: walTypeDelete, TxID: txID, BlockID: id})
+			_ = bs.wal.appendRecord(walRecord{Type: walTypeCommit, TxID: txID})
+		}
+	}
+
 	if err := bs.zeroBlockDataLocked(rec); err != nil {
-		log.Printf("[blockstore] zeroBlockData for %s failed: %v (continuing with index delete)", id, err)
+		log.Printf("[blockstore] zeroBlockData for %s failed: %v", id, err)
 	}
 
 	delete(bs.index, id)
-	return bs.persistIndexLocked()
+	if err := bs.persistIndexLocked(); err != nil {
+		return err
+	}
+
+	if bs.wal != nil {
+		_ = bs.wal.checkpoint()
+	}
+	return nil
 }
 
 // ListBlocks gibt einen Snapshot der BlockMeta für alle Blöcke im In-Memory-Index.
@@ -393,6 +552,11 @@ func (bs *BlockStoreImpl) Close() error {
 	if err := bs.persistIndexLocked(); err != nil {
 		log.Printf("[blockstore] Close — persist failed: %v", err)
 		return err
+	}
+	if bs.wal != nil {
+		_ = bs.wal.checkpoint()
+		bs.wal.close()
+		bs.wal = nil
 	}
 	log.Printf("[blockstore] Closed — %d blocks in index", len(bs.index))
 	return nil

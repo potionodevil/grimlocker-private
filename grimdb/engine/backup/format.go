@@ -24,12 +24,12 @@ import (
 )
 
 // VaultMetaSnapshot ist ein sicherer Subset der Vault-Metadaten, der im Backup gespeichert wird.
-// RecoveryPhraseCiphertext wird bewusst ausgeschlossen (separater Restore-Pfad).
 type VaultMetaSnapshot struct {
-	ArgonSalt    []byte `json:"argon_salt"`
-	RecoveryHash []byte `json:"recovery_hash,omitempty"`
-	ExportedAt   int64  `json:"exported_at"`
-	Version      string `json:"version"`
+	ArgonSalt      []byte `json:"argon_salt"`
+	RecoveryHash   []byte `json:"recovery_hash,omitempty"`
+	ExportedAt     int64  `json:"exported_at"`
+	Version        string `json:"version"`
+	BackupSequence uint32 `json:"backup_sequence,omitempty"` // redundant mirror of header field
 }
 
 // EncodePayload serialisiert Blocks + VaultMetaSnapshot in das Payload-Binärformat.

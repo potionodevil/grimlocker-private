@@ -29,6 +29,10 @@ import (
 	dwkernel "github.com/grimlocker/grimdb/daemon/internal/kernel"
 	dwsec "github.com/grimlocker/grimdb/daemon/internal/security"
 	backupmod "github.com/grimlocker/grimdb/daemon/internal/modules/backup"
+	healthmod "github.com/grimlocker/grimdb/daemon/internal/modules/health"
+	importmod  "github.com/grimlocker/grimdb/daemon/internal/modules/importmod"
+	shamirmod  "github.com/grimlocker/grimdb/daemon/internal/modules/shamir"
+	sharemod   "github.com/grimlocker/grimdb/daemon/internal/modules/share"
 	toolmod "github.com/grimlocker/grimdb/daemon/internal/modules/tools"
 	workspace "github.com/grimlocker/grimdb/daemon/internal/workspace"
 	"github.com/grimlocker/grimdb/engine/kernel"
@@ -63,6 +67,26 @@ func main() {
 	appDir := getAppDir()
 	if err := os.MkdirAll(appDir, 0700); err != nil {
 		log.Fatalf("[Omega] Failed to create app directory: %v", err)
+	}
+
+	// ── DEV ONLY: Vault-Reset bei jedem Start ────────────────────────────────
+	// Auf true setzen um alle Vault-Daten beim Start zu löschen (frischer Start).
+	// TODO: Diese Zeile + den if-Block vor dem Prod-Release löschen!
+	const devReset = false
+	if devReset {
+		log.Printf("[Omega] [DEV] devReset=true — lösche Vault-Daten in: %s", appDir)
+		for _, f := range []string{
+			"vault.meta", "vault_entries.enc", "vault_index.enc",
+			"vault_wal.enc", "entropy.bin", "vault.gdb",
+		} {
+			if err := os.Remove(filepath.Join(appDir, f)); err == nil {
+				log.Printf("[Omega] [DEV]   gelöscht: %s", f)
+			}
+		}
+		if err := os.RemoveAll(filepath.Join(appDir, "blocks")); err == nil {
+			log.Printf("[Omega] [DEV]   gelöscht: blocks/")
+		}
+		log.Printf("[Omega] [DEV] Reset abgeschlossen — frischer Start.")
 	}
 
 	dbPath := envOr("GRIMLOCKER_DB_PATH", filepath.Join(appDir, "vault.gdb"))
@@ -126,10 +150,30 @@ func main() {
 			return meta.ArgonSalt, nil
 		},
 		blockStore,
-		nil, // no export policy for single-user tier; enterprise can inject RBAC here
+		backupExportPolicy(),
 	)
 	if err := reg.Add(backupMod); err != nil {
 		log.Printf("[Omega] Register backup module: %v (non-fatal)", err)
+	}
+
+	healthMod := healthmod.NewModule(blockStore)
+	if err := reg.Add(healthMod); err != nil {
+		log.Printf("[Omega] Register health module: %v (non-fatal)", err)
+	}
+
+	importMod := importmod.NewModule(blockStore)
+	if err := reg.Add(importMod); err != nil {
+		log.Printf("[Omega] Register import module: %v (non-fatal)", err)
+	}
+
+	shamirMod := shamirmod.NewModule()
+	if err := reg.Add(shamirMod); err != nil {
+		log.Printf("[Omega] Register shamir module: %v (non-fatal)", err)
+	}
+
+	shareMod := sharemod.NewModule(blockStore)
+	if err := reg.Add(shareMod); err != nil {
+		log.Printf("[Omega] Register share module: %v (non-fatal)", err)
 	}
 
 	// ── 6. Auth handler (in-bus, via provider interface) ─────────────────────
@@ -481,7 +525,8 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		healthInfo := map[string]interface{}{
 			"status": "ready",
-			"tier":   vault.Tier(),
+			"tier":   daemonTier(),
+			"role":   sessionUserRole(""),
 		}
 		authed := r.Header.Get("X-Grimlocker-Token") == token || r.URL.Query().Get("token") == token
 		if authed {

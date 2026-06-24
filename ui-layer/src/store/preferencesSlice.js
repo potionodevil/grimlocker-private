@@ -1,3 +1,53 @@
+export const DESIGN_PRESETS = {
+  meridian: {
+    label: 'Meridian',
+    description: 'Klassisch, clean, professionell',
+    theme: 'light',
+    accentHint: '#0055FF',
+    bgHint: '#FBFBFB',
+    cardHint: '#FFFFFF',
+    textHint: '#1A1A1A',
+  },
+  obsidian: {
+    label: 'Obsidian',
+    description: 'Dunkel, technisch, monospace',
+    theme: 'dark',
+    fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
+    accentHint: '#3B82F6',
+    bgHint: '#111113',
+    cardHint: '#18181B',
+    textHint: '#FAFAFA',
+  },
+  frost: {
+    label: 'Frost',
+    description: 'Hell, verspielt, Glassmorphism',
+    theme: 'light',
+    accentHint: '#0055FF',
+    bgHint: '#EFF6FF',
+    cardHint: 'rgba(255,255,255,0.72)',
+    textHint: '#1A1A1A',
+  },
+  carbon: {
+    label: 'Carbon',
+    description: 'Dunkel, brutal-flat, kein Schnickschnack',
+    theme: 'dark',
+    accentHint: '#22C55E',
+    bgHint: '#0A0A0A',
+    cardHint: '#111111',
+    textHint: '#E5E5E5',
+  },
+  sakura: {
+    label: 'Sakura',
+    description: 'Hell, pastellig, weich gerundet',
+    theme: 'light',
+    fontFamily: "'Nunito', system-ui, sans-serif",
+    accentHint: '#EC4899',
+    bgHint: '#FFF0F5',
+    cardHint: '#FFFFFF',
+    textHint: '#1A1A1A',
+  },
+}
+
 const ACCENT_PRESETS = {
   blue:   { accent: '#0055FF', accentHover: '#0044CC', accentSubtle: '#EBF0FF' },
   indigo: { accent: '#4F46E5', accentHover: '#4338CA', accentSubtle: '#EEF2FF' },
@@ -28,7 +78,11 @@ function savePreferencesToStorage(prefs) {
   }
 }
 
-function applyTokens({ theme, density, fontSize, accentKey }) {
+// Presets that define their own accent in CSS — inline style must be removed
+// so the CSS cascade from tokens.css takes over (inline > stylesheet).
+const PRESET_OWN_ACCENT = new Set(['obsidian', 'frost', 'carbon', 'sakura'])
+
+function applyTokens({ theme, density, fontSize, accentKey, sidebarFontSize, designPreset }) {
   const root = document.documentElement
   root.classList.toggle('dark', theme === 'dark')
   root.setAttribute('data-density', density)
@@ -37,11 +91,32 @@ function applyTokens({ theme, density, fontSize, accentKey }) {
   root.style.setProperty('--font-lg',   `${Math.round(fontSize * 1.143)}px`)
   root.style.setProperty('--font-xl',   `${Math.round(fontSize * 1.429)}px`)
   root.style.setProperty('--font-2xl',  `${Math.round(fontSize * 1.714)}px`)
+  root.style.setProperty('--sidebar-font-size', `${sidebarFontSize ?? 13}px`)
 
-  const preset = ACCENT_PRESETS[accentKey] ?? ACCENT_PRESETS.blue
-  root.style.setProperty('--accent',        preset.accent)
-  root.style.setProperty('--accent-hover',  preset.accentHover)
-  root.style.setProperty('--accent-subtle', preset.accentSubtle)
+  if (PRESET_OWN_ACCENT.has(designPreset)) {
+    // Remove inline overrides so the CSS [data-preset] rules take effect
+    root.style.removeProperty('--accent')
+    root.style.removeProperty('--accent-hover')
+    root.style.removeProperty('--accent-subtle')
+  } else {
+    // Meridian (and any future user-accent preset): apply user's chosen color
+    const preset = ACCENT_PRESETS[accentKey] ?? ACCENT_PRESETS.blue
+    root.style.setProperty('--accent',        preset.accent)
+    root.style.setProperty('--accent-hover',  preset.accentHover)
+    root.style.setProperty('--accent-subtle', preset.accentSubtle)
+  }
+}
+
+function applyPresetToDOM(key) {
+  const root = document.documentElement
+  root.setAttribute('data-preset', key === 'meridian' ? '' : key)
+  // If switching TO a preset that owns its accent, wipe inline --accent* so
+  // the CSS [data-preset] rule wins (inline style beats stylesheet otherwise).
+  if (PRESET_OWN_ACCENT.has(key)) {
+    root.style.removeProperty('--accent')
+    root.style.removeProperty('--accent-hover')
+    root.style.removeProperty('--accent-subtle')
+  }
 }
 
 export const createPreferencesSlice = (set, get) => {
@@ -54,17 +129,28 @@ export const createPreferencesSlice = (set, get) => {
     accentKey:            'blue',
     reduceMotion:         false,
     highContrast:         false,
-    sidebarWidth:         224,   // Pixel
+    sidebarWidth:         224,
+    sidebarFontSize:      13,    // 11–16 px, unabhängig vom globalen fontSize
+    // Design-Preset
+    designPreset:         'meridian',
+    pendingPreset:        null,
+    sidebarPosition:      'left',  // 'left' | 'right'
+    // Vault-Ansicht
+    vaultViewMode:        'grid',  // 'grid' | 'list' | 'compact'
+    vaultSortBy:          'name',  // 'name' | 'updated' | 'created' | 'type' | 'strength'
+    vaultSortDir:         'asc',   // 'asc' | 'desc'
+    gridCardSize:         'default', // 'small' | 'default' | 'large'
+    showEntrySubtitle:    true,
+    showEntryTimestamp:   true,
     // Sicherheit
     autoLockMinutes:      15,
     clipboardClearSeconds: 30,
     showPasswordStrength: true,
     lockdownThreshold:    3,
     // Verhalten
-    closeBehavior:        'quit', // 'quit' (beenden) | 'minimize' (minimieren)
-    startupView:          'all',  // 'all' | 'passwords' | 'FILE_VAULT' | 'dashboard'
+    closeBehavior:        'quit',
+    startupView:          'all',
     confirmDelete:        true,
-    // Vault-Gruppen — Array von { id, label, color, type }
     passwordGroups:       [],
   }
 
@@ -104,6 +190,30 @@ export const createPreferencesSlice = (set, get) => {
     setReduceMotion: (v) => update('reduceMotion', v),
     setHighContrast: (v) => update('highContrast', v),
     setSidebarWidth: (v) => update('sidebarWidth', v),
+    setSidebarFontSize: (v) => {
+      update('sidebarFontSize', v)
+      applyTokens({ ...get().preferences, sidebarFontSize: v })
+    },
+    setDesignPreset: (preset) => {
+      const def = DESIGN_PRESETS[preset]
+      if (!def) return
+      // Apply immediately — no restart required
+      applyPresetToDOM(preset)
+      const prefs = get().preferences
+      const newTheme = def.theme
+      update('designPreset', preset)
+      update('pendingPreset', null)
+      update('theme', newTheme)
+      applyTokens({ ...prefs, theme: newTheme, designPreset: preset })
+    },
+    // kept for API compatibility
+    applyPendingPreset: () => {},
+    setVaultViewMode: (v) => update('vaultViewMode', v),
+    setVaultSortBy:   (v) => update('vaultSortBy', v),
+    setVaultSortDir:  (v) => update('vaultSortDir', v),
+    setGridCardSize:  (v) => update('gridCardSize', v),
+    setShowEntrySubtitle:  (v) => update('showEntrySubtitle', v),
+    setShowEntryTimestamp: (v) => update('showEntryTimestamp', v),
     setAutoLockMinutes: (v) => update('autoLockMinutes', v),
     setClipboardClearSeconds: (v) => update('clipboardClearSeconds', v),
     setShowPasswordStrength: (v) => update('showPasswordStrength', v),
@@ -111,6 +221,7 @@ export const createPreferencesSlice = (set, get) => {
     setCloseBehavior: (v) => update('closeBehavior', v),
     setStartupView: (v) => update('startupView', v),
     setConfirmDelete: (v) => update('confirmDelete', v),
+    setSidebarPosition: (v) => update('sidebarPosition', v),
 
     addPasswordGroup: (group) => {
       const groups = [...get().preferences.passwordGroups, group]
@@ -132,7 +243,9 @@ export const createPreferencesSlice = (set, get) => {
     },
 
     initPreferences: () => {
-      applyTokens(get().preferences)
+      const prefs = get().preferences
+      applyPresetToDOM(prefs.designPreset ?? 'meridian')
+      applyTokens(prefs)
     },
   }
 }

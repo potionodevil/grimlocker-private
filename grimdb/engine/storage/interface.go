@@ -16,6 +16,11 @@ type BlockStore interface {
 	Close() error
 }
 
+// BlockStoreTransactional prüft ob ein BlockStore WAL-backed Transaktionen unterstützt.
+// Nutze einen Type-Assert auf BlockStoreV2 um BeginWrite/BeginRead zu erhalten.
+// BlockStoreImpl implementiert BlockStoreV2 wenn WAL aktiv ist.
+type BlockStoreTransactional = BlockStoreV2
+
 // StorageStrategy ist ein pluggbarer Interceptor, der in den BlockStore injiziert wird.
 // Der Store ruft OnWrite vor dem Persistieren und OnRead nach dem Abrufen auf.
 // OnTrigger wird mit einem Trigger-Key aufgerufen (z.B. "bait" für Honeypot,

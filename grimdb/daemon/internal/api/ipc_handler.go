@@ -38,14 +38,24 @@ var actionMap = map[string]kernel.EventType{
 	"storage.list":   kernel.EvStorageList,
 
 	// High-level vault entries (CLI and REST clients)
-	"entry.create": kernel.EvEntryCreate,
-	"entry.read":   kernel.EvEntryRead,
-	"entry.update": kernel.EvEntryUpdate,
-	"entry.delete": kernel.EvEntryDelete,
-	"entry.query":  kernel.EvEntryQuery,
+	"entry.create":  kernel.EvEntryCreate,
+	"entry.read":    kernel.EvEntryRead,
+	"entry.update":  kernel.EvEntryUpdate,
+	"entry.delete":  kernel.EvEntryDelete,
+	"entry.query":   kernel.EvEntryQuery,
+	"entry.history": kernel.EvEntryHistory,
+	"entry.restore": kernel.EvEntryRestore,
 
 	// Tool operations
-	"tool.ssh_gen": kernel.EvToolSSHGen,
+	"tool.ssh_gen":    kernel.EvToolSSHGen,
+	"totp.generate":   kernel.EvTOTPGenerate,
+	"health.analyze":  kernel.EvHealthAnalyze,
+	"import.csv":      kernel.EvImportCSV,
+	"shamir.split":    kernel.EvShamirSplit,
+	"shamir.combine":  kernel.EvShamirCombine,
+	"share.create":    kernel.EvShareCreate,
+	"share.redeem":    kernel.EvShareRedeem,
+	"share.revoke":    kernel.EvShareRevoke,
 
 	// Sync
 	"sync.begin": kernel.EvSyncBegin,

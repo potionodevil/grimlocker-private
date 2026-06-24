@@ -20,7 +20,11 @@ func GenerateRecoveryPhrase() (string, error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(b)[:200], nil
+	encoded := base64.RawURLEncoding.EncodeToString(b)
+	if len(encoded) != 200 {
+		return "", fmt.Errorf("recovery phrase encoding: unexpected length %d", len(encoded))
+	}
+	return encoded, nil
 }
 
 // InitializeVault erstellt ein neues Vault. Gibt die Recovery-Phrase zurück (nur einmal angezeigt).
@@ -255,7 +259,7 @@ func verifySentinel(p crypto.Provider, mvk, sentinel []byte) error {
 	if err != nil {
 		return fmt.Errorf("sentinel decryption failed")
 	}
-	if string(pt) != "GRIMLOCKER_V1" {
+	if subtle.ConstantTimeCompare(pt, []byte("GRIMLOCKER_V1")) != 1 {
 		return fmt.Errorf("sentinel mismatch")
 	}
 	return nil
@@ -307,6 +311,42 @@ func overwriteEntropyFile(path string) {
 		written += w
 	}
 	_ = f.Sync()
+}
+
+// ChangePasswordWithRecovery setzt das Master-Passwort über die Recovery-Phrase zurück.
+// Neue Vault-Parameter (Salt, Entropy, Sentinel) werden neu generiert.
+// Vorhandene verschlüsselte Einträge können nicht migriert werden und werden gelöscht.
+// Gibt die neue Recovery-Phrase zurück (muss sicher aufbewahrt werden).
+func ChangePasswordWithRecovery(recoveryPhrase, newPassword, appDir string) (string, error) {
+	p := cryptoProvider
+
+	meta, err := LoadMeta(appDir)
+	if err != nil {
+		return "", fmt.Errorf("load metadata: %w", err)
+	}
+	if !meta.IsInitialized {
+		return "", fmt.Errorf("vault not initialized")
+	}
+
+	// Recovery-Phrase prüfen
+	opts := crypto.DefaultKDFOptions
+	opts.Salt = meta.RecoverySalt
+	computed, err := p.DeriveArgon2id([]byte(recoveryPhrase), opts)
+	if err != nil {
+		return "", fmt.Errorf("derive recovery hash: %w", err)
+	}
+	if subtle.ConstantTimeCompare(computed, meta.RecoveryHash) != 1 {
+		return "", fmt.Errorf("invalid recovery phrase")
+	}
+
+	// Bestehende Einträge löschen (nicht re-enkryptierbar ohne alten MVK)
+	overwriteEntropyFile(meta.EntropyPath)
+	_ = os.Remove(filepath.Join(appDir, "vault_entries.enc"))
+	_ = os.Remove(filepath.Join(appDir, "vault_index.enc"))
+	_ = os.RemoveAll(filepath.Join(appDir, "blocks"))
+
+	// Neues Vault mit neuem Passwort initialisieren
+	return InitializeVault(newPassword, appDir)
 }
 
 // WipeVault zerstört das Vault komplett: löscht alle Dateien und Metadaten.

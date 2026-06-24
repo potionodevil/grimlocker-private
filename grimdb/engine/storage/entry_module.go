@@ -47,14 +47,27 @@ func NewEntryHandler(bs BlockStore) *EntryHandler {
 	return h
 }
 
+// historyBlockID erzeugt die Block-ID für einen History-Snapshot.
+// Format: _hist_{entryID}_{unixNano}
+func historyBlockID(entryID string, ts int64) string {
+	return fmt.Sprintf("_hist_%s_%d", entryID, ts)
+}
+
+// isHistoryBlock meldet true, wenn die ID ein History-Snapshot ist (kein echter Entry).
+func isHistoryBlock(id string) bool {
+	return len(id) > 6 && id[:6] == "_hist_"
+}
+
 // buildHandlers gibt die statische Handler-Registry für alle ENTRY.*-Events zurück.
 func (h *EntryHandler) buildHandlers() map[kernel.EventType]entryHandlerFn {
 	return map[kernel.EventType]entryHandlerFn{
-		kernel.EvEntryCreate: h.handleCreate,
-		kernel.EvEntryRead:   h.handleRead,
-		kernel.EvEntryUpdate: h.handleUpdate,
-		kernel.EvEntryDelete: h.handleDelete,
-		kernel.EvEntryQuery:  h.handleQuery,
+		kernel.EvEntryCreate:  h.handleCreate,
+		kernel.EvEntryRead:    h.handleRead,
+		kernel.EvEntryUpdate:  h.handleUpdate,
+		kernel.EvEntryDelete:  h.handleDelete,
+		kernel.EvEntryQuery:   h.handleQuery,
+		kernel.EvEntryHistory: h.handleHistory,
+		kernel.EvEntryRestore: h.handleRestore,
 	}
 }
 
@@ -210,6 +223,14 @@ func (h *EntryHandler) handleUpdate(e kernel.Event, dispatcher kernel.Dispatcher
 		block.Data = updatedData
 	}
 
+	// Snapshot der alten Version in _history/ speichern, bevor überschrieben wird.
+	snapID := historyBlockID(req.ID, time.Now().UnixNano())
+	snap := Block{ID: snapID, Data: block.Data, Category: block.Category}
+	if snapErr := h.bs.WriteBlock(snap); snapErr != nil {
+		log.Printf("[entry:UPDATE:SNAP] failed to snapshot %s: %v", req.ID, snapErr)
+		// non-fatal — update proceeds even if snapshot fails
+	}
+
 	if err := h.bs.WriteBlock(block); err != nil {
 		replyErr(dispatcher, e, err)
 		return
@@ -269,6 +290,96 @@ func (h *EntryHandler) deleteFileVaultIfManifest(id string) error {
 	return nil
 }
 
+// handleHistory listet alle History-Snapshots für eine Entry-ID auf.
+// Payload: {"id": "<entry_id>"}
+// Response: {"id": "<entry_id>", "snapshots": [{"snap_id","ts","data"},...]}
+func (h *EntryHandler) handleHistory(e kernel.Event, dispatcher kernel.Dispatcher) {
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(e.Payload, &req); err != nil || req.ID == "" {
+		replyErr(dispatcher, e, gerrors.NewProtocolError("entry_history_unmarshal", err))
+		return
+	}
+
+	prefix := "_hist_" + req.ID + "_"
+	metas, err := h.bs.ListBlocks()
+	if err != nil {
+		replyErr(dispatcher, e, err)
+		return
+	}
+
+	type SnapMeta struct {
+		SnapID string          `json:"snap_id"`
+		Ts     int64           `json:"ts"`
+		Data   json.RawMessage `json:"data"`
+	}
+	var snaps []SnapMeta
+	for _, m := range metas {
+		if len(m.ID) > len(prefix) && m.ID[:len(prefix)] == prefix {
+			b, readErr := h.bs.ReadBlock(m.ID)
+			if readErr != nil {
+				continue
+			}
+			var ts int64
+			fmt.Sscanf(m.ID[len(prefix):], "%d", &ts)
+			snaps = append(snaps, SnapMeta{SnapID: m.ID, Ts: ts, Data: b.Data})
+		}
+	}
+	// Sort newest first by Ts (insertion sort over typically small slice)
+	for i := 1; i < len(snaps); i++ {
+		for j := i; j > 0 && snaps[j].Ts > snaps[j-1].Ts; j-- {
+			snaps[j], snaps[j-1] = snaps[j-1], snaps[j]
+		}
+	}
+
+	resp, _ := json.Marshal(map[string]interface{}{"id": req.ID, "snapshots": snaps})
+	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, resp)) //nolint:errcheck
+}
+
+// handleRestore stellt einen History-Snapshot als aktuellen Entry wieder her.
+// Payload: {"id": "<entry_id>", "snap_id": "<_hist_...>"}
+func (h *EntryHandler) handleRestore(e kernel.Event, dispatcher kernel.Dispatcher) {
+	var req struct {
+		ID     string `json:"id"`
+		SnapID string `json:"snap_id"`
+	}
+	if err := json.Unmarshal(e.Payload, &req); err != nil || req.ID == "" || req.SnapID == "" {
+		replyErr(dispatcher, e, gerrors.NewProtocolError("entry_restore_unmarshal", err))
+		return
+	}
+
+	snap, err := h.bs.ReadBlock(req.SnapID)
+	if err != nil {
+		replyErr(dispatcher, e, err)
+		return
+	}
+
+	// Read current block to preserve Category/ID metadata.
+	current, err := h.bs.ReadBlock(req.ID)
+	if err != nil {
+		replyErr(dispatcher, e, err)
+		return
+	}
+
+	// Snapshot the current version before overwriting.
+	snapID := historyBlockID(req.ID, time.Now().UnixNano())
+	preSnap := Block{ID: snapID, Data: current.Data, Category: current.Category}
+	if snapErr := h.bs.WriteBlock(preSnap); snapErr != nil {
+		log.Printf("[entry:RESTORE:SNAP] failed to snapshot current %s: %v", req.ID, snapErr)
+	}
+
+	// Restore: write snapshot data as the live block.
+	restored := Block{ID: req.ID, Data: snap.Data, Category: current.Category}
+	if err := h.bs.WriteBlock(restored); err != nil {
+		replyErr(dispatcher, e, err)
+		return
+	}
+
+	resp, _ := json.Marshal(map[string]interface{}{"status": "restored", "id": req.ID, "snap_id": req.SnapID})
+	dispatcher.Dispatch(kernel.ReplyEvent("storage", kernel.EvEntryResult, e, resp)) //nolint:errcheck
+}
+
 // handleQuery verarbeitet ENTRY.QUERY-Events.
 // Payload: {"category": "PASSWORD"} — leere Category gibt alle Entries zurück.
 // Dispatched ENTRY.RESULT mit einem []BlockMeta-Payload gefiltert nach Category.
@@ -289,6 +400,15 @@ func (h *EntryHandler) handleQuery(e kernel.Event, dispatcher kernel.Dispatcher)
 		replyErr(dispatcher, e, err)
 		return
 	}
+
+	// History-Snapshots aus dem Ergebnis herausfiltern — sie sind interne Blöcke.
+	filtered := metas[:0]
+	for _, m := range metas {
+		if !isHistoryBlock(m.ID) {
+			filtered = append(filtered, m)
+		}
+	}
+	metas = filtered
 
 	log.Printf("[entry:QUERY] category=%q results=%d", req.Category, len(metas))
 	respPayload, _ := json.Marshal(map[string]interface{}{

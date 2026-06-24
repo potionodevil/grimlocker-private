@@ -93,10 +93,21 @@ const (
 	OpAuditList Operation = "audit.list"
 )
 
-// Tool-Operationen — SSH-Keys generieren, Recovery-Phrasen ausspucken.
+// Tool-Operationen — SSH-Keys generieren, Recovery-Phrasen ausspucken, TOTP generieren.
 const (
 	OpToolSSHGen         Operation = "tool.ssh_gen"
 	OpToolRecoveryPhrase Operation = "tool.recovery_phrase"
+	OpTOTPGenerate       Operation = "totp.generate"
+)
+
+// Health-Operationen — Passwort-Gesundheitsanalyse.
+const (
+	OpHealthAnalyze Operation = "health.analyze"
+)
+
+// Import-Operationen — CSV-Import.
+const (
+	OpImportCSV Operation = "import.csv"
 )
 
 // Vault Auth-Operationen — entsperren, sperren, Status abfragen.
@@ -104,6 +115,25 @@ const (
 	OpVaultUnlock Operation = "vault.unlock"
 	OpVaultLogout Operation = "vault.logout"
 	OpVaultStatus Operation = "vault.status"
+)
+
+// History-Operationen — Entry-Versionshistorie.
+const (
+	OpEntryHistory Operation = "entry.history" // list snapshots for an entry
+	OpEntryRestore Operation = "entry.restore"  // restore a specific snapshot
+)
+
+// Shamir-Operationen — Backup-Key Secret Sharing.
+const (
+	OpShamirSplit   Operation = "shamir.split"   // teile den Backup-Key in N Shares auf
+	OpShamirCombine Operation = "shamir.combine"  // stelle den Backup-Key aus K Shares her
+)
+
+// Share-Operationen — sichere einmalige Freigabe von Vault-Einträgen.
+const (
+	OpShareCreate Operation = "share.create" // erstelle Share-Link mit TTL
+	OpShareRedeem Operation = "share.redeem"  // löse Share-Link ein (einmalig)
+	OpShareRevoke Operation = "share.revoke"  // widerrufe Share-Link
 )
 
 // Health-Operationen — ist der Daemon noch wach?
@@ -135,8 +165,14 @@ func isValidOperation(op Operation) bool {
 		OpSyncListPeers, OpSyncTrigger,
 		OpAuditList,
 		OpToolSSHGen, OpToolRecoveryPhrase,
+		OpTOTPGenerate,
+		OpHealthAnalyze,
+		OpImportCSV,
 		OpVaultUnlock, OpVaultLogout, OpVaultStatus,
-		OpSystemHealth:
+		OpSystemHealth,
+		OpEntryHistory, OpEntryRestore,
+		OpShamirSplit, OpShamirCombine,
+		OpShareCreate, OpShareRedeem, OpShareRevoke:
 		return true
 	default:
 		return false
@@ -153,7 +189,11 @@ func isReadOperation(op Operation) bool {
 		OpSyncListPeers,
 		OpAuditList,
 		OpToolRecoveryPhrase, OpVaultStatus,
-		OpSystemHealth:
+		OpHealthAnalyze,
+		OpSystemHealth,
+		OpEntryHistory,
+		OpShamirCombine,
+		OpShareRedeem:
 		return true
 	}
 	return false
@@ -168,7 +208,11 @@ func isWriteOperation(op Operation) bool {
 		OpWorkspaceCreate, OpWorkspaceSwitch, OpWorkspaceRename,
 		OpWorkspaceDelete,
 		OpSyncTrigger,
-		OpToolSSHGen, OpVaultUnlock, OpVaultLogout:
+		OpToolSSHGen, OpVaultUnlock, OpVaultLogout,
+		OpTOTPGenerate, OpImportCSV,
+		OpEntryRestore,
+		OpShamirSplit,
+		OpShareCreate, OpShareRevoke:
 		return true
 	}
 	return false

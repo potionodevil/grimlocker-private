@@ -11,6 +11,8 @@ const (
 	CategorySSHKey      Category = "SSH_KEY"
 	CategoryCertificate Category = "CERTIFICATE"
 	CategoryFileVault   Category = "FILE_VAULT"
+	CategoryTOTP        Category = "TOTP"
+	CategoryNote        Category = "NOTE"
 )
 
 // CategoryFromType mapped den legacy UI-"type"-String auf die formale Category-Enum.
@@ -25,6 +27,10 @@ func CategoryFromType(t string) Category {
 		return CategoryCertificate
 	case "file_vault":
 		return CategoryFileVault
+	case "totp":
+		return CategoryTOTP
+	case "note":
+		return CategoryNote
 	default:
 		return CategoryPassword // safe fallback
 	}

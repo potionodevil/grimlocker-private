@@ -343,6 +343,9 @@ func (t *Translator) HandleWS(msgType byte, payload []byte, conn *gorillaws.Conn
 	case ipc.MsgResetVault:
 		return t.wsResetVault(conn, payload)
 
+	case ipc.MsgChangePasswordRecovery:
+		return t.wsChangePasswordWithRecovery(conn, payload)
+
 	case ipc.MsgGenerateMatrix:
 		return t.wsGenerateMatrix(conn, payload)
 
@@ -526,6 +529,55 @@ func (t *Translator) HandleWS(msgType byte, payload []byte, conn *gorillaws.Conn
 			t.sessionKeyHandle = ""
 		}
 		return ws.WriteMessage(conn, ipc.MsgAuthLogoutAck, nil)
+
+	// ── TOTP / 2FA ───────────────────────────────────────────────────────────
+	case ipc.MsgTOTPGenerate:
+		return t.wsDispatch(conn, kernel.EvTOTPGenerate, payload, ipc.MsgTOTPResult, "TOTP.GENERATE")
+
+	// ── Password Health Analysis ──────────────────────────────────────────────
+	case ipc.MsgHealthAnalyze:
+		return t.wsDispatch(conn, kernel.EvHealthAnalyze, payload, ipc.MsgHealthResult, "HEALTH.ANALYZE")
+
+	// ── CSV Import ────────────────────────────────────────────────────────────
+	case ipc.MsgImportCSV:
+		return t.wsDispatch(conn, kernel.EvImportCSV, payload, ipc.MsgImportResult, "IMPORT.CSV")
+
+	// ── Entry Version History ─────────────────────────────────────────────────
+	case ipc.MsgEntryHistory:
+		return t.wsDispatch(conn, kernel.EvEntryHistory, payload, ipc.MsgEntryHistoryResult, "ENTRY.HISTORY")
+
+	case ipc.MsgEntryRestore:
+		return t.wsDispatch(conn, kernel.EvEntryRestore, payload, ipc.MsgEntryHistoryResult, "ENTRY.RESTORE")
+
+	// ── Shamir Secret Sharing ─────────────────────────────────────────────────
+	case ipc.MsgShamirSplit:
+		return t.wsDispatch(conn, kernel.EvShamirSplit, payload, ipc.MsgShamirResult, "SHAMIR.SPLIT")
+
+	case ipc.MsgShamirCombine:
+		return t.wsDispatch(conn, kernel.EvShamirCombine, payload, ipc.MsgShamirResult, "SHAMIR.COMBINE")
+
+	// ── Secure Share ──────────────────────────────────────────────────────────
+	case ipc.MsgShareCreate:
+		return t.wsDispatch(conn, kernel.EvShareCreate, payload, ipc.MsgShareResult, "SHARE.CREATE")
+
+	case ipc.MsgShareRedeem:
+		return t.wsDispatch(conn, kernel.EvShareRedeem, payload, ipc.MsgShareResult, "SHARE.REDEEM")
+
+	case ipc.MsgShareRevoke:
+		return t.wsDispatch(conn, kernel.EvShareRevoke, payload, ipc.MsgShareResult, "SHARE.REVOKE")
+
+	// ── Air-Gap Backup ────────────────────────────────────────────────────────
+	case ipc.MsgBackupExport:
+		return t.wsDispatch(conn, kernel.EvBackupExport, payload, ipc.MsgBackupResult, "BACKUP.EXPORT")
+
+	case ipc.MsgBackupPeek:
+		return t.wsDispatch(conn, kernel.EvBackupPeek, payload, ipc.MsgBackupResult, "BACKUP.PEEK")
+
+	case ipc.MsgBackupAuthorize:
+		return t.wsDispatch(conn, kernel.EvBackupAuthorize, payload, ipc.MsgBackupResult, "BACKUP.AUTHORIZE")
+
+	case ipc.MsgBackupChecksum:
+		return t.wsDispatch(conn, kernel.EvBackupChecksum, payload, ipc.MsgBackupResult, "BACKUP.CHECKSUM")
 
 	default:
 		return fmt.Errorf("unknown message type 0x%02x", msgType)
@@ -1246,6 +1298,35 @@ func (t *Translator) wsResetVault(conn *gorillaws.Conn, payload []byte) error {
 	return ws.WriteMessage(conn, ipc.MsgAck, nil)
 }
 
+func (t *Translator) wsChangePasswordWithRecovery(conn *gorillaws.Conn, payload []byte) error {
+	var req struct {
+		RecoveryPhrase string `json:"recovery_phrase"`
+		NewPassword    string `json:"new_password"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("invalid request"))
+	}
+	if req.RecoveryPhrase == "" || req.NewPassword == "" {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte("recovery_phrase and new_password required"))
+	}
+
+	newPhrase, err := grimdb.ChangePasswordWithRecovery(req.RecoveryPhrase, req.NewPassword, t.appDir)
+	if err != nil {
+		log.Printf("[translator] ChangePasswordWithRecovery failed: %v", err)
+		return ws.WriteMessage(conn, ipc.MsgError, []byte(err.Error()))
+	}
+
+	// Lock the vault — user must log in fresh with new password
+	ev := kernel.NewEvent("api", kernel.EvSecLockdown, []byte(`{"reason":"password_changed"}`))
+	_ = t.bus.Dispatch(ev)
+
+	result, _ := json.Marshal(map[string]interface{}{
+		"success":             true,
+		"new_recovery_phrase": newPhrase,
+	})
+	return ws.WriteMessage(conn, ipc.MsgChangePasswordResult, result)
+}
+
 func (t *Translator) wsGenerateMatrix(conn *gorillaws.Conn, payload []byte) error {
 	var req struct {
 		LineCount   int    `json:"line_count"`
@@ -1774,4 +1855,33 @@ func (t *Translator) wsAuthTokenSubmit(conn *gorillaws.Conn, payload []byte) err
 		"initialized": initialized,
 	})
 	return ws.WriteMessage(conn, ipc.MsgKernelStateReady, resp)
+}
+
+// wsDispatch is a generic helper: fires ev on the kernel bus, waits for a result,
+// and writes it back as resultMsg. Any error field in the JSON payload is surfaced
+// as MsgError so the UI can display a proper message.
+func (t *Translator) wsDispatch(conn *gorillaws.Conn, evType kernel.EventType, payload []byte, resultMsg byte, tag string) error {
+	if len(payload) == 0 {
+		payload = []byte("{}")
+	}
+	ev := kernel.NewEvent("api", evType, payload)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := t.bus.Request(ctx, ev)
+	if err != nil {
+		log.Printf("[translator:%s] timeout or dispatch error: %v", tag, err)
+		return ws.WriteMessage(conn, ipc.MsgError, []byte(tag+" timeout"))
+	}
+
+	var check struct {
+		Error string `json:"error,omitempty"`
+	}
+	_ = json.Unmarshal(result.Payload, &check)
+	if check.Error != "" {
+		return ws.WriteMessage(conn, ipc.MsgError, []byte(check.Error))
+	}
+
+	log.Printf("[translator:%s] ok (%d bytes)", tag, len(result.Payload))
+	return ws.WriteMessage(conn, resultMsg, result.Payload)
 }
